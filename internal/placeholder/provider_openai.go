@@ -19,5 +19,6 @@ func init() {
 			rest := len(value) - len(prefix)
 			return prefix + randAlphanumeric(rest)
 		},
+		Hosts: []string{"api.openai.com"},
 	})
 }

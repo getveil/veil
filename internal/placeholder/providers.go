@@ -6,6 +6,7 @@ type ProviderPattern struct {
 	Name     string
 	Match    func(name, value string) bool
 	Generate func(value string) string
+	Hosts    []string // curated host set for this provider
 }
 
 // registry holds all registered provider patterns, checked in order.

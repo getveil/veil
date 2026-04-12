@@ -21,5 +21,6 @@ func init() {
 			// Secret access key: base64-ish characters, same length.
 			return randBase64ish(len(value))
 		},
+		Hosts: []string{"*.amazonaws.com"},
 	})
 }
