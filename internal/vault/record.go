@@ -10,12 +10,13 @@ import (
 
 // Credential holds a single secret and its proxy placeholder.
 type Credential struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Real        string    `json:"real"`
-	Placeholder string    `json:"placeholder"`
-	Source      string    `json:"source"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Real         string    `json:"real"`
+	Placeholder  string    `json:"placeholder"`
+	Source       string    `json:"source"`
+	AllowedHosts []string  `json:"allowed_hosts,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // String returns a redacted representation that never leaks secret material.
