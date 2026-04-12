@@ -434,16 +434,19 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	cap := <-captureCh
 	t.Logf("server received Authorization: %s", cap.Auth)
 
-	// The proxy should have replaced the placeholder with the real key.
-	expectedAuth := "Bearer " + originalKey
+	// The credential is auto-scoped to api.openai.com (via provider detection),
+	// so the proxy should NOT inject it into a request to 127.0.0.1. The test
+	// server should receive the placeholder, not the real key. This verifies
+	// host-scoped injection works end-to-end.
+	expectedAuth := "Bearer " + placeholder
 	if cap.Auth != expectedAuth {
-		t.Errorf("proxy injection failed:\n  got:  %s\n  want: %s", cap.Auth, expectedAuth)
+		t.Errorf("host scoping failed — credential was injected to wrong host:\n  got:  %s\n  want: %s", cap.Auth, expectedAuth)
 	}
-	if strings.Contains(cap.Auth, placeholder) {
-		t.Error("server received the placeholder instead of the real secret")
+	if strings.Contains(cap.Auth, originalKey) {
+		t.Error("real secret was leaked to non-matching host")
 	}
 
-	// 8. Verify audit log recorded the injection.
+	// 8. Verify audit log recorded the blocked injection.
 	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json")
 	logCmd.Env = env
 	logOut, err := logCmd.CombinedOutput()
@@ -453,9 +456,9 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	logStr := string(logOut)
 	t.Logf("audit log:\n%s", logStr)
 
-	// The JSON log should have at least one injection event.
+	// The JSON log should have at least one blocked event.
 	if strings.TrimSpace(logStr) == "" {
-		t.Error("audit log is empty; expected at least one injection event")
+		t.Error("audit log is empty; expected at least one blocked event")
 	} else {
 		// Parse the first JSON line.
 		var entry map[string]interface{}
@@ -466,8 +469,8 @@ func TestE2E_ProxyInjection(t *testing.T) {
 		if entry["credential"] != "OPENAI_API_KEY" {
 			t.Errorf("audit entry credential = %v, want OPENAI_API_KEY", entry["credential"])
 		}
-		if entry["location"] != "header" {
-			t.Errorf("audit entry location = %v, want header", entry["location"])
+		if entry["location"] != "blocked" {
+			t.Errorf("audit entry location = %v, want blocked", entry["location"])
 		}
 	}
 }
