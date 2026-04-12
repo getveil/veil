@@ -105,6 +105,11 @@ func (v *Vault) Save() error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("vault: write temp file: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault: sync failed: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("vault: close temp file: %w", err)
@@ -149,16 +154,18 @@ func (v *Vault) List() []*Credential {
 }
 
 // Delete removes a credential by name and persists the vault.
-// Returns false if the credential was not found.
-func (v *Vault) Delete(name string) bool {
+// Returns (false, nil) if the credential was not found.
+func (v *Vault) Delete(name string) (bool, error) {
 	for i, c := range v.credentials {
 		if c.Name == name {
 			v.credentials = append(v.credentials[:i], v.credentials[i+1:]...)
-			_ = v.Save()
-			return true
+			if err := v.Save(); err != nil {
+				return true, err
+			}
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // Credentials is an alias for List.
@@ -202,6 +209,11 @@ func CreateVault(root string, projectID string, ks Keystore) (*Vault, error) {
 
 	// Generate master key.
 	var key [32]byte
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
 	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
 		return nil, fmt.Errorf("vault: generate key: %w", err)
 	}

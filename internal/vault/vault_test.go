@@ -94,7 +94,10 @@ func TestAddDuplicateName(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	cred := &Credential{
 		ID:          NewID(),
@@ -116,7 +119,7 @@ func TestAddDuplicateName(t *testing.T) {
 		Source:      "manual",
 		CreatedAt:   time.Now().UTC(),
 	}
-	err := v.Add(dup)
+	err = v.Add(dup)
 	if err == nil {
 		t.Fatal("expected error on duplicate name")
 	}
@@ -129,7 +132,10 @@ func TestPlaceholderCollision(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	c1 := &Credential{
 		ID:          NewID(),
@@ -151,7 +157,7 @@ func TestPlaceholderCollision(t *testing.T) {
 		Source:      "manual",
 		CreatedAt:   time.Now().UTC(),
 	}
-	err := v.Add(c2)
+	err = v.Add(c2)
 	if err == nil {
 		t.Fatal("expected error on placeholder collision")
 	}
@@ -164,7 +170,10 @@ func TestDelete(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	cred := &Credential{
 		ID:          NewID(),
@@ -176,13 +185,21 @@ func TestDelete(t *testing.T) {
 	}
 	_ = v.Add(cred)
 
-	if !v.Delete("KEY") {
+	deleted, err := v.Delete("KEY")
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !deleted {
 		t.Fatal("Delete returned false")
 	}
 	if _, ok := v.Get("KEY"); ok {
 		t.Fatal("credential still found after Delete")
 	}
-	if v.Delete("KEY") {
+	deleted, err = v.Delete("KEY")
+	if err != nil {
+		t.Fatalf("Delete (second): %v", err)
+	}
+	if deleted {
 		t.Fatal("second Delete should return false")
 	}
 }
@@ -191,7 +208,10 @@ func TestListAndPlaceholderMap(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	for i, name := range []string{"A", "B", "C"} {
 		_ = v.Add(&Credential{
@@ -234,7 +254,10 @@ func TestSaveAtomicityAndBackup(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	// After CreateVault, vault.bin exists but vault.bin.bak does not.
 	vaultPath := config.VaultFile(root)
@@ -284,10 +307,95 @@ func TestGetMissing(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 
-	v, _ := CreateVault(root, "proj", ks)
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
 
 	_, ok := v.Get("NONEXISTENT")
 	if ok {
 		t.Fatal("Get should return false for missing credential")
+	}
+}
+
+func TestDeleteSaveError(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	cred := &Credential{
+		ID:          NewID(),
+		Name:        "KEY",
+		Real:        "val",
+		Placeholder: "ph",
+		Source:      "manual",
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Make .veil/ directory read-only so Save cannot write.
+	stateDir := config.ProjectStateDir(root)
+	if err := os.Chmod(stateDir, 0500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(stateDir, 0700) }()
+
+	deleted, err := v.Delete("KEY")
+	if err == nil {
+		t.Fatal("expected error when Save fails")
+	}
+	if !deleted {
+		t.Fatal("Delete should return true even when Save fails")
+	}
+}
+
+func TestAddPersistsOnReopen(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	cred := &Credential{
+		ID:          NewID(),
+		Name:        "DB_PASSWORD",
+		Real:        "super-secret-123",
+		Placeholder: "ph-db-password",
+		Source:      "manual",
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Re-open vault from disk.
+	v2, err := Open(root, ks)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	got, ok := v2.Get("DB_PASSWORD")
+	if !ok {
+		t.Fatal("credential not found after re-open")
+	}
+	if got.Real != "super-secret-123" {
+		t.Fatalf("Real = %q, want %q", got.Real, "super-secret-123")
+	}
+	if got.Placeholder != "ph-db-password" {
+		t.Fatalf("Placeholder = %q, want %q", got.Placeholder, "ph-db-password")
+	}
+	if got.Source != "manual" {
+		t.Fatalf("Source = %q, want %q", got.Source, "manual")
+	}
+	if got.ID != cred.ID {
+		t.Fatalf("ID = %q, want %q", got.ID, cred.ID)
 	}
 }
