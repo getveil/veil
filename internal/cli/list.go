@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/8enji/veil/internal/audit"
@@ -58,26 +59,32 @@ func runList(cmd *cobra.Command, reveal bool) error {
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 4, ' ', 0)
 	if reveal {
-		_, _ = fmt.Fprintln(w, "NAME\tVALUE\tSOURCE\tCREATED\tLAST INJECTED")
+		_, _ = fmt.Fprintln(w, "NAME\tHOSTS\tVALUE\tSOURCE\tCREATED\tLAST INJECTED")
 	} else {
-		_, _ = fmt.Fprintln(w, "NAME\tSOURCE\tCREATED\tLAST INJECTED")
+		_, _ = fmt.Fprintln(w, "NAME\tHOSTS\tSOURCE\tCREATED\tLAST INJECTED")
 	}
 	for _, c := range creds {
 		last := "never"
 		if t, ok := lastInjected[c.Name]; ok {
 			last = t
 		}
+		hostsStr := "(none)"
+		if len(c.AllowedHosts) > 0 {
+			hostsStr = strings.Join(c.AllowedHosts, ", ")
+		}
 		if reveal {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				c.Name,
+				hostsStr,
 				c.Real,
 				c.Source,
 				c.CreatedAt.Format("2006-01-02 15:04"),
 				last,
 			)
 		} else {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 				c.Name,
+				hostsStr,
 				c.Source,
 				c.CreatedAt.Format("2006-01-02 15:04"),
 				last,
