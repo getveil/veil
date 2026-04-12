@@ -305,6 +305,6 @@ func TestEnsureDirPermissionFailure(t *testing.T) {
 		t.Fatalf("expected error creating dir under read-only parent")
 	}
 	if !errors.Is(err, os.ErrPermission) && !os.IsPermission(err) {
-		t.Logf("got error (acceptable): %v", err)
+		t.Errorf("expected permission error, got: %v", err)
 	}
 }
