@@ -77,7 +77,9 @@ New function in the `placeholder` package. Resolution chain:
 
 ### Host matching logic
 
-Exact string match for all hosts, except entries prefixed with `*.` which use suffix matching (strip `*.` prefix, check `strings.HasSuffix`). Only provider-defined patterns use wildcards.
+The destination host is normalized by stripping the port (e.g., `api.github.com:443` becomes `api.github.com`) before comparison. `AllowedHosts` entries are stored as bare hostnames without ports.
+
+Exact string match for all hosts, except entries prefixed with `*.` which use suffix matching (strip `*.` prefix, check `strings.HasSuffix` with a leading `.` to avoid partial matches like `notgithub.com`). Only provider-defined patterns use wildcards.
 
 ### `ProcessRequest` new flow
 
