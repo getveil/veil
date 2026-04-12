@@ -30,5 +30,6 @@ func init() {
 			rest := len(value) - len(prefix)
 			return prefix + randAlphanumeric(rest)
 		},
+		Hosts: []string{"api.stripe.com", "files.stripe.com"},
 	})
 }

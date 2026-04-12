@@ -45,5 +45,6 @@ func init() {
 			}
 			return prefix + string(out)
 		},
+		Hosts: []string{"slack.com", "api.slack.com", "files.slack.com"},
 	})
 }
