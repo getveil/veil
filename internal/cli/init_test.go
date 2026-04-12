@@ -542,3 +542,178 @@ func TestInitMCPForceWithExistingBackup(t *testing.T) {
 		t.Error("GITHUB_TOKEN should have been replaced on --force re-migration")
 	}
 }
+
+func TestInitMCPCredentialNameFormat(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .env so init proceeds.
+	envContent := "HOSTNAME=myserver\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Open vault and verify credential name format.
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("opening vault: %v", err)
+	}
+
+	cred, found := v.Get("mcp:github:GITHUB_TOKEN")
+	if !found {
+		t.Fatal("credential mcp:github:GITHUB_TOKEN not found in vault")
+	}
+	if cred.Source != "init" {
+		t.Errorf("expected source %q, got %q", "init", cred.Source)
+	}
+	if cred.Real != "ghp_test1234567890abcdef1234567890abcdef" {
+		t.Errorf("unexpected real value: %s", cred.Real)
+	}
+}
+
+func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	envContent := "HOSTNAME=myserver\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	// First init — creates backup.
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Restore original config.
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second init WITHOUT --force — should warn and skip MCP.
+	cmd2 := NewRoot("test")
+	out2 := new(bytes.Buffer)
+	errBuf2 := new(bytes.Buffer)
+	cmd2.SetOut(out2)
+	cmd2.SetErr(errBuf2)
+	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
+	// Note: --force is needed to get past "already initialized" check,
+	// but the backup already exists so processMCPConfig will still skip
+	// without force on the backup (force is shared). Since --force IS set,
+	// let's test the non-force case differently: pre-create the backup
+	// and run init on a fresh .veil dir.
+
+	// Actually, let's test this properly: create a fresh tmpDir with a
+	// pre-existing backup file, and run init (no --force needed since
+	// .veil doesn't exist yet).
+	tmpDir2 := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir2, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent2 := "HOSTNAME=myserver\n"
+	if err := os.WriteFile(filepath.Join(tmpDir2, ".env"), []byte(envContent2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir2 := filepath.Join(tmpDir2, "claude-config2")
+	if err := os.MkdirAll(mcpDir2, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpConfigPath2 := filepath.Join(mcpDir2, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath2, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create backup to simulate already-migrated state.
+	backupPath := mcpConfigPath2 + ".veil-backup"
+	if err := os.WriteFile(backupPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath2)
+
+	cmd3 := NewRoot("test")
+	out3 := new(bytes.Buffer)
+	errBuf3 := new(bytes.Buffer)
+	cmd3.SetOut(out3)
+	cmd3.SetErr(errBuf3)
+	cmd3.SetArgs([]string{"init", "--path", tmpDir2})
+
+	if err := cmd3.Execute(); err != nil {
+		t.Fatalf("init with existing backup failed: %v", err)
+	}
+
+	// Should have warning about existing backup.
+	errStr := errBuf3.String()
+	if !strings.Contains(errStr, "already has a backup") {
+		t.Errorf("expected backup warning on stderr, got: %s", errStr)
+	}
+
+	// MCP config should be unchanged (not re-migrated).
+	mcpData, err := os.ReadFile(mcpConfigPath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
+		t.Error("MCP config should be unchanged when backup exists without --force")
+	}
+}

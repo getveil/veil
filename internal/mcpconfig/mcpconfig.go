@@ -69,6 +69,10 @@ type ServerConfig struct {
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 
+	// hasEnv tracks whether "env" was present in the original JSON,
+	// so Bytes() can preserve "env": {} on round-trip.
+	hasEnv bool
+
 	// overflow captures unknown JSON fields for round-trip fidelity.
 	overflow map[string]json.RawMessage
 }
@@ -116,6 +120,7 @@ func Parse(path string) (*ConfigFile, error) {
 			if err := json.Unmarshal(rawServer, &allFields); err != nil {
 				return nil, fmt.Errorf("mcpconfig: parse server %q overflow: %w", name, err)
 			}
+			_, sc.hasEnv = allFields["env"]
 			delete(allFields, "command")
 			delete(allFields, "args")
 			delete(allFields, "env")
@@ -191,35 +196,51 @@ func (c *ConfigFile) Bytes() ([]byte, error) {
 }
 
 // marshalServer produces JSON for a server config, merging known fields with overflow.
+// Fields are emitted in conventional order (command, args, env) followed by overflow.
 func marshalServer(sc *ServerConfig) (json.RawMessage, error) {
-	// Start with overflow fields.
-	m := make(map[string]json.RawMessage)
-	for k, v := range sc.overflow {
-		m[k] = v
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	first := true
+	writeKey := func(key string, val json.RawMessage) {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		k, _ := json.Marshal(key)
+		buf.Write(k)
+		buf.WriteByte(':')
+		buf.Write(val)
 	}
 
-	// Add known fields (overwriting any overflow collision, which shouldn't happen).
+	// Known fields in conventional order.
 	raw, err := json.Marshal(sc.Command)
 	if err != nil {
 		return nil, err
 	}
-	m["command"] = raw
+	writeKey("command", raw)
 
 	if len(sc.Args) > 0 {
 		raw, err = json.Marshal(sc.Args)
 		if err != nil {
 			return nil, err
 		}
-		m["args"] = raw
+		writeKey("args", raw)
 	}
 
-	if len(sc.Env) > 0 {
+	if len(sc.Env) > 0 || sc.hasEnv {
 		raw, err = json.Marshal(sc.Env)
 		if err != nil {
 			return nil, err
 		}
-		m["env"] = raw
+		writeKey("env", raw)
 	}
 
-	return json.Marshal(m)
+	// Overflow fields (unknown fields from original JSON).
+	for k, v := range sc.overflow {
+		writeKey(k, v)
+	}
+
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
