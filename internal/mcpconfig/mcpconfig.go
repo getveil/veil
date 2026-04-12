@@ -47,7 +47,7 @@ func claudeConfigDir(goos, home string) (string, error) {
 	case "linux":
 		return filepath.Join(home, ".config", "Claude"), nil
 	default:
-		return "", nil
+		return "", fmt.Errorf("unsupported platform: %s", goos)
 	}
 }
 
@@ -150,7 +150,8 @@ func (c *ConfigFile) Bytes() ([]byte, error) {
 	}
 
 	// Serialize mcpServers with overflow fields preserved.
-	if len(c.servers) > 0 {
+	// Always emit mcpServers if it was present in the original, even if empty.
+	if _, hadServers := c.topLevel["mcpServers"]; hadServers {
 		serversMap := make(map[string]json.RawMessage, len(c.servers))
 		for name, sc := range c.servers {
 			serverBytes, err := marshalServer(sc)
