@@ -4,3 +4,4 @@ coverage.out
 *.test
 *.out
 .veil/
+tmp-test/

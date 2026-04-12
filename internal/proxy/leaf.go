@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"sync"
 	"time"
@@ -112,7 +111,7 @@ func (lc *LeafCache) generateLeaf(sniHost string) (*tls.Certificate, error) {
 		DNSNames:    []string{sniHost},
 		NotBefore:   now.Add(-10 * time.Minute),
 		NotAfter:    now.Add(24 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature,
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
@@ -121,19 +120,16 @@ func (lc *LeafCache) generateLeaf(sniHost string) (*tls.Certificate, error) {
 		return nil, fmt.Errorf("sign leaf cert: %w", err)
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	leafCert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		return nil, fmt.Errorf("marshal leaf key: %w", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("build tls cert: %w", err)
+		return nil, fmt.Errorf("parse leaf cert: %w", err)
 	}
 
-	return &tlsCert, nil
+	return &tls.Certificate{
+		Certificate: [][]byte{certDER, lc.ca.Cert.Raw},
+		PrivateKey:  key,
+		Leaf:        leafCert,
+	}, nil
 }
 
 // evictOldest removes the cache entry with the earliest creation time.
