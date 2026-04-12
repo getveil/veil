@@ -2,6 +2,7 @@
 package mcpconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -127,4 +128,85 @@ func Parse(path string) (*ConfigFile, error) {
 // Servers returns the MCP server configurations.
 func (c *ConfigFile) Servers() map[string]*ServerConfig {
 	return c.servers
+}
+
+// SetEnvValue replaces an env var value for a specific server.
+func (c *ConfigFile) SetEnvValue(server, key, value string) {
+	if s, ok := c.servers[server]; ok {
+		s.Env[key] = value
+	}
+}
+
+// Bytes serializes the config back to formatted JSON.
+// Uses 2-space indentation to match Claude Desktop's formatting.
+func (c *ConfigFile) Bytes() ([]byte, error) {
+	// Rebuild the top-level map with the modified mcpServers.
+	out := make(map[string]json.RawMessage, len(c.topLevel))
+	for k, v := range c.topLevel {
+		if k == "mcpServers" {
+			continue
+		}
+		out[k] = v
+	}
+
+	// Serialize mcpServers with overflow fields preserved.
+	if len(c.servers) > 0 {
+		serversMap := make(map[string]json.RawMessage, len(c.servers))
+		for name, sc := range c.servers {
+			serverBytes, err := marshalServer(sc)
+			if err != nil {
+				return nil, fmt.Errorf("mcpconfig: marshal server %q: %w", name, err)
+			}
+			serversMap[name] = serverBytes
+		}
+		raw, err := json.Marshal(serversMap)
+		if err != nil {
+			return nil, fmt.Errorf("mcpconfig: marshal mcpServers: %w", err)
+		}
+		out["mcpServers"] = raw
+	}
+
+	// Use an encoder with HTML escaping disabled.
+	buf := new(bytes.Buffer)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		return nil, fmt.Errorf("mcpconfig: encode config: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// marshalServer produces JSON for a server config, merging known fields with overflow.
+func marshalServer(sc *ServerConfig) (json.RawMessage, error) {
+	// Start with overflow fields.
+	m := make(map[string]json.RawMessage)
+	for k, v := range sc.overflow {
+		m[k] = v
+	}
+
+	// Add known fields (overwriting any overflow collision, which shouldn't happen).
+	raw, err := json.Marshal(sc.Command)
+	if err != nil {
+		return nil, err
+	}
+	m["command"] = raw
+
+	if len(sc.Args) > 0 {
+		raw, err = json.Marshal(sc.Args)
+		if err != nil {
+			return nil, err
+		}
+		m["args"] = raw
+	}
+
+	if len(sc.Env) > 0 {
+		raw, err = json.Marshal(sc.Env)
+		if err != nil {
+			return nil, err
+		}
+		m["env"] = raw
+	}
+
+	return json.Marshal(m)
 }
