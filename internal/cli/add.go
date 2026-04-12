@@ -13,19 +13,21 @@ import (
 
 func addCmd() *cobra.Command {
 	var force bool
+	var hosts []string
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a secret to the vault",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdd(cmd, args[0], force)
+			return runAdd(cmd, args[0], force, hosts)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing credential")
+	cmd.Flags().StringArrayVar(&hosts, "host", nil, "allowed destination host (repeatable)")
 	return cmd
 }
 
-func runAdd(cmd *cobra.Command, name string, force bool) error {
+func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return exitError(err.Error())
@@ -58,23 +60,37 @@ func runAdd(cmd *cobra.Command, name string, force bool) error {
 		return exitError(fmt.Sprintf("generating placeholder: %v", err))
 	}
 
+	// Resolve allowed hosts.
+	allowedHosts := hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = placeholder.HostsForCredential(name, value)
+	}
+
 	// Handle --force: delete existing credential first.
 	if force {
 		_, _ = v.Delete(name)
 	}
 
 	cred := &vault.Credential{
-		ID:          vault.NewID(),
-		Name:        name,
-		Real:        value,
-		Placeholder: ph,
-		Source:      "manual",
-		CreatedAt:   time.Now(),
+		ID:           vault.NewID(),
+		Name:         name,
+		Real:         value,
+		Placeholder:  ph,
+		Source:       "manual",
+		AllowedHosts: allowedHosts,
+		CreatedAt:    time.Now(),
 	}
 	if err := v.Add(cred); err != nil {
 		return exitError(fmt.Sprintf("adding credential: %v", err))
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Added %s to vault\n", name)
+	if len(allowedHosts) > 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Hosts: %s\n", strings.Join(allowedHosts, ", "))
+	} else {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"Warning: no target hosts detected for %s. It won't be injected until scoped with --host.\n", name)
+	}
+
 	return nil
 }
