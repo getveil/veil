@@ -26,6 +26,11 @@ var excludeSuffixes = []string{
 // It returns absolute paths sorted alphabetically. Files matching example/sample
 // patterns are excluded. If no files are found, an empty slice is returned.
 func Scan(root string) ([]string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	root = abs
 	var found []string
 	for _, name := range curatedNames {
 		if isExcluded(name) {
