@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -258,6 +259,124 @@ func TestSetValueMiss(t *testing.T) {
 
 	if f.SetValue("NONEXISTENT", "x") {
 		t.Error("SetValue(NONEXISTENT) returned true, want false")
+	}
+}
+
+func TestRoundTripNoTrailingNewline(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "no-trailing-nl.env")
+	content := []byte("KEY=value")
+	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	got := f.Bytes()
+	if !bytes.Equal(got, content) {
+		t.Errorf("round-trip mismatch: got %q, want %q", got, content)
+	}
+}
+
+func TestSetValueWithHashInValue(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "hash.env")
+	if err := os.WriteFile(tmp, []byte("KEY=original\n"), 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	// Set a value containing an inline-comment pattern
+	if !f.SetValue("KEY", "foo # bar") {
+		t.Fatal("SetValue returned false")
+	}
+
+	// Write and re-parse
+	tmp2 := filepath.Join(t.TempDir(), "hash2.env")
+	if err := os.WriteFile(tmp2, f.Bytes(), 0o644); err != nil {
+		t.Fatalf("writing modified file: %v", err)
+	}
+
+	f2, err := ParseFile(tmp2)
+	if err != nil {
+		t.Fatalf("re-parsing: %v", err)
+	}
+
+	val, ok := f2.Lookup("KEY")
+	if !ok {
+		t.Fatal("KEY not found after re-parse")
+	}
+	if val != "foo # bar" {
+		t.Errorf("Lookup(KEY) = %q, want %q", val, "foo # bar")
+	}
+
+	// Also test leading-space value
+	f3, _ := ParseFile(tmp)
+	if !f3.SetValue("KEY", " leading space") {
+		t.Fatal("SetValue returned false")
+	}
+
+	tmp3 := filepath.Join(t.TempDir(), "space.env")
+	if err := os.WriteFile(tmp3, f3.Bytes(), 0o644); err != nil {
+		t.Fatalf("writing modified file: %v", err)
+	}
+
+	f4, err := ParseFile(tmp3)
+	if err != nil {
+		t.Fatalf("re-parsing: %v", err)
+	}
+
+	val, ok = f4.Lookup("KEY")
+	if !ok {
+		t.Fatal("KEY not found after re-parse (leading space)")
+	}
+	if val != " leading space" {
+		t.Errorf("Lookup(KEY) = %q, want %q", val, " leading space")
+	}
+}
+
+func TestSingleQuoteWithTrailingContent(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "single-quote.env")
+	if err := os.WriteFile(tmp, []byte("KEY='hello' # comment\n"), 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	val, ok := f.Lookup("KEY")
+	if !ok {
+		t.Fatal("KEY not found")
+	}
+	if val != "hello" {
+		t.Errorf("Lookup(KEY) = %q, want %q", val, "hello")
+	}
+}
+
+func TestMalformedDoubleQuote(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "malformed-dq.env")
+	if err := os.WriteFile(tmp, []byte("KEY=\"unclosed value\n"), 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	val, ok := f.Lookup("KEY")
+	if !ok {
+		t.Fatal("KEY not found")
+	}
+	if strings.HasPrefix(val, "\"") {
+		t.Errorf("Lookup(KEY) = %q, should not start with double quote", val)
 	}
 }
 

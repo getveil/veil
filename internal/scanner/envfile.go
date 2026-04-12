@@ -43,8 +43,9 @@ type Line struct {
 
 // EnvFile represents a parsed .env file with full round-trip fidelity.
 type EnvFile struct {
-	Path  string
-	Lines []Line
+	Path            string
+	Lines           []Line
+	trailingNewline bool
 }
 
 // ParseFile reads and parses the .env file at path.
@@ -66,6 +67,7 @@ func ParseFile(path string) (*EnvFile, error) {
 	}
 
 	f := &EnvFile{Path: path}
+	f.trailingNewline = len(content) > 0 && content[len(content)-1] == '\n'
 	for _, raw := range rawLines {
 		f.Lines = append(f.Lines, parseLine(raw))
 	}
@@ -138,10 +140,10 @@ func parseValue(raw string) (string, QuoteStyle) {
 	// Check for single-quoted value
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "'") {
-		end := strings.LastIndexByte(trimmed, '\'')
-		if end > 0 {
+		end := strings.IndexByte(trimmed[1:], '\'')
+		if end >= 0 {
 			// Literal content between quotes — no escape processing
-			return trimmed[1:end], SingleQuote
+			return trimmed[1 : end+1], SingleQuote
 		}
 	}
 
@@ -152,6 +154,8 @@ func parseValue(raw string) (string, QuoteStyle) {
 		if ok {
 			return unescapeDoubleQuoted(content), DoubleQuote
 		}
+		// Malformed double-quote — strip the opening quote and fall through
+		raw = strings.TrimPrefix(raw, "\"")
 	}
 
 	// Unquoted: trim whitespace, strip inline comments
@@ -218,7 +222,7 @@ func stripInlineComment(val string) string {
 // Bytes reconstructs the file content from Lines with round-trip fidelity.
 func (f *EnvFile) Bytes() []byte {
 	var buf bytes.Buffer
-	for _, l := range f.Lines {
+	for i, l := range f.Lines {
 		switch {
 		case l.Kind == KVLine && l.dirty:
 			// Reconstruct from structured fields with updated value.
@@ -232,7 +236,9 @@ func (f *EnvFile) Bytes() []byte {
 			// Emit the original line verbatim for round-trip fidelity.
 			buf.WriteString(l.Raw)
 		}
-		buf.WriteByte('\n')
+		if i < len(f.Lines)-1 || f.trailingNewline {
+			buf.WriteByte('\n')
+		}
 	}
 	return buf.Bytes()
 }
@@ -245,8 +251,26 @@ func encodeValue(value string, q QuoteStyle) string {
 	case DoubleQuote:
 		return "\"" + escapeDoubleQuoted(value) + "\""
 	default:
+		if needsQuoting(value) {
+			return "\"" + escapeDoubleQuoted(value) + "\""
+		}
 		return value
 	}
+}
+
+// needsQuoting reports whether an unquoted value needs to be wrapped in
+// double quotes to survive a round-trip parse (e.g. it contains leading/
+// trailing whitespace or an inline-comment pattern).
+func needsQuoting(s string) bool {
+	if strings.TrimSpace(s) != s {
+		return true
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] == '#' && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return true
+		}
+	}
+	return false
 }
 
 // escapeDoubleQuoted applies escape sequences for double-quoted output.
