@@ -67,15 +67,9 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	projectID := vault.NewID()
 
 	// 5. Determine keystore.
-	var ks vault.Keystore
-	if os.Getenv("VEIL_TEST_KEYSTORE") == "mem" {
-		ks = vault.NewMemKeystore()
-	} else {
-		fallbackPath, err := config.KeystoreFallbackFile()
-		if err != nil {
-			return exitError(fmt.Sprintf("keystore fallback path: %v", err))
-		}
-		ks = vault.AutoKeystore(fallbackPath)
+	ks, err := buildKeystore()
+	if err != nil {
+		return exitError(fmt.Sprintf("keystore: %v", err))
 	}
 
 	// 6. Create vault.

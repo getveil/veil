@@ -24,7 +24,12 @@ func NewRoot(version string) *cobra.Command {
 	root.Version = version
 
 	root.AddCommand(initCmd())
-	// Other commands will be added in future steps.
+	root.AddCommand(runCmd())
+	root.AddCommand(statusCmd())
+	root.AddCommand(addCmd())
+	root.AddCommand(listCmd())
+	root.AddCommand(logCmd())
+	root.AddCommand(trustCmd())
 
 	return root
 }
