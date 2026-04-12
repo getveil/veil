@@ -3,15 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/8enji/veil/internal/cli"
 )
 
 var version = "dev"
 
 func main() {
-	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "version" || os.Args[1] == "-v") {
-		fmt.Println("veil", version)
-		return
+	root := cli.NewRoot(version)
+	if err := root.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr, "veil: command wiring pending; use --version")
-	os.Exit(2)
 }
