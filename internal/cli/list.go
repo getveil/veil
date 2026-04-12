@@ -10,16 +10,19 @@ import (
 )
 
 func listCmd() *cobra.Command {
-	return &cobra.Command{
+	var reveal bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all credentials in the vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd)
+			return runList(cmd, reveal)
 		},
 	}
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only)")
+	return cmd
 }
 
-func runList(cmd *cobra.Command) error {
+func runList(cmd *cobra.Command, reveal bool) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return exitError(err.Error())
@@ -54,18 +57,32 @@ func runList(cmd *cobra.Command) error {
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 4, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NAME\tSOURCE\tCREATED\tLAST INJECTED")
+	if reveal {
+		_, _ = fmt.Fprintln(w, "NAME\tVALUE\tSOURCE\tCREATED\tLAST INJECTED")
+	} else {
+		_, _ = fmt.Fprintln(w, "NAME\tSOURCE\tCREATED\tLAST INJECTED")
+	}
 	for _, c := range creds {
 		last := "never"
 		if t, ok := lastInjected[c.Name]; ok {
 			last = t
 		}
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			c.Name,
-			c.Source,
-			c.CreatedAt.Format("2006-01-02 15:04"),
-			last,
-		)
+		if reveal {
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				c.Name,
+				c.Real,
+				c.Source,
+				c.CreatedAt.Format("2006-01-02 15:04"),
+				last,
+			)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+				c.Name,
+				c.Source,
+				c.CreatedAt.Format("2006-01-02 15:04"),
+				last,
+			)
+		}
 	}
 	_ = w.Flush()
 	return nil
