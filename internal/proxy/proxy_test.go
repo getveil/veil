@@ -287,12 +287,13 @@ func TestProxyNoInjection(t *testing.T) {
 	defer upstream.Close()
 
 	cred := &vault.Credential{
-		ID:          "cred-noinj-1",
-		Name:        "noinject-key",
-		Placeholder: "VEIL_PH_NOINJECT_XYZ",
-		Real:        "should-not-appear",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
+		ID:           "cred-noinj-1",
+		Name:         "noinject-key",
+		Placeholder:  "VEIL_PH_NOINJECT_XYZ",
+		Real:         "should-not-appear",
+		AllowedHosts: []string{"127.0.0.1"},
+		Source:       "manual",
+		CreatedAt:    time.Now().UTC(),
 	}
 
 	srv, _, _ := testSetup(t, cred)
