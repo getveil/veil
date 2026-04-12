@@ -118,12 +118,13 @@ func TestProxyHTTP(t *testing.T) {
 	defer upstream.Close()
 
 	cred := &vault.Credential{
-		ID:          "cred-http-1",
-		Name:        "http-token",
-		Placeholder: "VEIL_PH_HTTP_TOKEN_1234",
-		Real:        "Bearer real-http-secret",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
+		ID:           "cred-http-1",
+		Name:         "http-token",
+		Placeholder:  "VEIL_PH_HTTP_TOKEN_1234",
+		Real:         "Bearer real-http-secret",
+		Source:       "manual",
+		CreatedAt:    time.Now().UTC(),
+		AllowedHosts: []string{"127.0.0.1"},
 	}
 	srv, _, _ := testSetup(t, cred)
 	if err := srv.Start(); err != nil {
@@ -160,12 +161,13 @@ func TestProxyHTTPS(t *testing.T) {
 	defer upstream.Close()
 
 	cred := &vault.Credential{
-		ID:          "cred-https-1",
-		Name:        "https-key",
-		Placeholder: "VEIL_PH_HTTPS_KEY_5678",
-		Real:        "sk-real-https-secret",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
+		ID:           "cred-https-1",
+		Name:         "https-key",
+		Placeholder:  "VEIL_PH_HTTPS_KEY_5678",
+		Real:         "sk-real-https-secret",
+		Source:       "manual",
+		CreatedAt:    time.Now().UTC(),
+		AllowedHosts: []string{"127.0.0.1"},
 	}
 
 	root := t.TempDir()
@@ -240,12 +242,13 @@ func TestProxyBodyInject(t *testing.T) {
 	defer upstream.Close()
 
 	cred := &vault.Credential{
-		ID:          "cred-body-1",
-		Name:        "body-secret",
-		Placeholder: "VEIL_PH_BODY_ABCD",
-		Real:        "injected-real-value",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
+		ID:           "cred-body-1",
+		Name:         "body-secret",
+		Placeholder:  "VEIL_PH_BODY_ABCD",
+		Real:         "injected-real-value",
+		Source:       "manual",
+		CreatedAt:    time.Now().UTC(),
+		AllowedHosts: []string{"127.0.0.1"},
 	}
 
 	srv, _, _ := testSetup(t, cred)
