@@ -172,6 +172,8 @@ func TestInitForce(t *testing.T) {
 
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Ensure no MCP config is discovered either.
+	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -189,8 +191,8 @@ func TestInitNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "no .env files found") {
-		t.Errorf("expected no-env message, got: %s", outStr)
+	if !strings.Contains(outStr, "no .env files or MCP configs found") {
+		t.Errorf("expected no-sources message, got: %s", outStr)
 	}
 }
 
