@@ -172,7 +172,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 			return err
 		}
 		secretsVaulted += n
-		if n > 0 || dryRun {
+		if n > 0 {
 			mcpConfigsProcessed = 1
 		}
 	}
