@@ -13,7 +13,19 @@ import (
 const configFileName = "claude_desktop_config.json"
 
 // Discover returns the path to Claude Desktop's MCP config file, or "" if not found.
+// If VEIL_MCP_CONFIG_PATH is set, it is used instead (for testing).
 func Discover() (string, error) {
+	if override := os.Getenv("VEIL_MCP_CONFIG_PATH"); override != "" {
+		info, err := os.Stat(override)
+		if err != nil {
+			return "", nil
+		}
+		if info.IsDir() {
+			return "", nil
+		}
+		return override, nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

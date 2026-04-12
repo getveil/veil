@@ -275,3 +275,268 @@ func TestInitGitignoreAppend(t *testing.T) {
 		t.Error(".gitignore lost original content")
 	}
 }
+
+func TestInitWithMCPConfig(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .env with a secret.
+	envContent := "OPENAI_API_KEY=sk-proj-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a fake MCP config directory and file.
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Override the MCP config discovery path for testing.
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Assert summary mentions both .env and MCP config.
+	outStr := out.String()
+	if !strings.Contains(outStr, "MCP configs processed: 1") {
+		t.Errorf("expected MCP config in summary, got: %s", outStr)
+	}
+
+	// Assert MCP config was rewritten (token replaced).
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpStr := string(mcpData)
+	if strings.Contains(mcpStr, "ghp_test1234567890abcdef1234567890abcdef") {
+		t.Error("GITHUB_TOKEN was not replaced with a placeholder")
+	}
+	if !strings.Contains(mcpStr, "GITHUB_TOKEN") {
+		t.Error("GITHUB_TOKEN key is missing from config")
+	}
+
+	// Assert backup was created.
+	backupPath := mcpConfigPath + ".veil-backup"
+	backupData, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal("backup file not created")
+	}
+	if !strings.Contains(string(backupData), "ghp_test1234567890abcdef1234567890abcdef") {
+		t.Error("backup should contain original token")
+	}
+}
+
+func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// No .env files — only MCP config.
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Secrets vaulted: 1") {
+		t.Errorf("expected 1 secret vaulted, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "MCP configs processed: 1") {
+		t.Errorf("expected MCP config in summary, got: %s", outStr)
+	}
+}
+
+func TestInitMCPDryRun(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a .env so init doesn't bail early (before MCP support is wired).
+	envContent := "HOSTNAME=myserver\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(originalContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --dry-run failed: %v", err)
+	}
+
+	// MCP config should be UNCHANGED.
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mcpData) != originalContent {
+		t.Errorf("MCP config should be unchanged in dry-run, got: %q", string(mcpData))
+	}
+
+	// No backup should exist.
+	backupPath := mcpConfigPath + ".veil-backup"
+	if _, err := os.Stat(backupPath); err == nil {
+		t.Error("backup file should not exist in dry-run mode")
+	}
+
+	// Output should mention what would be vaulted.
+	outStr := out.String()
+	if !strings.Contains(outStr, "would vault") {
+		t.Errorf("expected dry-run output, got: %s", outStr)
+	}
+}
+
+func TestInitMCPForceWithExistingBackup(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	envContent := "HOSTNAME=myserver\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	// First init.
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Backup should exist now.
+	backupPath := mcpConfigPath + ".veil-backup"
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatal("backup should exist after first init")
+	}
+
+	// Restore original MCP config for re-migration.
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second init with --force.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
+
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("init --force failed: %v", err)
+	}
+
+	// MCP config should have been re-migrated (token replaced again).
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
+		t.Error("GITHUB_TOKEN should have been replaced on --force re-migration")
+	}
+}
