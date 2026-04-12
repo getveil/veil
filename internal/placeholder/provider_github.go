@@ -5,7 +5,7 @@ import "strings"
 var githubPrefixes = []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}
 
 func init() {
-	Register(ProviderPattern{
+	register(ProviderPattern{
 		Name: "github",
 		Match: func(name, value string) bool {
 			for _, p := range githubPrefixes {

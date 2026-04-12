@@ -23,7 +23,7 @@ func IsSecretLike(name, value string) bool {
 	}
 
 	// 2. Check URL with password.
-	if _, ok := tryURL(value); ok {
+	if isURLWithPassword(value) {
 		return true
 	}
 

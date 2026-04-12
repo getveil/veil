@@ -9,7 +9,7 @@ var stripePrefixes = []string{
 }
 
 func init() {
-	Register(ProviderPattern{
+	register(ProviderPattern{
 		Name: "stripe",
 		Match: func(name, value string) bool {
 			for _, p := range stripePrefixes {

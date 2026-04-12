@@ -3,7 +3,7 @@ package placeholder
 import "strings"
 
 func init() {
-	Register(ProviderPattern{
+	register(ProviderPattern{
 		Name: "openai",
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "sk-proj-") {

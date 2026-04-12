@@ -53,15 +53,31 @@ func randBase64ish(n int) string {
 }
 
 // randFromAlphabet generates n random characters selected from the given alphabet.
+// It uses rejection sampling to avoid modular bias and panics if the RNG fails,
+// since crypto/rand failure indicates a catastrophic system state.
 func randFromAlphabet(n int, alphabet string) string {
 	if n <= 0 {
 		return ""
 	}
-	buf := make([]byte, n)
-	_, _ = io.ReadFull(rng, buf)
 	result := make([]byte, n)
-	for i := 0; i < n; i++ {
-		result[i] = alphabet[int(buf[i])%len(alphabet)]
+	alen := len(alphabet)
+	limit := 256 - (256 % alen) // largest multiple of alen <= 256
+	written := 0
+	buf := make([]byte, n*2) // read extra to reduce iterations
+	for written < n {
+		_, err := io.ReadFull(rng, buf)
+		if err != nil {
+			panic("placeholder: rng failed: " + err.Error())
+		}
+		for _, b := range buf {
+			if written == n {
+				break
+			}
+			if int(b) < limit {
+				result[written] = alphabet[int(b)%alen]
+				written++
+			}
+		}
 	}
 	return string(result)
 }

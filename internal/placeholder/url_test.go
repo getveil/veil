@@ -94,3 +94,17 @@ func TestTryURL_MongoDBSRV(t *testing.T) {
 		t.Fatal("expected ok=true for mongodb+srv scheme")
 	}
 }
+
+func TestTryURL_LengthPreserved(t *testing.T) {
+	restore := setDeterministicRng(90)
+	defer restore()
+
+	input := "postgres://user:p+ss@host/db"
+	result, ok := tryURL(input)
+	if !ok {
+		t.Fatal("expected ok=true for postgres URL with password")
+	}
+	if len(result) != len(input) {
+		t.Fatalf("URL length changed: input=%d result=%d\n  input:  %s\n  result: %s", len(input), len(result), input, result)
+	}
+}

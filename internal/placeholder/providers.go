@@ -11,7 +11,7 @@ type ProviderPattern struct {
 // registry holds all registered provider patterns, checked in order.
 var registry []ProviderPattern
 
-// Register adds a provider pattern to the registry.
-func Register(p ProviderPattern) {
+// register adds a provider pattern to the registry.
+func register(p ProviderPattern) {
 	registry = append(registry, p)
 }

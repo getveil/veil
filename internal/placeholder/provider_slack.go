@@ -5,7 +5,7 @@ import "strings"
 var slackPrefixes = []string{"xoxb-", "xoxp-", "xoxs-", "xoxa-", "xoxr-"}
 
 func init() {
-	Register(ProviderPattern{
+	register(ProviderPattern{
 		Name: "slack",
 		Match: func(name, value string) bool {
 			for _, p := range slackPrefixes {
