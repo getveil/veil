@@ -273,3 +273,55 @@ func TestBytesPreservesUnknownServerFields(t *testing.T) {
 		t.Error("customField was lost during round-trip")
 	}
 }
+
+func TestParseFixture(t *testing.T) {
+	cfg, err := Parse("../../test/fixtures/mcp/claude_desktop_config.json")
+	if err != nil {
+		t.Fatalf("Parse fixture failed: %v", err)
+	}
+
+	servers := cfg.Servers()
+	if len(servers) != 3 {
+		t.Fatalf("expected 3 servers, got %d", len(servers))
+	}
+
+	// github server has 1 env var.
+	gh := servers["github"]
+	if gh == nil {
+		t.Fatal("github server missing")
+	}
+	if gh.Env["GITHUB_TOKEN"] != "ghp_test1234567890abcdef1234567890abcdef" {
+		t.Errorf("unexpected GITHUB_TOKEN: %s", gh.Env["GITHUB_TOKEN"])
+	}
+
+	// slack server has 2 env vars.
+	sl := servers["slack"]
+	if sl == nil {
+		t.Fatal("slack server missing")
+	}
+	if len(sl.Env) != 2 {
+		t.Errorf("expected 2 env vars in slack, got %d", len(sl.Env))
+	}
+
+	// filesystem server has no env (or empty env).
+	fs := servers["filesystem"]
+	if fs == nil {
+		t.Fatal("filesystem server missing")
+	}
+	if len(fs.Env) != 0 {
+		t.Errorf("expected 0 env vars in filesystem, got %d", len(fs.Env))
+	}
+
+	// Round-trip: preferences should survive.
+	out, err := cfg.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes failed: %v", err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil {
+		t.Fatalf("re-parse failed: %v", err)
+	}
+	if _, ok := top["preferences"]; !ok {
+		t.Error("preferences lost in round-trip")
+	}
+}
