@@ -100,6 +100,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 	// 8. Process each .env file.
 	var secretsVaulted int
+	var secretsScoped int
 	for _, envPath := range envPaths {
 		envFile, err := scanner.ParseFile(envPath)
 		if err != nil {
@@ -131,13 +132,16 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 				return exitError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err))
 			}
 
+			credHosts := placeholder.HostsForCredential(line.Key, line.Value)
+
 			cred := &vault.Credential{
-				ID:          vault.NewID(),
-				Name:        line.Key,
-				Real:        line.Value,
-				Placeholder: ph,
-				Source:      "init",
-				CreatedAt:   time.Now(),
+				ID:           vault.NewID(),
+				Name:         line.Key,
+				Real:         line.Value,
+				Placeholder:  ph,
+				Source:       "init",
+				AllowedHosts: credHosts,
+				CreatedAt:    time.Now(),
 			}
 			if err := v.Add(cred); err != nil {
 				if strings.Contains(err.Error(), "already exists") {
@@ -148,6 +152,9 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 			}
 
 			secretsVaulted++
+			if len(credHosts) > 0 {
+				secretsScoped++
+			}
 
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", line.Key, ph)
@@ -167,11 +174,12 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 8b. Process MCP config.
 	var mcpConfigsProcessed int
 	if mcpConfigPath != "" {
-		n, err := processMCPConfig(cmd, v, mcpConfigPath, force, dryRun)
+		n, s, err := processMCPConfig(cmd, v, mcpConfigPath, force, dryRun)
 		if err != nil {
 			return err
 		}
 		secretsVaulted += n
+		secretsScoped += s
 		if n > 0 {
 			mcpConfigsProcessed = 1
 		}
@@ -186,6 +194,11 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Veil initialized for %s\n", root)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Secrets vaulted: %d\n", secretsVaulted)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Auto-scoped to hosts: %d\n", secretsScoped)
+	unscoped := secretsVaulted - secretsScoped
+	if unscoped > 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Unscoped (needs --host): %d\n", unscoped)
+	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  .env files processed: %d\n", len(envPaths))
 	if mcpConfigsProcessed > 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  MCP configs processed: %d\n", mcpConfigsProcessed)
@@ -198,21 +211,23 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 }
 
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
-// rewrites the config with placeholders. Returns the number of secrets vaulted.
-func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, force, dryRun bool) (int, error) {
+// rewrites the config with placeholders. Returns the number of secrets vaulted
+// and the number auto-scoped to hosts.
+func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, force, dryRun bool) (int, int, error) {
 	// Check for existing backup (indicates already migrated).
 	backupPath := configPath + ".veil-backup"
 	if _, err := os.Stat(backupPath); err == nil && !force {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s already has a backup (use --force to re-migrate)\n", configPath)
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	cfg, err := mcpconfig.Parse(configPath)
 	if err != nil {
-		return 0, exitError(fmt.Sprintf("parsing MCP config: %v", err))
+		return 0, 0, exitError(fmt.Sprintf("parsing MCP config: %v", err))
 	}
 
 	var count int
+	var scoped int
 	configChanged := false
 
 	for serverName, server := range cfg.Servers() {
@@ -226,27 +241,33 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 
 			ph, err := placeholder.Generate(key, value)
 			if err != nil {
-				return 0, exitError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err))
+				return 0, 0, exitError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err))
 			}
+
+			credHosts := placeholder.HostsForCredential(key, value)
 
 			credName := fmt.Sprintf("mcp:%s:%s", serverName, key)
 			cred := &vault.Credential{
-				ID:          vault.NewID(),
-				Name:        credName,
-				Real:        value,
-				Placeholder: ph,
-				Source:      "init",
-				CreatedAt:   time.Now(),
+				ID:           vault.NewID(),
+				Name:         credName,
+				Real:         value,
+				Placeholder:  ph,
+				Source:       "init",
+				AllowedHosts: credHosts,
+				CreatedAt:    time.Now(),
 			}
 			if err := v.Add(cred); err != nil {
 				if strings.Contains(err.Error(), "already exists") {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", credName)
 					continue
 				}
-				return 0, exitError(fmt.Sprintf("vaulting %s: %v", credName, err))
+				return 0, 0, exitError(fmt.Sprintf("vaulting %s: %v", credName, err))
 			}
 
 			count++
+			if len(credHosts) > 0 {
+				scoped++
+			}
 
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", credName, ph)
@@ -261,23 +282,23 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		// Create backup of original.
 		originalData, err := os.ReadFile(configPath) // #nosec G304
 		if err != nil {
-			return 0, exitError(fmt.Sprintf("reading MCP config for backup: %v", err))
+			return 0, 0, exitError(fmt.Sprintf("reading MCP config for backup: %v", err))
 		}
 		if err := os.WriteFile(backupPath, originalData, 0600); err != nil {
-			return 0, exitError(fmt.Sprintf("writing MCP config backup: %v", err))
+			return 0, 0, exitError(fmt.Sprintf("writing MCP config backup: %v", err))
 		}
 
 		// Write updated config.
 		newData, err := cfg.Bytes()
 		if err != nil {
-			return 0, exitError(fmt.Sprintf("serializing MCP config: %v", err))
+			return 0, 0, exitError(fmt.Sprintf("serializing MCP config: %v", err))
 		}
 		if err := atomicWriteFile(configPath, newData); err != nil {
-			return 0, exitError(fmt.Sprintf("writing MCP config: %v", err))
+			return 0, 0, exitError(fmt.Sprintf("writing MCP config: %v", err))
 		}
 	}
 
-	return count, nil
+	return count, scoped, nil
 }
 
 // atomicWriteFile writes data to path via a temporary file and rename.
