@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/8enji/veil/internal/audit"
+	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/cloudflare/ahocorasick"
 )
@@ -105,12 +106,16 @@ func (inj *Injector) ProcessRequest(
 	newURL = rawURL
 	if matcher != nil {
 		matched := matchedPatterns(matcher, []byte(rawURL), patterns)
-		for _, placeholder := range matched {
-			cred := creds[placeholder]
-			before := len(newURL)
-			newURL = strings.ReplaceAll(newURL, placeholder, cred.Real)
-			after := len(newURL)
-			injections = append(injections, makeInjection(cred, "url", before, after))
+		for _, ph := range matched {
+			cred := creds[ph]
+			if hostAuthorized(cred, host) {
+				before := len(newURL)
+				newURL = strings.ReplaceAll(newURL, ph, cred.Real)
+				after := len(newURL)
+				injections = append(injections, makeInjection(cred, "url", before, after))
+			} else {
+				injections = append(injections, makeInjection(cred, "blocked", 0, 0))
+			}
 		}
 	}
 
@@ -120,12 +125,16 @@ func (inj *Injector) ProcessRequest(
 		for name, values := range newHeader {
 			for i, v := range values {
 				matched := matchedPatterns(matcher, []byte(v), patterns)
-				for _, placeholder := range matched {
-					cred := creds[placeholder]
-					before := len(values[i])
-					values[i] = strings.ReplaceAll(values[i], placeholder, cred.Real)
-					after := len(values[i])
-					injections = append(injections, makeInjection(cred, "header", before, after))
+				for _, ph := range matched {
+					cred := creds[ph]
+					if hostAuthorized(cred, host) {
+						before := len(values[i])
+						values[i] = strings.ReplaceAll(values[i], ph, cred.Real)
+						after := len(values[i])
+						injections = append(injections, makeInjection(cred, "header", before, after))
+					} else {
+						injections = append(injections, makeInjection(cred, "blocked", 0, 0))
+					}
 				}
 			}
 			newHeader[name] = values
@@ -138,12 +147,16 @@ func (inj *Injector) ProcessRequest(
 		matched := matchedPatterns(matcher, body, patterns)
 		if len(matched) > 0 {
 			s := string(body)
-			for _, placeholder := range matched {
-				cred := creds[placeholder]
-				before := len(s)
-				s = strings.ReplaceAll(s, placeholder, cred.Real)
-				after := len(s)
-				injections = append(injections, makeInjection(cred, "body", before, after))
+			for _, ph := range matched {
+				cred := creds[ph]
+				if hostAuthorized(cred, host) {
+					before := len(s)
+					s = strings.ReplaceAll(s, ph, cred.Real)
+					after := len(s)
+					injections = append(injections, makeInjection(cred, "body", before, after))
+				} else {
+					injections = append(injections, makeInjection(cred, "blocked", 0, 0))
+				}
 			}
 			newBody = []byte(s)
 		}
@@ -157,6 +170,11 @@ func (inj *Injector) ProcessRequest(
 	}
 
 	return newURL, newHeader, newBody, injections
+}
+
+// hostAuthorized checks if a credential is allowed to be injected for the given host.
+func hostAuthorized(cred *vault.Credential, host string) bool {
+	return placeholder.HostMatches(host, cred.AllowedHosts)
 }
 
 // Replace performs placeholder replacement on a single string and returns the

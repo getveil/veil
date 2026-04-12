@@ -9,12 +9,13 @@ import (
 	"github.com/8enji/veil/internal/vault"
 )
 
-func makeCred(name, placeholder, real string) *vault.Credential {
+func makeCred(name, placeholder, real string, hosts ...string) *vault.Credential {
 	return &vault.Credential{
-		ID:          "cred-" + name,
-		Name:        name,
-		Placeholder: placeholder,
-		Real:        real,
+		ID:           "cred-" + name,
+		Name:         name,
+		Placeholder:  placeholder,
+		Real:         real,
+		AllowedHosts: hosts,
 	}
 }
 
@@ -27,7 +28,7 @@ func placeholderMap(creds ...*vault.Credential) map[string]*vault.Credential {
 }
 
 func TestReplaceURL(t *testing.T) {
-	cred := makeCred("api-key", "VEIL_PLACEHOLDER_AAAA1111", "sk-real-secret-value")
+	cred := makeCred("api-key", "VEIL_PLACEHOLDER_AAAA1111", "sk-real-secret-value", "api.example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1234, "agent")
 
 	rawURL := "https://api.example.com/v1?key=VEIL_PLACEHOLDER_AAAA1111"
@@ -48,7 +49,7 @@ func TestReplaceURL(t *testing.T) {
 }
 
 func TestReplaceHeader(t *testing.T) {
-	cred := makeCred("token", "VEIL_PLACEHOLDER_BBBB2222", "Bearer real-token-value")
+	cred := makeCred("token", "VEIL_PLACEHOLDER_BBBB2222", "Bearer real-token-value", "api.example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1234, "agent")
 
 	hdr := http.Header{}
@@ -69,7 +70,7 @@ func TestReplaceHeader(t *testing.T) {
 }
 
 func TestReplaceBody(t *testing.T) {
-	cred := makeCred("db-pass", "VEIL_PLACEHOLDER_CCCC3333", "s3cret-db-pass!")
+	cred := makeCred("db-pass", "VEIL_PLACEHOLDER_CCCC3333", "s3cret-db-pass!", "db.example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1234, "agent")
 
 	body := []byte(`{"password":"VEIL_PLACEHOLDER_CCCC3333"}`)
@@ -91,9 +92,9 @@ func TestReplaceBody(t *testing.T) {
 }
 
 func TestMultipleMatches(t *testing.T) {
-	c1 := makeCred("key1", "VEIL_PLACEHOLDER_XXXX0001", "real-val-1")
-	c2 := makeCred("key2", "VEIL_PLACEHOLDER_XXXX0002", "real-val-2")
-	c3 := makeCred("key3", "VEIL_PLACEHOLDER_XXXX0003", "real-val-3")
+	c1 := makeCred("key1", "VEIL_PLACEHOLDER_XXXX0001", "real-val-1", "example.com")
+	c2 := makeCred("key2", "VEIL_PLACEHOLDER_XXXX0002", "real-val-2", "example.com")
+	c3 := makeCred("key3", "VEIL_PLACEHOLDER_XXXX0003", "real-val-3", "example.com")
 	inj := NewInjector(placeholderMap(c1, c2, c3), nil, 100, "multi-agent")
 
 	body := []byte("a=VEIL_PLACEHOLDER_XXXX0001&b=VEIL_PLACEHOLDER_XXXX0002&c=VEIL_PLACEHOLDER_XXXX0003")
@@ -112,7 +113,7 @@ func TestMultipleMatches(t *testing.T) {
 }
 
 func TestBodyCap(t *testing.T) {
-	cred := makeCred("key", "VEIL_PLACEHOLDER_DDDD4444", "real-value")
+	cred := makeCred("key", "VEIL_PLACEHOLDER_DDDD4444", "real-value", "example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
 	inj.bodyCap = 100 // set a small cap for testing
 
@@ -135,7 +136,7 @@ func TestBodyCap(t *testing.T) {
 }
 
 func TestNoMatch(t *testing.T) {
-	cred := makeCred("key", "VEIL_PLACEHOLDER_EEEE5555", "real-value")
+	cred := makeCred("key", "VEIL_PLACEHOLDER_EEEE5555", "real-value", "example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
 
 	rawURL := "https://example.com/api"
@@ -187,7 +188,7 @@ func TestReload(t *testing.T) {
 }
 
 func TestAuditInjectionFields(t *testing.T) {
-	cred := makeCred("my-secret", "VEIL_PLACEHOLDER_FFFF6666", "the-real-deal")
+	cred := makeCred("my-secret", "VEIL_PLACEHOLDER_FFFF6666", "the-real-deal", "api.example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 42, "my-agent-cmd")
 
 	rawURL := "https://api.example.com:8443/v2/resource?tok=VEIL_PLACEHOLDER_FFFF6666"
@@ -231,7 +232,7 @@ func TestAuditInjectionFields(t *testing.T) {
 }
 
 func TestOverlappingPlaceholderInMultipleLocations(t *testing.T) {
-	cred := makeCred("shared", "VEIL_PLACEHOLDER_GGGG7777", "replaced-value")
+	cred := makeCred("shared", "VEIL_PLACEHOLDER_GGGG7777", "replaced-value", "example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
 
 	rawURL := "https://example.com/path?key=VEIL_PLACEHOLDER_GGGG7777"
@@ -290,6 +291,125 @@ func TestEmptyPlaceholderMap(t *testing.T) {
 	}
 	if len(injections) != 0 {
 		t.Errorf("expected 0 injections, got %d", len(injections))
+	}
+}
+
+func TestHostScoping_BlockedInjection(t *testing.T) {
+	cred := makeCred("github-token", "VEIL_PLACEHOLDER_HOST0001", "ghp-real-secret", "api.github.com")
+	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
+
+	body := []byte(`{"context":"VEIL_PLACEHOLDER_HOST0001"}`)
+	_, _, newBody, injections := inj.ProcessRequest(
+		"req-host-1", "POST", "https://api.anthropic.com/v1/messages", http.Header{}, body)
+
+	// Placeholder should NOT be replaced.
+	if !strings.Contains(string(newBody), "VEIL_PLACEHOLDER_HOST0001") {
+		t.Error("placeholder should not be replaced for non-matching host")
+	}
+	if strings.Contains(string(newBody), "ghp-real-secret") {
+		t.Error("real secret should not appear in body for non-matching host")
+	}
+	// Should have a blocked audit entry.
+	if len(injections) != 1 {
+		t.Fatalf("expected 1 blocked injection, got %d", len(injections))
+	}
+	if injections[0].Location != "blocked" {
+		t.Errorf("expected location 'blocked', got %q", injections[0].Location)
+	}
+}
+
+func TestHostScoping_AllowedInjection(t *testing.T) {
+	cred := makeCred("github-token", "VEIL_PLACEHOLDER_HOST0002", "ghp-real-secret", "api.github.com")
+	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
+
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer VEIL_PLACEHOLDER_HOST0002")
+	_, newHeader, _, injections := inj.ProcessRequest(
+		"req-host-2", "GET", "https://api.github.com/repos", hdr, nil)
+
+	if newHeader.Get("Authorization") != "Bearer ghp-real-secret" {
+		t.Errorf("expected real secret in header, got %q", newHeader.Get("Authorization"))
+	}
+	if len(injections) != 1 {
+		t.Fatalf("expected 1 injection, got %d", len(injections))
+	}
+	if injections[0].Location != "header" {
+		t.Errorf("expected location 'header', got %q", injections[0].Location)
+	}
+}
+
+func TestHostScoping_MixedAuthorization(t *testing.T) {
+	ghCred := makeCred("github-token", "VEIL_PLACEHOLDER_HOST0003", "ghp-real", "api.github.com")
+	oaiCred := makeCred("openai-key", "VEIL_PLACEHOLDER_HOST0004", "sk-real", "api.openai.com")
+
+	inj := NewInjector(placeholderMap(ghCred, oaiCred), nil, 1, "agent")
+
+	body := []byte(`gh=VEIL_PLACEHOLDER_HOST0003&oai=VEIL_PLACEHOLDER_HOST0004`)
+	_, _, newBody, injections := inj.ProcessRequest(
+		"req-host-3", "POST", "https://api.github.com/graphql", http.Header{}, body)
+
+	s := string(newBody)
+	// GitHub cred should be replaced (matching host).
+	if !strings.Contains(s, "ghp-real") {
+		t.Error("expected github credential to be replaced")
+	}
+	// OpenAI cred should NOT be replaced (non-matching host).
+	if !strings.Contains(s, "VEIL_PLACEHOLDER_HOST0004") {
+		t.Error("expected openai placeholder to remain")
+	}
+	if strings.Contains(s, "sk-real") {
+		t.Error("openai secret should not appear for github host")
+	}
+
+	// Should have 2 audit entries: 1 injection + 1 blocked.
+	if len(injections) != 2 {
+		t.Fatalf("expected 2 injections, got %d", len(injections))
+	}
+	locations := map[string]int{}
+	for _, inj := range injections {
+		locations[inj.Location]++
+	}
+	if locations["body"] != 1 {
+		t.Errorf("expected 1 body injection, got %d", locations["body"])
+	}
+	if locations["blocked"] != 1 {
+		t.Errorf("expected 1 blocked injection, got %d", locations["blocked"])
+	}
+}
+
+func TestHostScoping_EmptyAllowedHosts(t *testing.T) {
+	cred := makeCred("inert", "VEIL_PLACEHOLDER_HOST0005", "real-secret")
+	// AllowedHosts is nil — should never inject.
+	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
+
+	body := []byte(`token=VEIL_PLACEHOLDER_HOST0005`)
+	_, _, newBody, injections := inj.ProcessRequest(
+		"req-host-4", "POST", "https://any-host.example.com/api", http.Header{}, body)
+
+	if !strings.Contains(string(newBody), "VEIL_PLACEHOLDER_HOST0005") {
+		t.Error("placeholder should not be replaced with empty AllowedHosts")
+	}
+	if len(injections) != 1 || injections[0].Location != "blocked" {
+		t.Errorf("expected 1 blocked injection, got %v", injections)
+	}
+}
+
+func TestHostScoping_WildcardMatch(t *testing.T) {
+	cred := makeCred("aws-key", "VEIL_PLACEHOLDER_HOST0006", "AKIA-real-key", "*.amazonaws.com")
+	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
+
+	rawURL := "https://s3.us-east-1.amazonaws.com/bucket?key=VEIL_PLACEHOLDER_HOST0006"
+	newURL, _, _, injections := inj.ProcessRequest(
+		"req-host-5", "GET", rawURL, http.Header{}, nil)
+
+	if strings.Contains(newURL, "VEIL_PLACEHOLDER_HOST0006") {
+		t.Error("placeholder should be replaced for wildcard-matching host")
+	}
+	if !strings.Contains(newURL, "AKIA-real-key") {
+		t.Error("expected real value in URL")
+	}
+	if len(injections) != 1 || injections[0].Location != "url" {
+		t.Errorf("expected 1 url injection, got %v", injections)
 	}
 }
 
