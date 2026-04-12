@@ -1,6 +1,7 @@
 package mcpconfig
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,5 +143,133 @@ func TestParseServerWithNoEnv(t *testing.T) {
 	}
 	if len(fs.Env) != 0 {
 		t.Errorf("expected 0 env vars, got %d", len(fs.Env))
+	}
+}
+
+func TestSetEnvValueAndBytes(t *testing.T) {
+	content := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_abc123"
+      }
+    }
+  },
+  "preferences": {
+    "theme": "dark"
+  }
+}`
+	tmpFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	cfg.SetEnvValue("github", "GITHUB_TOKEN", "ghp_placeholder999")
+
+	out, err := cfg.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes failed: %v", err)
+	}
+
+	// Re-parse the output to verify.
+	tmpFile2 := filepath.Join(t.TempDir(), "config2.json")
+	if err := os.WriteFile(tmpFile2, out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Parse(tmpFile2)
+	if err != nil {
+		t.Fatalf("re-parse failed: %v", err)
+	}
+
+	got := cfg2.Servers()["github"].Env["GITHUB_TOKEN"]
+	if got != "ghp_placeholder999" {
+		t.Errorf("GITHUB_TOKEN = %q, want %q", got, "ghp_placeholder999")
+	}
+}
+
+func TestBytesPreservesUnknownTopLevelKeys(t *testing.T) {
+	content := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "TOKEN": "secret123"
+      }
+    }
+  },
+  "preferences": {
+    "theme": "dark"
+  }
+}`
+	tmpFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	out, err := cfg.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes failed: %v", err)
+	}
+
+	// Verify preferences key is present in output.
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("re-parse failed: %v", err)
+	}
+	if _, ok := parsed["preferences"]; !ok {
+		t.Error("preferences key was lost during round-trip")
+	}
+}
+
+func TestBytesPreservesUnknownServerFields(t *testing.T) {
+	content := `{
+  "mcpServers": {
+    "custom": {
+      "command": "my-server",
+      "env": {
+        "KEY": "val"
+      },
+      "customField": "preserved"
+    }
+  }
+}`
+	tmpFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	out, err := cfg.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes failed: %v", err)
+	}
+
+	// Re-parse and check customField survived.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil {
+		t.Fatal(err)
+	}
+	var servers map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(top["mcpServers"], &servers); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := servers["custom"]["customField"]; !ok {
+		t.Error("customField was lost during round-trip")
 	}
 }
