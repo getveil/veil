@@ -111,10 +111,14 @@ func TestE2E_InitAndRun(t *testing.T) {
 
 	// 2. Create a test project.
 	projDir := t.TempDir()
-	os.Mkdir(filepath.Join(projDir, ".git"), 0755)
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
 
 	envContent := "# Test environment\nOPENAI_API_KEY=sk-proj-test1234567890abcdef1234567890abcdef\nDATABASE_URL=postgres://user:supersecretpassword@localhost:5432/mydb\nHOSTNAME=myserver.local\nDEBUG=true\n"
-	os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 
 	// 3. Run veil init.
 	initCmd := exec.Command(veilBin, "init", "--path", projDir)
@@ -246,7 +250,9 @@ func TestE2E_EnvRoundTrip(t *testing.T) {
 	veilBin := buildVeil(t, binDir)
 
 	projDir := t.TempDir()
-	os.Mkdir(filepath.Join(projDir, ".git"), 0755)
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
 
 	envContent := `# Database config
 export DB_HOST=localhost
@@ -261,7 +267,9 @@ SIMPLE_VALUE=hello
 EMPTY_VAL=
 URL_WITH_PASS=postgres://admin:secretpass123456789@db.example.com:5432/app
 `
-	os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 
 	initCmd := exec.Command(veilBin, "init", "--path", projDir)
 	initCmd.Env = env
@@ -353,7 +361,7 @@ func TestE2E_ProxyInjection(t *testing.T) {
 			Auth:   r.Header.Get("Authorization"),
 			Method: r.Method,
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer ts.Close()
 
@@ -366,11 +374,15 @@ func TestE2E_ProxyInjection(t *testing.T) {
 
 	// 3. Create project with a known secret.
 	projDir := t.TempDir()
-	os.Mkdir(filepath.Join(projDir, ".git"), 0755)
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
 
 	originalKey := "sk-proj-test1234567890abcdef1234567890abcdef"
 	envContent := fmt.Sprintf("OPENAI_API_KEY=%s\n", originalKey)
-	os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 
 	// 4. veil init
 	initCmd := exec.Command(veilBin, "init", "--path", projDir)
@@ -473,9 +485,13 @@ func TestE2E_InitIdempotent(t *testing.T) {
 	veilBin := buildVeil(t, binDir)
 
 	projDir := t.TempDir()
-	os.Mkdir(filepath.Join(projDir, ".git"), 0755)
-	os.WriteFile(filepath.Join(projDir, ".env"),
-		[]byte("API_KEY=sk-proj-abcdef1234567890abcdef1234567890\n"), 0644)
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".env"),
+		[]byte("API_KEY=sk-proj-abcdef1234567890abcdef1234567890\n"), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 
 	// First init should succeed.
 	cmd1 := exec.Command(veilBin, "init", "--path", projDir)
@@ -518,10 +534,14 @@ func TestE2E_DryRun(t *testing.T) {
 	veilBin := buildVeil(t, binDir)
 
 	projDir := t.TempDir()
-	os.Mkdir(filepath.Join(projDir, ".git"), 0755)
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
 
 	original := "OPENAI_API_KEY=sk-proj-dryrun1234567890abcdef1234567890\n"
-	os.WriteFile(filepath.Join(projDir, ".env"), []byte(original), 0644)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(original), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 
 	cmd := exec.Command(veilBin, "init", "--dry-run", "--path", projDir)
 	cmd.Env = env

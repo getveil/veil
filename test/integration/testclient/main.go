@@ -45,7 +45,7 @@ func main() {
 
 	client := &http.Client{Transport: transport}
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	req, err := http.NewRequest("GET", targetURL, nil) //nolint:gosec // URL comes from test harness, not user input
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -54,11 +54,11 @@ func main() {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // intentional test client
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
-	io.Copy(os.Stdout, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(os.Stdout, resp.Body)
 }
