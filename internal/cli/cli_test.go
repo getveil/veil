@@ -491,6 +491,103 @@ func TestCheckConfigDrift_NoDrift(t *testing.T) {
 	}
 }
 
+func TestSyncAddsNewCredential(t *testing.T) {
+	root := initProject(t)
+
+	// Add a new credential that won't be in the generated config.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "my-new-secret-value-1234", "BRAND_NEW_KEY"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Run sync.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	output := syncOut.String()
+	if !strings.Contains(output, "BRAND_NEW_KEY") {
+		t.Errorf("sync should report adding BRAND_NEW_KEY, got: %s", output)
+	}
+
+	// Verify config file contains the new credential.
+	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if !strings.Contains(string(configData), "BRAND_NEW_KEY") {
+		t.Error("config file should contain BRAND_NEW_KEY after sync")
+	}
+}
+
+func TestSyncDryRun(t *testing.T) {
+	root := initProject(t)
+
+	// Add a credential.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "another-secret-value-1234", "DRY_KEY"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Read config before sync.
+	configBefore, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run sync --dry-run.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root, "--dry-run"})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync --dry-run failed: %v", err)
+	}
+
+	if !strings.Contains(syncOut.String(), "dry run") {
+		t.Error("expected dry run notice in output")
+	}
+
+	// Config file should be unchanged.
+	configAfter, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configBefore) != string(configAfter) {
+		t.Error("config should not change during dry run")
+	}
+}
+
+func TestSyncNoChanges(t *testing.T) {
+	root := initProject(t)
+
+	// Sync immediately after init — should be in sync already.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if !strings.Contains(syncOut.String(), "in sync") {
+		t.Errorf("expected 'in sync' message, got: %s", syncOut.String())
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
