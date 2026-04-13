@@ -8,13 +8,30 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/elazarl/goproxy"
 	"github.com/oklog/ulid/v2"
 )
+
+// mitmFilterWriter wraps an io.Writer and drops goproxy log lines that
+// match benign MITM read errors (client closed a keep-alive connection).
+type mitmFilterWriter struct {
+	out io.Writer
+}
+
+func (w *mitmFilterWriter) Write(p []byte) (int, error) {
+	line := string(p)
+	if strings.Contains(line, "Cannot read request from mitm'd client") &&
+		strings.Contains(line, "connection reset by peer") {
+		return len(p), nil // silently discard
+	}
+	return w.out.Write(p)
+}
 
 // bodyCap is the maximum request body size the proxy will read for
 // placeholder injection (10 MiB).
@@ -37,6 +54,7 @@ type Server struct {
 // and audit store. The server is not yet listening; call Start().
 func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentCmd string) (*Server, error) {
 	px := goproxy.NewProxyHttpServer()
+	px.Logger = log.New(&mitmFilterWriter{out: os.Stderr}, "", log.LstdFlags)
 
 	// Set the CA certificate that goproxy uses for MITM leaf signing.
 	goproxy.GoproxyCa = tls.Certificate{
