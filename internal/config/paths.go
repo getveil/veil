@@ -69,3 +69,7 @@ func keystoreFallback(goos, home, xdgState string) (string, error) {
 		return "", fmt.Errorf("unsupported GOOS: %s", goos)
 	}
 }
+
+func PidFile(root string) string {
+	return filepath.Join(ProjectStateDir(root), "proxy.pid")
+}

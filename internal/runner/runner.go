@@ -85,6 +85,14 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = server.Stop() }()
 
+	// Write PID file for veil status to detect running proxy.
+	pidPath := config.PidFile(cfg.Root)
+	if err := WritePidFile(pidPath, os.Getpid()); err != nil {
+		// Non-fatal — status won't detect proxy, but run still works.
+		fmt.Fprintf(os.Stderr, "%s\n", ui.Muted.Sprintf("warning: could not write pid file: %v", err))
+	}
+	defer RemovePidFile(pidPath)
+
 	// 5b. Print startup line to stderr.
 	credCount := len(vlt.List())
 	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
