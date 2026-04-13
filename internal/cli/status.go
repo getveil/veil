@@ -44,13 +44,8 @@ func runStatus(cmd *cobra.Command) error {
 	}
 
 	caStatus := caFile
-	ca, caErr := proxy.LoadOrCreateCA()
-	if caErr != nil {
+	if _, caErr := proxy.LoadOrCreateCA(); caErr != nil {
 		caStatus += " (error: " + caErr.Error() + ")"
-	} else if proxy.IsTrusted(ca) {
-		caStatus += " (trusted)"
-	} else {
-		caStatus += " (NOT trusted)"
 	}
 
 	// Open audit.
