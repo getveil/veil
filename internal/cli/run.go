@@ -92,9 +92,14 @@ func checkConfigDrift(cfg *config.ProjectConfig, credNames []string) []string {
 	}
 
 	// Check for uncovered credentials (vault has credential with no config entry).
-	for _, name := range credNames {
-		if _, ok := cfg.Scoping[name]; !ok {
-			warnings = append(warnings, fmt.Sprintf("credential %q has no scoping entry in config", name))
+	// Only warn if the config has at least one scoping entry — an empty scoping
+	// section means the user hasn't set up scoping yet, so warning on every
+	// credential would just be noise.
+	if len(cfg.Scoping) > 0 {
+		for _, name := range credNames {
+			if _, ok := cfg.Scoping[name]; !ok {
+				warnings = append(warnings, fmt.Sprintf("credential %q has no scoping entry in config", name))
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -47,10 +48,10 @@ func Generate(entries []ScopingEntry) string {
 	b.WriteString("\n")
 
 	// Ignore section (commented out).
-	b.WriteString("# Scanner ignore — glob patterns (relative to project root) to skip during init.\n")
+	b.WriteString("# Scanner ignore — patterns matched against .env filenames to skip during init.\n")
 	b.WriteString("# ignore:\n")
-	b.WriteString("#   - \"test/fixtures/**\"\n")
-	b.WriteString("#   - \"*.example\"\n")
+	b.WriteString("#   - \".env.local\"\n")
+	b.WriteString("#   - \".env.production\"\n")
 
 	b.WriteString("\n")
 
@@ -65,11 +66,12 @@ func Generate(entries []ScopingEntry) string {
 // GenerateFromConfig produces config.yaml contents from a full ProjectConfig,
 // preserving populated ignore and skip_hosts sections (used by veil sync).
 func GenerateFromConfig(cfg *ProjectConfig) string {
-	// Build scoping entries from the config map.
+	// Build scoping entries from the config map, sorted for deterministic output.
 	entries := make([]ScopingEntry, 0, len(cfg.Scoping))
 	for name, hosts := range cfg.Scoping {
 		entries = append(entries, ScopingEntry{Name: name, Hosts: hosts})
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	var b strings.Builder
 

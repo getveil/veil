@@ -491,6 +491,17 @@ func TestCheckConfigDrift_NoDrift(t *testing.T) {
 	}
 }
 
+func TestCheckConfigDrift_EmptyScoping(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{}, // no scoping entries
+	}
+	// Should NOT warn about uncovered credentials when scoping is empty.
+	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings when scoping is empty, got: %v", warnings)
+	}
+}
+
 func TestSyncAddsNewCredential(t *testing.T) {
 	root := initProject(t)
 

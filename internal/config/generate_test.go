@@ -56,6 +56,31 @@ func TestGenerate_UnscopedCredential(t *testing.T) {
 	}
 }
 
+func TestGenerateFromConfig_DeterministicOrdering(t *testing.T) {
+	cfg := &ProjectConfig{
+		Scoping: map[string][]string{
+			"ZEBRA_KEY":  {"zebra.example.com"},
+			"ALPHA_KEY":  {"alpha.example.com"},
+			"MIDDLE_KEY": {"middle.example.com"},
+		},
+	}
+	// Run multiple times to detect non-determinism.
+	first := GenerateFromConfig(cfg)
+	for i := 0; i < 20; i++ {
+		got := GenerateFromConfig(cfg)
+		if got != first {
+			t.Fatalf("GenerateFromConfig produced different output on iteration %d", i)
+		}
+	}
+	// Verify alphabetical order.
+	alphaIdx := strings.Index(first, "ALPHA_KEY")
+	middleIdx := strings.Index(first, "MIDDLE_KEY")
+	zebraIdx := strings.Index(first, "ZEBRA_KEY")
+	if alphaIdx > middleIdx || middleIdx > zebraIdx {
+		t.Error("scoping entries should be in alphabetical order")
+	}
+}
+
 func TestGenerateFromConfig_PreservesIgnoreAndSkipHosts(t *testing.T) {
 	cfg := &ProjectConfig{
 		Scoping: map[string][]string{
