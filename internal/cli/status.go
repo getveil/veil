@@ -2,12 +2,14 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/proxy"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -35,18 +37,16 @@ func runStatus(cmd *cobra.Command) error {
 		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
-	credCount := len(v.List())
+	creds := v.List()
+	credCount := len(creds)
 
-	// Check CA.
+	// Check CA — call once and store result.
 	caFile, err := config.CAFile()
 	if err != nil {
 		return cliError(fmt.Sprintf("CA file path: %v", err), "")
 	}
 
-	caStatus := caFile
-	if _, caErr := proxy.LoadOrCreateCA(); caErr != nil {
-		caStatus += " (error: " + caErr.Error() + ")"
-	}
+	_, caErr := proxy.LoadOrCreateCA()
 
 	// Open audit.
 	auditDBPath := config.AuditDBFile(root)
@@ -62,29 +62,65 @@ func runStatus(cmd *cobra.Command) error {
 		return cliError(fmt.Sprintf("querying audit: %v", err), "")
 	}
 
-	// Print status.
-	_, _ = fmt.Fprintln(w, "Veil Status")
-	_, _ = fmt.Fprintf(w, "  Project:      %s\n", root)
-	_, _ = fmt.Fprintf(w, "  Credentials:  %d\n", credCount)
-	_, _ = fmt.Fprintf(w, "  CA:           %s\n", caStatus)
+	// Print header: "Veil Status  /path/to/project"
+	_, _ = fmt.Fprintf(w, "%s  %s\n", ui.Bold.Sprint("Veil Status"), ui.Muted.Sprint(root))
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "  Last 24h:")
-	_, _ = fmt.Fprintf(w, "    Injections:   %d\n", total)
+
+	// Credentials line.
+	_, _ = fmt.Fprintf(w, "  %s  %d vaulted\n", ui.Bold.Sprint("Credentials"), credCount)
+
+	// CA line: tilde-abbreviate path if possible.
+	caPath := caFile
+	if home, herr := os.UserHomeDir(); herr == nil && strings.HasPrefix(caFile, home) {
+		caPath = "~" + caFile[len(home):]
+	}
+	if caErr != nil {
+		_, _ = fmt.Fprintf(w, "  %s           %s %s\n",
+			ui.Bold.Sprint("CA"),
+			ui.Err.Sprint("error"),
+			caErr.Error(),
+		)
+	} else {
+		_, _ = fmt.Fprintf(w, "  %s           %s %s\n",
+			ui.Bold.Sprint("CA"),
+			ui.Success.Sprint("ready"),
+			ui.Muted.Sprint(caPath),
+		)
+	}
+
+	_, _ = fmt.Fprintln(w)
+
+	// Last 24h section.
+	_, _ = fmt.Fprintf(w, "  %s\n", ui.Bold.Sprint("Last 24h"))
+	_, _ = fmt.Fprintf(w, "  Injections   %d\n", total)
 	if blocked > 0 {
-		_, _ = fmt.Fprintf(w, "    Blocked:      %d\n", blocked)
+		_, _ = fmt.Fprintf(w, "  Blocked      %d\n", blocked)
 	}
 
 	if len(hosts) > 0 {
-		_, _ = fmt.Fprintf(w, "    Hosts:        %s\n", strings.Join(hosts, ", "))
+		_, _ = fmt.Fprintf(w, "  Hosts        %s\n", strings.Join(hosts, ", "))
 	} else {
-		_, _ = fmt.Fprintln(w, "    Hosts:        (none)")
+		_, _ = fmt.Fprintln(w, "  Hosts        (none)")
 	}
 
 	if lastInj != nil {
-		_, _ = fmt.Fprintf(w, "    Last:         %s -> %s (%s)\n",
-			lastInj.Timestamp.Format(time.RFC3339), lastInj.Host, lastInj.CredentialName)
+		_, _ = fmt.Fprintf(w, "  Last         %s → %s (%s)\n",
+			ui.RelativeTime(lastInj.Timestamp), lastInj.Host, lastInj.CredentialName)
 	} else {
-		_, _ = fmt.Fprintln(w, "    Last:         (none)")
+		_, _ = fmt.Fprintln(w, "  Last         (none)")
+	}
+
+	// Warn about unscoped credentials.
+	var unscoped int
+	for _, c := range creds {
+		if len(c.AllowedHosts) == 0 {
+			unscoped++
+		}
+	}
+	if unscoped > 0 {
+		_, _ = fmt.Fprintln(w)
+		ui.Warn(w, fmt.Sprintf("%d credential(s) have no host scope", unscoped))
+		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope them"))
 	}
 
 	return nil

@@ -179,17 +179,17 @@ func TestStatusOutput(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "Credentials:") {
-		t.Errorf("status should contain 'Credentials:', got: %s", output)
+	if !strings.Contains(output, "Credentials") {
+		t.Errorf("status should contain 'Credentials', got: %s", output)
 	}
-	if !strings.Contains(output, "CA:") {
-		t.Errorf("status should contain 'CA:', got: %s", output)
+	if !strings.Contains(output, "CA") {
+		t.Errorf("status should contain 'CA', got: %s", output)
 	}
 	if !strings.Contains(output, "Veil Status") {
 		t.Errorf("status should contain 'Veil Status', got: %s", output)
 	}
-	if !strings.Contains(output, "Injections:") {
-		t.Errorf("status should contain 'Injections:', got: %s", output)
+	if !strings.Contains(output, "Injections") {
+		t.Errorf("status should contain 'Injections', got: %s", output)
 	}
 }
 
