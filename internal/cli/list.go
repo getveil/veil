@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -41,7 +43,7 @@ func runList(cmd *cobra.Command, reveal bool) error {
 	}
 
 	// Build a map of credential name -> most recent injection timestamp.
-	lastInjected := make(map[string]string)
+	lastInjected := make(map[string]time.Time)
 	auditDBPath := config.AuditDBFile(root)
 	store, err := audit.Open(auditDBPath)
 	if err == nil {
@@ -52,45 +54,44 @@ func runList(cmd *cobra.Command, reveal bool) error {
 				Limit:          1,
 			})
 			if qErr == nil && len(rows) > 0 {
-				lastInjected[c.Name] = rows[0].Timestamp.Format("2006-01-02 15:04")
+				lastInjected[c.Name] = rows[0].Timestamp
 			}
 		}
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 4, ' ', 0)
 	if reveal {
-		_, _ = fmt.Fprintln(w, "NAME\tHOSTS\tVALUE\tSOURCE\tCREATED\tLAST INJECTED")
+		ui.TableHeader(w, "NAME", "HOSTS", "VALUE", "SOURCE", "LAST INJECTED")
 	} else {
-		_, _ = fmt.Fprintln(w, "NAME\tHOSTS\tSOURCE\tCREATED\tLAST INJECTED")
+		ui.TableHeader(w, "NAME", "HOSTS", "SOURCE", "LAST INJECTED")
 	}
 	for _, c := range creds {
 		last := "never"
 		if t, ok := lastInjected[c.Name]; ok {
-			last = t
+			last = ui.RelativeTime(t)
 		}
-		hostsStr := "(none)"
+		hostsStr := ui.Warning.Sprint("(none)")
 		if len(c.AllowedHosts) > 0 {
 			hostsStr = strings.Join(c.AllowedHosts, ", ")
 		}
 		if reveal {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 				c.Name,
 				hostsStr,
 				c.Real,
 				c.Source,
-				c.CreatedAt.Format("2006-01-02 15:04"),
 				last,
 			)
 		} else {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 				c.Name,
 				hostsStr,
 				c.Source,
-				c.CreatedAt.Format("2006-01-02 15:04"),
 				last,
 			)
 		}
 	}
 	_ = w.Flush()
+	ui.Footer(cmd.OutOrStdout(), fmt.Sprintf("%d credentials", len(creds)))
 	return nil
 }

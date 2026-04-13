@@ -94,6 +94,12 @@ func TestAddAndList(t *testing.T) {
 	if !strings.Contains(output, "OPENAI_API_KEY") {
 		t.Errorf("list should contain OPENAI_API_KEY, got: %s", output)
 	}
+	if strings.Contains(output, "CREATED") {
+		t.Errorf("list should not contain CREATED column, got: %s", output)
+	}
+	if !strings.Contains(output, "credentials") {
+		t.Errorf("list should contain footer with 'credentials', got: %s", output)
+	}
 }
 
 func TestAddForce(t *testing.T) {
