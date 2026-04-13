@@ -24,7 +24,7 @@ func statusCmd() *cobra.Command {
 func runStatus(cmd *cobra.Command) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	w := cmd.OutOrStdout()
@@ -32,7 +32,7 @@ func runStatus(cmd *cobra.Command) error {
 	// Open vault.
 	v, err := openVault(root)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening vault: %v", err))
+		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
 	credCount := len(v.List())
@@ -40,7 +40,7 @@ func runStatus(cmd *cobra.Command) error {
 	// Check CA.
 	caFile, err := config.CAFile()
 	if err != nil {
-		return exitError(fmt.Sprintf("CA file path: %v", err))
+		return cliError(fmt.Sprintf("CA file path: %v", err), "")
 	}
 
 	caStatus := caFile
@@ -52,14 +52,14 @@ func runStatus(cmd *cobra.Command) error {
 	auditDBPath := config.AuditDBFile(root)
 	store, err := audit.Open(auditDBPath)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening audit db: %v", err))
+		return cliError(fmt.Sprintf("opening audit db: %v", err), "")
 	}
 	defer func() { _ = store.Close() }()
 
 	since := time.Now().Add(-24 * time.Hour)
 	total, blocked, hosts, lastInj, err := store.Summary(since)
 	if err != nil {
-		return exitError(fmt.Sprintf("querying audit: %v", err))
+		return cliError(fmt.Sprintf("querying audit: %v", err), "")
 	}
 
 	// Print status.

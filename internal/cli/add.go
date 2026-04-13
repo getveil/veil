@@ -30,12 +30,12 @@ func addCmd() *cobra.Command {
 func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	v, err := openVault(root)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening vault: %v", err))
+		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
 	// Read value from stdin.
@@ -45,19 +45,19 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
 	if err != nil {
 		// Accept EOF without newline (e.g. piped input).
 		if value == "" {
-			return exitError("no value provided")
+			return cliError("no value provided", "")
 		}
 	}
 	value = strings.TrimRight(value, "\r\n")
 
 	if value == "" {
-		return exitError("no value provided")
+		return cliError("no value provided", "")
 	}
 
 	// Generate placeholder.
 	ph, err := placeholder.Generate(name, value)
 	if err != nil {
-		return exitError(fmt.Sprintf("generating placeholder: %v", err))
+		return cliError(fmt.Sprintf("generating placeholder: %v", err), "")
 	}
 
 	// Resolve allowed hosts.
@@ -81,7 +81,10 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
 		CreatedAt:    time.Now(),
 	}
 	if err := v.Add(cred); err != nil {
-		return exitError(fmt.Sprintf("adding credential: %v", err))
+		if strings.Contains(err.Error(), "already exists") {
+			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
+		}
+		return cliError(fmt.Sprintf("adding credential: %v", err), "")
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Added %s to vault\n", name)

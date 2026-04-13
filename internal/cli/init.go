@@ -37,13 +37,13 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	if root == "" {
 		r, err := config.FindProjectRoot(".")
 		if err != nil {
-			return exitError(err.Error())
+			return cliError(err.Error(), "")
 		}
 		root = r
 	} else {
 		abs, err := filepath.Abs(root)
 		if err != nil {
-			return exitError(err.Error())
+			return cliError(err.Error(), "")
 		}
 		root = abs
 	}
@@ -51,19 +51,19 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 2. Check existing .veil/ directory.
 	stateDir := config.ProjectStateDir(root)
 	if info, err := os.Stat(stateDir); err == nil && info.IsDir() && !force {
-		return exitError("project already initialized (use --force to reinitialize)")
+		return cliError("project already initialized", "Use --force to reinitialize")
 	}
 
 	// 3. Scan .env files.
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
-		return exitError(fmt.Sprintf("scanning .env files: %v", err))
+		return cliError(fmt.Sprintf("scanning .env files: %v", err), "")
 	}
 
 	// 3b. Discover MCP config.
 	mcpConfigPath, err := mcpconfig.Discover()
 	if err != nil {
-		return exitError(fmt.Sprintf("discovering MCP config: %v", err))
+		return cliError(fmt.Sprintf("discovering MCP config: %v", err), "")
 	}
 
 	// Early exit if nothing to process.
@@ -78,23 +78,23 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 5. Determine keystore.
 	ks, err := buildKeystore()
 	if err != nil {
-		return exitError(fmt.Sprintf("keystore: %v", err))
+		return cliError(fmt.Sprintf("keystore: %v", err), "")
 	}
 
 	// 6. Create vault.
 	v, err := vault.CreateVault(root, projectID, ks)
 	if err != nil {
-		return exitError(fmt.Sprintf("creating vault: %v", err))
+		return cliError(fmt.Sprintf("creating vault: %v", err), "")
 	}
 
 	// 7. Ensure CA.
 	ca, err := proxy.LoadOrCreateCA()
 	if err != nil {
-		return exitError(fmt.Sprintf("setting up CA: %v", err))
+		return cliError(fmt.Sprintf("setting up CA: %v", err), "")
 	}
 	caFile, err := config.CAFile()
 	if err != nil {
-		return exitError(fmt.Sprintf("CA file path: %v", err))
+		return cliError(fmt.Sprintf("CA file path: %v", err), "")
 	}
 	_ = ca
 
@@ -104,7 +104,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	for _, envPath := range envPaths {
 		envFile, err := scanner.ParseFile(envPath)
 		if err != nil {
-			return exitError(fmt.Sprintf("parsing %s: %v", envPath, err))
+			return cliError(fmt.Sprintf("parsing %s: %v", envPath, err), "")
 		}
 
 		fileChanged := false
@@ -129,7 +129,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 			ph, err := placeholder.Generate(line.Key, line.Value)
 			if err != nil {
-				return exitError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err))
+				return cliError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err), "")
 			}
 
 			credHosts := placeholder.HostsForCredential(line.Key, line.Value)
@@ -148,7 +148,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", line.Key)
 					continue
 				}
-				return exitError(fmt.Sprintf("vaulting %s: %v", line.Key, err))
+				return cliError(fmt.Sprintf("vaulting %s: %v", line.Key, err), "")
 			}
 
 			secretsVaulted++
@@ -166,7 +166,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 		if !dryRun && fileChanged {
 			if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
-				return exitError(fmt.Sprintf("writing %s: %v", envPath, err))
+				return cliError(fmt.Sprintf("writing %s: %v", envPath, err), "")
 			}
 		}
 	}
@@ -221,7 +221,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 
 	cfg, err := mcpconfig.Parse(configPath)
 	if err != nil {
-		return 0, 0, exitError(fmt.Sprintf("parsing MCP config: %v", err))
+		return 0, 0, cliError(fmt.Sprintf("parsing MCP config: %v", err), "")
 	}
 
 	var count int
@@ -239,7 +239,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 
 			ph, err := placeholder.Generate(key, value)
 			if err != nil {
-				return 0, 0, exitError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err))
+				return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err), "")
 			}
 
 			credHosts := placeholder.HostsForCredential(key, value)
@@ -259,7 +259,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", credName)
 					continue
 				}
-				return 0, 0, exitError(fmt.Sprintf("vaulting %s: %v", credName, err))
+				return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")
 			}
 
 			count++
@@ -280,19 +280,19 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		// Create backup of original.
 		originalData, err := os.ReadFile(configPath) // #nosec G304
 		if err != nil {
-			return 0, 0, exitError(fmt.Sprintf("reading MCP config for backup: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("reading MCP config for backup: %v", err), "")
 		}
 		if err := os.WriteFile(backupPath, originalData, 0600); err != nil {
-			return 0, 0, exitError(fmt.Sprintf("writing MCP config backup: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("writing MCP config backup: %v", err), "")
 		}
 
 		// Write updated config.
 		newData, err := cfg.Bytes()
 		if err != nil {
-			return 0, 0, exitError(fmt.Sprintf("serializing MCP config: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("serializing MCP config: %v", err), "")
 		}
 		if err := atomicWriteFile(configPath, newData); err != nil {
-			return 0, 0, exitError(fmt.Sprintf("writing MCP config: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("writing MCP config: %v", err), "")
 		}
 	}
 

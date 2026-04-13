@@ -25,13 +25,13 @@ func runCmd() *cobra.Command {
 func runRun(cmd *cobra.Command, args []string) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	// Check .veil/ exists.
 	stateDir := config.ProjectStateDir(root)
 	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return exitError("project not initialized (run 'veil init' first)")
+		return cliError("project not initialized", "Run veil init to get started")
 	}
 
 	result, err := runner.Run(cmd.Context(), runner.Config{
@@ -41,7 +41,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Verbose: flagVerbose,
 	})
 	if err != nil {
-		return exitError(fmt.Sprintf("run failed: %v", err))
+		return cliError(fmt.Sprintf("run failed: %v", err), "")
 	}
 
 	os.Exit(result.ExitCode)

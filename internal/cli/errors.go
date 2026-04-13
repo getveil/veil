@@ -1,8 +1,13 @@
 package cli
 
-import "fmt"
+import (
+	"os"
 
-// exitError returns a prefixed error suitable for CLI output.
-func exitError(msg string) error {
-	return fmt.Errorf("veil: %s", msg)
+	"github.com/8enji/veil/internal/ui"
+)
+
+// cliError prints a styled error to stderr with an optional hint and returns
+// an error for cobra's RunE to propagate as a non-zero exit code.
+func cliError(msg string, hint string) error {
+	return ui.FormatError(os.Stderr, msg, hint)
 }

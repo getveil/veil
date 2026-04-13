@@ -42,18 +42,18 @@ func logCmd() *cobra.Command {
 func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked bool) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	sinceTime, err := parseSince(since)
 	if err != nil {
-		return exitError(fmt.Sprintf("invalid --since value: %v", err))
+		return cliError(fmt.Sprintf("invalid --since value: %v", err), "")
 	}
 
 	auditDBPath := config.AuditDBFile(root)
 	store, err := audit.Open(auditDBPath)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening audit db: %v", err))
+		return cliError(fmt.Sprintf("opening audit db: %v", err), "")
 	}
 	defer func() { _ = store.Close() }()
 
@@ -65,7 +65,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		IncludeBlocked: blocked,
 	})
 	if err != nil {
-		return exitError(fmt.Sprintf("querying audit log: %v", err))
+		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
 	}
 
 	w := cmd.OutOrStdout()

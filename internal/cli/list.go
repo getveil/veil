@@ -26,12 +26,12 @@ func listCmd() *cobra.Command {
 func runList(cmd *cobra.Command, reveal bool) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	v, err := openVault(root)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening vault: %v", err))
+		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
 	creds := v.List()
