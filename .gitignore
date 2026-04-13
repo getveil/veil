@@ -7,4 +7,5 @@ coverage.out
 *.out
 .veil/
 .superpowers/
+.worktrees/
 tmp-test/
