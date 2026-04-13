@@ -20,13 +20,14 @@ func logCmd() *cobra.Command {
 		credential string
 		limit      int
 		jsonOutput bool
+		blocked    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show audit log of secret injections",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLog(cmd, since, host, credential, limit, jsonOutput)
+			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked)
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "24h", "show entries since duration (e.g. 24h, 7d) or RFC3339 timestamp")
@@ -34,10 +35,11 @@ func logCmd() *cobra.Command {
 	cmd.Flags().StringVar(&credential, "credential", "", "filter by credential name")
 	cmd.Flags().IntVar(&limit, "limit", 100, "max rows to return")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON Lines")
+	cmd.Flags().BoolVar(&blocked, "blocked", false, "include blocked credential events")
 	return cmd
 }
 
-func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput bool) error {
+func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked bool) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return exitError(err.Error())
@@ -60,6 +62,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		Host:           host,
 		CredentialName: credential,
 		Limit:          limit,
+		IncludeBlocked: blocked,
 	})
 	if err != nil {
 		return exitError(fmt.Sprintf("querying audit log: %v", err))

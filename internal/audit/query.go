@@ -12,6 +12,7 @@ type Filter struct {
 	Host           string    // empty = any
 	CredentialName string    // empty = any
 	Limit          int       // 0 = default 100
+	IncludeBlocked bool      // false = exclude blocked events
 }
 
 // Row represents a single injection record returned by a query.
@@ -50,6 +51,9 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 	if f.CredentialName != "" {
 		clauses = append(clauses, "credential_name = ?")
 		args = append(args, f.CredentialName)
+	}
+	if !f.IncludeBlocked {
+		clauses = append(clauses, "location != 'blocked'")
 	}
 
 	limit := f.Limit
