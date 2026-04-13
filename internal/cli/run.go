@@ -34,11 +34,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return cliError("project not initialized", "Run veil init to get started")
 	}
 
+	// Load project config.
+	configPath := config.ConfigFile(root)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return cliError(fmt.Sprintf("loading config: %v", err), "")
+	}
+
 	result, err := runner.Run(cmd.Context(), runner.Config{
-		Root:    root,
-		Command: args[0],
-		Args:    args[1:],
-		Verbose: flagVerbose,
+		Root:      root,
+		Command:   args[0],
+		Args:      args[1:],
+		Verbose:   flagVerbose,
+		SkipHosts: cfg.SkipHosts,
 	})
 	if err != nil {
 		return cliError(fmt.Sprintf("run failed: %v", err), "")
