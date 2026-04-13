@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 )
@@ -17,17 +18,18 @@ func systemCAPEM() ([]byte, error) {
 	}
 
 	var combined []byte
+	var errs []error
 	for _, kc := range keychains {
 		out, err := exec.Command("security", "export", "-t", "certs", "-p", "-k", kc).Output()
 		if err != nil {
-			// System.keychain may not exist or may be empty; skip it.
+			errs = append(errs, fmt.Errorf("%s: %w", kc, err))
 			continue
 		}
 		combined = append(combined, out...)
 	}
 
 	if len(combined) == 0 {
-		return nil, fmt.Errorf("no system CA certificates found in any keychain")
+		return nil, fmt.Errorf("no system CA certificates found: %w", errors.Join(errs...))
 	}
 	return combined, nil
 }

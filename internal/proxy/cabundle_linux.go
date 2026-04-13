@@ -17,6 +17,7 @@ var linuxCAPaths = []string{
 // systemCAPEM reads the system CA certificate bundle from the first
 // well-known path that exists.
 func systemCAPEM() ([]byte, error) {
+	// Paths are distro-exclusive; the first match is the complete system bundle.
 	for _, path := range linuxCAPaths {
 		data, err := os.ReadFile(path)
 		if err == nil && len(data) > 0 {
