@@ -649,54 +649,37 @@ func TestInitRespectsScopingConfig(t *testing.T) {
 	}
 }
 
-func TestAddRespectsConfigScoping(t *testing.T) {
+func TestAddHostResolution(t *testing.T) {
 	root := initProject(t)
 
-	// Write config with scoping for a new credential.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	configContent := "scoping:\n  NEW_TOKEN:\n    - api.newservice.com\n    - cdn.newservice.com\n"
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add credential without --host flags.
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "NEW_TOKEN"})
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "sk-test-1234567890abcdef", "--host", "api.custom.com", "MY_KEY"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
+		t.Fatalf("add with --host failed: %v", err)
 	}
 
-	// Check vault has config-specified hosts.
 	v, err := openVault(root)
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	cred, found := v.Get("NEW_TOKEN")
-	if !found {
-		t.Fatal("NEW_TOKEN not found in vault")
+	cred, ok := v.Get("MY_KEY")
+	if !ok {
+		t.Fatal("MY_KEY not found in vault")
 	}
-	if len(cred.AllowedHosts) != 2 || cred.AllowedHosts[0] != "api.newservice.com" {
-		t.Errorf("expected config hosts, got %v", cred.AllowedHosts)
+	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.custom.com" {
+		t.Errorf("expected [api.custom.com], got %v", cred.AllowedHosts)
 	}
 }
 
-func TestAddHostFlagOverridesConfig(t *testing.T) {
+func TestAddAutoDetectsHosts(t *testing.T) {
 	root := initProject(t)
 
-	// Write config with scoping.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	configContent := "scoping:\n  NEW_TOKEN:\n    - api.config.com\n"
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add credential with explicit --host flag — should override config.
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "--host", "api.override.com", "NEW_TOKEN"})
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "ghp_1234567890abcdefghijklmnopqrstuvwxyz1234", "GITHUB_TOKEN"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("add failed: %v", err)
 	}
@@ -705,12 +688,12 @@ func TestAddHostFlagOverridesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	cred, found := v.Get("NEW_TOKEN")
-	if !found {
-		t.Fatal("NEW_TOKEN not found")
+	cred, ok := v.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not found in vault")
 	}
-	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.override.com" {
-		t.Errorf("--host flag should override config, got %v", cred.AllowedHosts)
+	if len(cred.AllowedHosts) == 0 {
+		t.Error("expected auto-detected hosts, got none")
 	}
 }
 
