@@ -205,8 +205,6 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CA: %s\n", caFile)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout())
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Run 'veil trust' to install the CA into your system trust store.")
-
 	return nil
 }
 

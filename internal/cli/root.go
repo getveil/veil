@@ -29,7 +29,5 @@ func NewRoot(version string) *cobra.Command {
 	root.AddCommand(addCmd())
 	root.AddCommand(listCmd())
 	root.AddCommand(logCmd())
-	root.AddCommand(trustCmd())
-
 	return root
 }
