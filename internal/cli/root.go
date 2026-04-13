@@ -69,6 +69,42 @@ credentials at the proxy layer — so the agent never sees them.`,
 		`{{bold "veil v%s"}} {{muted "(%s/%s)"}}`+"\n",
 		version, runtime.GOOS, runtime.GOARCH))
 
+	// Styled usage template. Based on Cobra's defaultUsageTemplate (v1.10.2),
+	// with `bold` applied to section headers, `muted` applied to command
+	// descriptions and the footer hint, and `styledFlags` applied to flag
+	// usage blocks. Propagates to all subcommands via Cobra's template
+	// inheritance.
+	root.SetUsageTemplate(`{{bold "Usage:"}}{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+{{bold "Aliases:"}}
+  {{muted .NameAndAliases}}{{end}}{{if .HasExample}}
+
+{{bold "Examples:"}}
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+{{bold "Available Commands:"}}{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{bold .Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+{{bold "Additional Commands:"}}{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+{{bold "Flags:"}}
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces | styledFlags}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+{{bold "Global Flags:"}}
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces | styledFlags}}{{end}}{{if .HasHelpSubCommands}}
+
+{{bold "Additional help topics:"}}{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{muted .Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+{{muted (printf "Use \"%s [command] --help\" for more information about a command." .CommandPath)}}{{end}}
+`)
+
 	root.AddCommand(initCmd())
 	root.AddCommand(runCmd())
 	root.AddCommand(statusCmd())
