@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/8enji/veil/internal/placeholder"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -94,12 +95,14 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError(fmt.Sprintf("adding credential: %v", err), "")
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Added %s to vault\n", name)
+	w := cmd.OutOrStdout()
+	ui.Step(w, fmt.Sprintf("Added %s to vault", name))
+	fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
 	if len(allowedHosts) > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Hosts: %s\n", strings.Join(allowedHosts, ", "))
+		fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
 	} else {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: no target hosts detected for %s. It won't be injected until scoped with --host.\n", name)
+		ui.Warn(w, fmt.Sprintf("No target hosts detected for %s", name))
+		fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope it"))
 	}
 
 	return nil

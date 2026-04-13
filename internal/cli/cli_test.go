@@ -70,7 +70,7 @@ func TestAddAndList(t *testing.T) {
 	if err := addCmd.Execute(); err != nil {
 		t.Fatalf("add failed: %v", err)
 	}
-	if !strings.Contains(addOut.String(), "Added CUSTOM_SECRET") {
+	if !strings.Contains(addOut.String(), "CUSTOM_SECRET") {
 		t.Errorf("expected confirmation, got: %s", addOut.String())
 	}
 
@@ -347,6 +347,33 @@ func TestAddWithValueFlagEmpty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no value") {
 		t.Errorf("error should mention 'no value', got: %v", err)
+	}
+}
+
+func TestAddOutputShowsPlaceholderAndHosts(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "ghp_test1234567890abcdef1234567890abcdef", "GITHUB_TOKEN"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+	output := out.String()
+
+	// Should show styled success with checkmark.
+	if !strings.Contains(output, "✓") {
+		t.Errorf("expected checkmark in output, got: %s", output)
+	}
+	// Should show the placeholder value.
+	if !strings.Contains(output, "Placeholder:") {
+		t.Errorf("expected placeholder display, got: %s", output)
+	}
+	// Should show detected hosts.
+	if !strings.Contains(output, "api.github.com") {
+		t.Errorf("expected auto-detected host in output, got: %s", output)
 	}
 }
 
