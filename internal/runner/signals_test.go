@@ -13,3 +13,16 @@ func TestForwardSignalsCompiles(t *testing.T) {
 	// imports compile on all platforms.
 	_ = forwardSignals
 }
+
+func TestEscalationTimings(t *testing.T) {
+	// Verify constants are defined and reasonable.
+	if escalateTimeout <= 0 {
+		t.Error("escalateTimeout should be positive")
+	}
+	if killTimeout <= 0 {
+		t.Error("killTimeout should be positive")
+	}
+	if killTimeout <= escalateTimeout {
+		t.Error("killTimeout should be greater than escalateTimeout")
+	}
+}
