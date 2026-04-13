@@ -147,9 +147,12 @@ func TestBuildChildEnv(t *testing.T) {
 		"NO_PROXY=old-no-proxy",
 		"no_proxy=old-no-proxy",
 		"OTHER_VAR=keep-me",
+		"SSL_CERT_FILE=/old/ca.pem",
+		"CURL_CA_BUNDLE=/old/curl-ca.pem",
+		"REQUESTS_CA_BUNDLE=/old/requests-ca.pem",
 	}
 
-	result := buildChildEnv(base, "http://127.0.0.1:9999")
+	result := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem")
 
 	env := make(map[string]string)
 	for _, kv := range result {
@@ -164,6 +167,13 @@ func TestBuildChildEnv(t *testing.T) {
 		}
 	}
 
+	// Verify old CA vars are stripped.
+	for _, kv := range result {
+		if strings.Contains(kv, "/old/") {
+			t.Fatalf("old CA var not stripped: %s", kv)
+		}
+	}
+
 	// Verify new proxy vars are present.
 	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		if env[key] != "http://127.0.0.1:9999" {
@@ -173,6 +183,20 @@ func TestBuildChildEnv(t *testing.T) {
 	for _, key := range []string{"NO_PROXY", "no_proxy"} {
 		if env[key] != "localhost,127.0.0.1,::1" {
 			t.Fatalf("%s = %q, want %q", key, env[key], "localhost,127.0.0.1,::1")
+		}
+	}
+
+	// Verify CA env vars all point to the bundle.
+	caVars := []string{
+		"NODE_EXTRA_CA_CERTS",
+		"SSL_CERT_FILE",
+		"CURL_CA_BUNDLE",
+		"REQUESTS_CA_BUNDLE",
+		"HTTPLIB2_CA_CERTS",
+	}
+	for _, key := range caVars {
+		if env[key] != "/tmp/fake-bundle.pem" {
+			t.Fatalf("%s = %q, want %q", key, env[key], "/tmp/fake-bundle.pem")
 		}
 	}
 
