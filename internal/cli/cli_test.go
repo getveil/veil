@@ -421,6 +421,27 @@ func TestAddForceUpdatesEnvFile(t *testing.T) {
 	}
 }
 
+func TestListPlaceholder(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"list", "--path", root, "--placeholder"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list --placeholder failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "PLACEHOLDER") {
+		t.Errorf("expected PLACEHOLDER column header, got: %s", output)
+	}
+	// The placeholder for OPENAI_API_KEY should start with sk-proj- (format-aware).
+	if !strings.Contains(output, "sk-proj-") {
+		t.Errorf("expected placeholder value with sk-proj- prefix, got: %s", output)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string

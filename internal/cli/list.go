@@ -12,19 +12,20 @@ import (
 )
 
 func listCmd() *cobra.Command {
-	var reveal bool
+	var reveal, showPlaceholder bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all credentials in the vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd, reveal)
+			return runList(cmd, reveal, showPlaceholder)
 		},
 	}
 	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only)")
+	cmd.Flags().BoolVar(&showPlaceholder, "placeholder", false, "show placeholder values")
 	return cmd
 }
 
-func runList(cmd *cobra.Command, reveal bool) error {
+func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
@@ -60,7 +61,7 @@ func runList(cmd *cobra.Command, reveal bool) error {
 
 	// Collect plain-text row data for column width calculation.
 	type row struct {
-		name, hosts, value, source, last string
+		name, hosts, value, placeholder, source, last string
 	}
 	rows := make([]row, len(creds))
 	for i, c := range creds {
@@ -76,18 +77,25 @@ func runList(cmd *cobra.Command, reveal bool) error {
 		if reveal {
 			r.value = c.Real
 		}
+		if showPlaceholder {
+			r.placeholder = c.Placeholder
+		}
 		rows[i] = r
 	}
 
 	// Compute column widths from data and headers.
 	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
 	valueW := len("VALUE")
+	phW := len("PLACEHOLDER")
 	for _, r := range rows {
 		nameW = maxInt(nameW, len(r.name))
 		hostsW = maxInt(hostsW, len(r.hosts))
 		sourceW = maxInt(sourceW, len(r.source))
 		if reveal {
 			valueW = maxInt(valueW, len(r.value))
+		}
+		if showPlaceholder {
+			phW = maxInt(phW, len(r.placeholder))
 		}
 	}
 
@@ -108,6 +116,22 @@ func runList(cmd *cobra.Command, reveal bool) error {
 				padRight(r.name, nameW), gap,
 				hosts, gap,
 				padRight(r.value, valueW), gap,
+				padRight(r.source, sourceW), gap,
+				r.last)
+		}
+	} else if showPlaceholder {
+		fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
+			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
+			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
+			ui.Muted.Sprint("LAST INJECTED"))
+		for _, r := range rows {
+			hosts := styleHosts(r.hosts, hostsW)
+			fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+				padRight(r.name, nameW), gap,
+				hosts, gap,
+				padRight(r.placeholder, phW), gap,
 				padRight(r.source, sourceW), gap,
 				r.last)
 		}
