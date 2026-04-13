@@ -99,13 +99,17 @@ An empty config file or a file with only comments is valid.
 2. Merges `skip_hosts` into the `NO_PROXY` env var for the child process.
 3. Drift detection: compares `scoping` entries against vault contents. Prints warnings to stderr for:
    - Credentials in the vault with no `scoping` entry (uncovered).
-   - `scoping` entries that don't match any credential in the vault (stale).
-4. Warnings are non-blocking — the command proceeds normally.
+   - `scoping` entries that don't match any credential in the vault (stale, e.g., after `veil remove`).
+4. Warnings are non-blocking — the command proceeds normally. Drift warnings are suppressed when zero credentials are loaded (the zero-credential warning is sufficient on its own).
 
 ### `veil add`
 
 1. Reads `.veil/config.yaml` if it exists.
 2. If the credential name being added has an entry in `scoping`, applies those hosts as defaults. If `--host` flags are also provided, the flags take precedence (explicit user intent on a specific command overrides file defaults).
+
+### `veil remove`
+
+No config changes on remove. The credential's `scoping` entry becomes stale. This is detected by `veil run` (drift warning) and cleaned up by `veil sync`.
 
 ### `veil sync` (new command)
 
