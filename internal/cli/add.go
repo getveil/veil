@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/scanner"
 	"github.com/8enji/veil/internal/ui"
@@ -43,6 +44,13 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
+	// Load project config for scoping defaults.
+	configPath := config.ConfigFile(root)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return cliError(fmt.Sprintf("loading config: %v", err), "")
+	}
+
 	var value string
 	if flagValue != "" {
 		value = flagValue
@@ -70,10 +78,14 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError(fmt.Sprintf("generating placeholder: %v", err), "")
 	}
 
-	// Resolve allowed hosts.
+	// Resolve allowed hosts: --host flags > config scoping > auto-detection.
 	allowedHosts := hosts
 	if len(allowedHosts) == 0 {
-		allowedHosts = placeholder.HostsForCredential(name, value)
+		if configHosts, ok := cfg.Scoping[name]; ok {
+			allowedHosts = configHosts
+		} else {
+			allowedHosts = placeholder.HostsForCredential(name, value)
+		}
 	}
 
 	// Handle --force: delete existing credential, capture old placeholder for .env sync.

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/8enji/veil/internal/config"
 )
 
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
@@ -529,6 +531,354 @@ func TestHelpOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "veil run") {
 		t.Errorf("help should mention 'veil run', got: %s", output)
+	}
+}
+
+func TestInitGeneratesConfig(t *testing.T) {
+	root := initProject(t)
+
+	// Config file should exist after init.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config file should exist after init: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "scoping:") {
+		t.Error("config should contain scoping section")
+	}
+	if !strings.Contains(content, "OPENAI_API_KEY") {
+		t.Error("config should contain the vaulted credential name")
+	}
+	if !strings.Contains(content, "api.openai.com") {
+		t.Error("config should contain auto-detected host")
+	}
+}
+
+func TestInitRespectsIgnorePatterns(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two .env files.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("API_KEY=sk-proj-1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env.local"), []byte("LOCAL_KEY=sk-proj-abcdef1234567890\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .veil dir and config that ignores .env.local.
+	veilDir := filepath.Join(tmpDir, ".veil")
+	if err := os.MkdirAll(veilDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configContent := "ignore:\n  - \".env.local\"\n"
+	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	output := out.String()
+	// Should process 1 .env file (not .env.local).
+	if !strings.Contains(output, "1 secret") {
+		t.Errorf("expected 1 secret vaulted (ignoring .env.local), got: %s", output)
+	}
+}
+
+func TestInitRespectsScopingConfig(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("CUSTOM_TOKEN=secret1234567890abc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create config with scoping.
+	veilDir := filepath.Join(tmpDir, ".veil")
+	if err := os.MkdirAll(veilDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configContent := "scoping:\n  CUSTOM_TOKEN:\n    - api.custom.com\n    - cdn.custom.com\n"
+	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Verify the credential got the config-specified hosts.
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	cred, found := v.Get("CUSTOM_TOKEN")
+	if !found {
+		t.Fatal("CUSTOM_TOKEN not found in vault")
+	}
+	if len(cred.AllowedHosts) != 2 {
+		t.Fatalf("expected 2 allowed hosts from config, got %d: %v", len(cred.AllowedHosts), cred.AllowedHosts)
+	}
+	if cred.AllowedHosts[0] != "api.custom.com" {
+		t.Errorf("expected first host 'api.custom.com', got %q", cred.AllowedHosts[0])
+	}
+}
+
+func TestAddRespectsConfigScoping(t *testing.T) {
+	root := initProject(t)
+
+	// Write config with scoping for a new credential.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	configContent := "scoping:\n  NEW_TOKEN:\n    - api.newservice.com\n    - cdn.newservice.com\n"
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add credential without --host flags.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "NEW_TOKEN"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Check vault has config-specified hosts.
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	cred, found := v.Get("NEW_TOKEN")
+	if !found {
+		t.Fatal("NEW_TOKEN not found in vault")
+	}
+	if len(cred.AllowedHosts) != 2 || cred.AllowedHosts[0] != "api.newservice.com" {
+		t.Errorf("expected config hosts, got %v", cred.AllowedHosts)
+	}
+}
+
+func TestAddHostFlagOverridesConfig(t *testing.T) {
+	root := initProject(t)
+
+	// Write config with scoping.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	configContent := "scoping:\n  NEW_TOKEN:\n    - api.config.com\n"
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add credential with explicit --host flag — should override config.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "--host", "api.override.com", "NEW_TOKEN"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	cred, found := v.Get("NEW_TOKEN")
+	if !found {
+		t.Fatal("NEW_TOKEN not found")
+	}
+	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.override.com" {
+		t.Errorf("--host flag should override config, got %v", cred.AllowedHosts)
+	}
+}
+
+func TestCheckConfigDrift_Stale(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"EXISTS":    {"api.example.com"},
+			"STALE_KEY": {"api.stale.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"EXISTS"})
+
+	var foundStale bool
+	for _, w := range warnings {
+		if strings.Contains(w, "STALE_KEY") && strings.Contains(w, "stale") {
+			foundStale = true
+		}
+	}
+	if !foundStale {
+		t.Errorf("expected stale warning for STALE_KEY, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_Uncovered(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"COVERED": {"api.example.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"COVERED", "UNCOVERED_KEY"})
+
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, "UNCOVERED_KEY") && strings.Contains(w, "no scoping") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected uncovered warning for UNCOVERED_KEY, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_ZeroCredentials(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"ANYTHING": {"api.example.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, nil)
+	if len(warnings) != 0 {
+		t.Errorf("zero credentials should suppress drift warnings, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_NoDrift(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"KEY_A": {"api.a.com"},
+			"KEY_B": {"api.b.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
+	if len(warnings) != 0 {
+		t.Errorf("expected no drift, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_EmptyScoping(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{}, // no scoping entries
+	}
+	// Should NOT warn about uncovered credentials when scoping is empty.
+	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings when scoping is empty, got: %v", warnings)
+	}
+}
+
+func TestSyncAddsNewCredential(t *testing.T) {
+	root := initProject(t)
+
+	// Add a new credential that won't be in the generated config.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "my-new-secret-value-1234", "BRAND_NEW_KEY"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Run sync.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	output := syncOut.String()
+	if !strings.Contains(output, "BRAND_NEW_KEY") {
+		t.Errorf("sync should report adding BRAND_NEW_KEY, got: %s", output)
+	}
+
+	// Verify config file contains the new credential.
+	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	if !strings.Contains(string(configData), "BRAND_NEW_KEY") {
+		t.Error("config file should contain BRAND_NEW_KEY after sync")
+	}
+}
+
+func TestSyncDryRun(t *testing.T) {
+	root := initProject(t)
+
+	// Add a credential.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "another-secret-value-1234", "DRY_KEY"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Read config before sync.
+	configBefore, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run sync --dry-run.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root, "--dry-run"})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync --dry-run failed: %v", err)
+	}
+
+	if !strings.Contains(syncOut.String(), "dry run") {
+		t.Error("expected dry run notice in output")
+	}
+
+	// Config file should be unchanged.
+	configAfter, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configBefore) != string(configAfter) {
+		t.Error("config should not change during dry run")
+	}
+}
+
+func TestSyncNoChanges(t *testing.T) {
+	root := initProject(t)
+
+	// Sync immediately after init — should be in sync already.
+	syncCmd := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	syncCmd.SetOut(syncOut)
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if !strings.Contains(syncOut.String(), "in sync") {
+		t.Errorf("expected 'in sync' message, got: %s", syncOut.String())
 	}
 }
 

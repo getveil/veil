@@ -57,6 +57,7 @@ credentials at the proxy layer — so the agent never sees them.`,
 	root.AddCommand(listCmd())
 	root.AddCommand(logCmd())
 	root.AddCommand(removeCmd())
+	root.AddCommand(syncCmd())
 	return root
 }
 

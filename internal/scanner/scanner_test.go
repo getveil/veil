@@ -123,3 +123,67 @@ func TestScan_IgnoresDirectories(t *testing.T) {
 		t.Errorf("Scan returned %d files, want 0 (directory should be ignored)", len(got))
 	}
 }
+
+func TestScan_IgnorePatterns(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create .env and .env.local.
+	for _, name := range []string{".env", ".env.local"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("X=1\n"), 0o644); err != nil {
+			t.Fatalf("creating %s: %v", name, err)
+		}
+	}
+
+	// Ignore .env.local.
+	got, err := Scan(dir, ".env.local")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 file, got %d: %v", len(got), got)
+	}
+	if filepath.Base(got[0]) != ".env" {
+		t.Errorf("expected .env, got %s", got[0])
+	}
+}
+
+func TestScan_IgnoreGlobStar(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.production"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ignore all .env.* files using glob.
+	got, err := Scan(dir, ".env.*")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 file, got %d: %v", len(got), got)
+	}
+	if filepath.Base(got[0]) != ".env" {
+		t.Errorf("expected .env, got %s", got[0])
+	}
+}
+
+func TestScan_NoIgnorePatterns(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".env", ".env.local"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("X=1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// No ignore patterns — same as current behavior.
+	got, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(got), got)
+	}
+}

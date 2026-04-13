@@ -269,7 +269,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"REQUESTS_CA_BUNDLE=/old/requests-ca.pem",
 	}
 
-	result := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem")
+	result := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", nil)
 
 	env := make(map[string]string)
 	for _, kv := range result {
@@ -323,5 +323,47 @@ func TestBuildChildEnv(t *testing.T) {
 	}
 	if env["OTHER_VAR"] != "keep-me" {
 		t.Fatalf("OTHER_VAR = %q, want keep-me", env["OTHER_VAR"])
+	}
+}
+
+func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
+	env := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", []string{"staging.internal.com", "*.metrics.corp"})
+
+	var noProxy string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "NO_PROXY=") {
+			noProxy = strings.TrimPrefix(kv, "NO_PROXY=")
+			break
+		}
+	}
+
+	if noProxy == "" {
+		t.Fatal("NO_PROXY not found in env")
+	}
+	if !strings.Contains(noProxy, "localhost") {
+		t.Error("NO_PROXY should contain default localhost")
+	}
+	if !strings.Contains(noProxy, "staging.internal.com") {
+		t.Error("NO_PROXY should contain staging.internal.com from skip_hosts")
+	}
+	if !strings.Contains(noProxy, "*.metrics.corp") {
+		t.Error("NO_PROXY should contain *.metrics.corp from skip_hosts")
+	}
+}
+
+func TestBuildChildEnv_EmptySkipHosts(t *testing.T) {
+	env := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil)
+
+	var noProxy string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "NO_PROXY=") {
+			noProxy = strings.TrimPrefix(kv, "NO_PROXY=")
+			break
+		}
+	}
+	// Should still have the defaults.
+	want := "localhost,127.0.0.1,::1"
+	if noProxy != want {
+		t.Errorf("NO_PROXY = %q, want %q", noProxy, want)
 	}
 }

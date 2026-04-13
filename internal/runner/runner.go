@@ -19,11 +19,12 @@ import (
 
 // Config holds the parameters for a single veil run invocation.
 type Config struct {
-	Root     string         // project root
-	Command  string         // child command
-	Args     []string       // child args
-	Verbose  bool           //nolint:unused // reserved for future use
-	Keystore vault.Keystore // optional; nil means AutoKeystore
+	Root      string         // project root
+	Command   string         // child command
+	Args      []string       // child args
+	Verbose   bool           //nolint:unused // reserved for future use
+	SkipHosts []string       // hosts to exclude from proxying (added to NO_PROXY)
+	Keystore  vault.Keystore // optional; nil means AutoKeystore
 }
 
 // Result holds the outcome of a completed child process.
@@ -104,7 +105,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	// 6. Build child env: strip existing proxy vars and inject ours.
 	proxyURL := "http://" + server.Addr()
-	env := buildChildEnv(os.Environ(), proxyURL, bundlePath)
+	env := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts)
 
 	// 7. Exec child.
 	ttyFd := stdinTTYFd()
@@ -169,7 +170,8 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 // buildChildEnv takes the current env, strips proxy-related and CA-related vars,
 // and adds the proxy vars pointing to proxyURL and CA vars pointing to bundlePath.
-func buildChildEnv(environ []string, proxyURL, bundlePath string) []string {
+// skipHosts are appended to the default NO_PROXY list.
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string) []string {
 	stripped := make([]string, 0, len(environ))
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
@@ -183,13 +185,18 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string) []string {
 		stripped = append(stripped, kv)
 	}
 
+	noProxy := "localhost,127.0.0.1,::1"
+	if len(skipHosts) > 0 {
+		noProxy = noProxy + "," + strings.Join(skipHosts, ",")
+	}
+
 	return append(stripped,
 		"HTTP_PROXY="+proxyURL,
 		"HTTPS_PROXY="+proxyURL,
 		"http_proxy="+proxyURL,
 		"https_proxy="+proxyURL,
-		"NO_PROXY=localhost,127.0.0.1,::1",
-		"no_proxy=localhost,127.0.0.1,::1",
+		"NO_PROXY="+noProxy,
+		"no_proxy="+noProxy,
 		"NODE_EXTRA_CA_CERTS="+bundlePath,
 		"SSL_CERT_FILE="+bundlePath,
 		"CURL_CA_BUNDLE="+bundlePath,

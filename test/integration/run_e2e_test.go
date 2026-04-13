@@ -231,8 +231,8 @@ func TestE2E_InitAndRun(t *testing.T) {
 	}
 	// No injections happened (no HTTP requests through the proxy), so just
 	// verify it doesn't crash and prints the expected empty-state message.
-	if !strings.Contains(string(logOut), "No injection events found") {
-		t.Error("log output missing 'No injection events found'")
+	if !strings.Contains(string(logOut), "No credential injections") {
+		t.Error("log output missing 'No credential injections'")
 	}
 }
 
