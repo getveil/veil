@@ -233,6 +233,25 @@ The file lives inside `.veil/` which is already gitignored. Users never need to 
 
 8 commands to 8 commands (swap `sync` for `skip`), with significantly less hidden complexity.
 
+## Styling
+
+All new CLI output must follow the established patterns from the CLI output design (`2026-04-12-cli-output-design.md`) and the `internal/ui` package:
+
+- **Phase headers** (`ui.Phase()`) — muted text announcing what's about to happen (e.g., "Scanning project...")
+- **Step confirmations** (`ui.Step()`) — green `✓` prefix for completed actions
+- **Warnings** (`ui.Warn()`) — yellow `!` prefix for actionable notices
+- **Muted text** (`ui.Muted`) — hints, secondary info, dimmed labels
+- **Errors** (`ui.FormatError()`) — red "error:" prefix with optional dimmed hint
+
+Specific to the new surfaces:
+
+- **Interactive prompts** should use the existing color palette. Prompt text in default color, defaults highlighted in bold (e.g., `(Y/n/select)`), user-facing hints in muted.
+- **`veil skip` output** should match `veil add` — `ui.Step()` for confirmations, `ui.Muted` for secondary details, `ui.FormatError()` for errors.
+- **Token listing during init** should use muted for redacted values (e.g., `ghp_****`), default color for names.
+- **All Veil output during `veil run`** goes to stderr so child stdout is not polluted. This applies to skip host messaging as well.
+
+No new styling primitives needed. The `internal/ui` package already has everything required.
+
 ## What This Does Not Include
 
 - **Config file of any kind.** All settings are managed through CLI commands.
