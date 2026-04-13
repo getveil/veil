@@ -57,11 +57,18 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		return cliError("project already initialized", "Use --force to reinitialize")
 	}
 
+	// 2b. Load existing config if present.
+	configPath := config.ConfigFile(root)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return cliError(fmt.Sprintf("loading config: %v", err), "")
+	}
+
 	// Phase: Scanning project.
 	ui.Phase(w, "Scanning project...")
 
 	// 3. Scan .env files.
-	envPaths, err := scanner.Scan(root)
+	envPaths, err := scanner.Scan(root, cfg.Ignore...)
 	if err != nil {
 		return cliError(fmt.Sprintf("scanning .env files: %v", err), "")
 	}
@@ -139,7 +146,12 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 				return cliError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err), "")
 			}
 
-			credHosts := placeholder.HostsForCredential(line.Key, line.Value)
+			var credHosts []string
+			if configHosts, ok := cfg.Scoping[line.Key]; ok {
+				credHosts = configHosts
+			} else {
+				credHosts = placeholder.HostsForCredential(line.Key, line.Value)
+			}
 
 			cred := &vault.Credential{
 				ID:           vault.NewID(),
@@ -181,7 +193,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 8b. Process MCP config.
 	var mcpConfigsProcessed int
 	if mcpConfigPath != "" {
-		n, s, err := processMCPConfig(cmd, v, mcpConfigPath, force, dryRun)
+		n, s, err := processMCPConfig(cmd, v, mcpConfigPath, force, dryRun, cfg)
 		if err != nil {
 			return err
 		}
@@ -202,6 +214,21 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		ui.Warn(w, fmt.Sprintf("%d unscoped (use veil add --host to scope)", unscoped))
 	}
 	_, _ = fmt.Fprintln(w)
+
+	// Phase: Writing config.
+	if !dryRun {
+		entries := make([]config.ScopingEntry, 0, len(v.List()))
+		for _, cred := range v.List() {
+			entries = append(entries, config.ScopingEntry{
+				Name:  cred.Name,
+				Hosts: cred.AllowedHosts,
+			})
+		}
+		configContent := config.Generate(entries)
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			return cliError(fmt.Sprintf("writing config: %v", err), "")
+		}
+	}
 
 	// Phase: Setting up proxy.
 	ui.Phase(w, "Setting up proxy...")
@@ -241,7 +268,7 @@ func plural(n int, singular, pluralForm string) string {
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
 // rewrites the config with placeholders. Returns the number of secrets vaulted
 // and the number auto-scoped to hosts.
-func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, force, dryRun bool) (int, int, error) {
+func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, force, dryRun bool, cfg *config.ProjectConfig) (int, int, error) {
 	// Check for existing backup (indicates already migrated).
 	backupPath := configPath + ".veil-backup"
 	if _, err := os.Stat(backupPath); err == nil && !force {
@@ -249,7 +276,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		return 0, 0, nil
 	}
 
-	cfg, err := mcpconfig.Parse(configPath)
+	mcpCfg, err := mcpconfig.Parse(configPath)
 	if err != nil {
 		return 0, 0, cliError(fmt.Sprintf("parsing MCP config: %v", err), "")
 	}
@@ -258,7 +285,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 	var scoped int
 	configChanged := false
 
-	for serverName, server := range cfg.Servers() {
+	for serverName, server := range mcpCfg.Servers() {
 		for key, value := range server.Env {
 			if !placeholder.IsSecretLike(key, value) {
 				if flagVerbose {
@@ -272,9 +299,14 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 				return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err), "")
 			}
 
-			credHosts := placeholder.HostsForCredential(key, value)
-
 			credName := fmt.Sprintf("mcp:%s:%s", serverName, key)
+
+			var credHosts []string
+			if configHosts, ok := cfg.Scoping[credName]; ok {
+				credHosts = configHosts
+			} else {
+				credHosts = placeholder.HostsForCredential(key, value)
+			}
 			cred := &vault.Credential{
 				ID:           vault.NewID(),
 				Name:         credName,
@@ -300,7 +332,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
 			} else {
-				cfg.SetEnvValue(serverName, key, ph)
+				mcpCfg.SetEnvValue(serverName, key, ph)
 				configChanged = true
 			}
 		}
@@ -317,7 +349,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		}
 
 		// Write updated config.
-		newData, err := cfg.Bytes()
+		newData, err := mcpCfg.Bytes()
 		if err != nil {
 			return 0, 0, cliError(fmt.Sprintf("serializing MCP config: %v", err), "")
 		}

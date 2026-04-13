@@ -249,6 +249,117 @@ func TestColorFlagNoColor(t *testing.T) {
 	_ = cmd.Execute()
 }
 
+func TestInitGeneratesConfig(t *testing.T) {
+	root := initProject(t)
+
+	// Config file should exist after init.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config file should exist after init: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "scoping:") {
+		t.Error("config should contain scoping section")
+	}
+	if !strings.Contains(content, "OPENAI_API_KEY") {
+		t.Error("config should contain the vaulted credential name")
+	}
+	if !strings.Contains(content, "api.openai.com") {
+		t.Error("config should contain auto-detected host")
+	}
+}
+
+func TestInitRespectsIgnorePatterns(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two .env files.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("API_KEY=sk-proj-1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env.local"), []byte("LOCAL_KEY=sk-proj-abcdef1234567890\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .veil dir and config that ignores .env.local.
+	veilDir := filepath.Join(tmpDir, ".veil")
+	if err := os.MkdirAll(veilDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configContent := "ignore:\n  - \".env.local\"\n"
+	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	output := out.String()
+	// Should process 1 .env file (not .env.local).
+	if !strings.Contains(output, "1 secret") {
+		t.Errorf("expected 1 secret vaulted (ignoring .env.local), got: %s", output)
+	}
+}
+
+func TestInitRespectsScopingConfig(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("CUSTOM_TOKEN=secret1234567890abc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create config with scoping.
+	veilDir := filepath.Join(tmpDir, ".veil")
+	if err := os.MkdirAll(veilDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configContent := "scoping:\n  CUSTOM_TOKEN:\n    - api.custom.com\n    - cdn.custom.com\n"
+	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Verify the credential got the config-specified hosts.
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	cred, found := v.Get("CUSTOM_TOKEN")
+	if !found {
+		t.Fatal("CUSTOM_TOKEN not found in vault")
+	}
+	if len(cred.AllowedHosts) != 2 {
+		t.Fatalf("expected 2 allowed hosts from config, got %d: %v", len(cred.AllowedHosts), cred.AllowedHosts)
+	}
+	if cred.AllowedHosts[0] != "api.custom.com" {
+		t.Errorf("expected first host 'api.custom.com', got %q", cred.AllowedHosts[0])
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
