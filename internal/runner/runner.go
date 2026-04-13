@@ -66,6 +66,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("load or create CA: %w", err)
 	}
 
+	// 3b. Resolve CA cert path for child env injection.
+	caCertPath, err := config.CAFile()
+	if err != nil {
+		return nil, fmt.Errorf("ca cert path: %w", err)
+	}
+
 	// 4. Trust preflight.
 	if !proxy.IsTrusted(ca) {
 		fmt.Fprintln(os.Stderr,
@@ -85,15 +91,16 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	// 6. Build child env: strip existing proxy vars and inject ours.
 	proxyURL := "http://" + server.Addr()
-	env := buildChildEnv(os.Environ(), proxyURL)
+	env := buildChildEnv(os.Environ(), proxyURL, caCertPath)
 
 	// 7. Exec child.
+	ttyFd := stdinTTYFd()
 	child := exec.CommandContext(ctx, cfg.Command, cfg.Args...) //nolint:gosec // G204: command is explicitly provided by the user via CLI
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 	child.Env = env
-	child.SysProcAttr = procAttr()
+	child.SysProcAttr = procAttr(ttyFd)
 
 	// 8. Start child.
 	if err := child.Start(); err != nil {
@@ -109,7 +116,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	waitErr := child.Wait()
 	sigCancel()
 
-	// 11. Extract exit code.
+	// 11. Reclaim foreground process group so veil can write to the terminal.
+	reclaimForeground(ttyFd)
+
+	// 12. Extract exit code.
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		return &Result{ExitCode: exitErr.ExitCode()}, nil
 	}
@@ -119,9 +129,9 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	return &Result{ExitCode: 0}, nil
 }
 
-// buildChildEnv takes the current env, strips proxy-related vars, and adds the
-// proxy vars pointing to addr.
-func buildChildEnv(environ []string, proxyURL string) []string {
+// buildChildEnv takes the current env, strips proxy-related and CA-related vars,
+// and adds the proxy vars pointing to proxyURL and CA vars pointing to bundlePath.
+func buildChildEnv(environ []string, proxyURL, bundlePath string) []string {
 	stripped := make([]string, 0, len(environ))
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
@@ -129,7 +139,7 @@ func buildChildEnv(environ []string, proxyURL string) []string {
 			stripped = append(stripped, kv)
 			continue
 		}
-		if isProxyEnvKey(key) {
+		if isProxyEnvKey(key) || isCAEnvKey(key) {
 			continue
 		}
 		stripped = append(stripped, kv)
@@ -142,6 +152,11 @@ func buildChildEnv(environ []string, proxyURL string) []string {
 		"https_proxy="+proxyURL,
 		"NO_PROXY=localhost,127.0.0.1,::1",
 		"no_proxy=localhost,127.0.0.1,::1",
+		"NODE_EXTRA_CA_CERTS="+bundlePath,
+		"SSL_CERT_FILE="+bundlePath,
+		"CURL_CA_BUNDLE="+bundlePath,
+		"REQUESTS_CA_BUNDLE="+bundlePath,
+		"HTTPLIB2_CA_CERTS="+bundlePath,
 	)
 }
 
@@ -149,6 +164,28 @@ func buildChildEnv(environ []string, proxyURL string) []string {
 // variable that should be stripped and replaced.
 func isProxyEnvKey(key string) bool {
 	for _, k := range proxyEnvKeys {
+		if strings.EqualFold(key, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// caEnvKeys lists environment variable names that configure CA certificate
+// bundles across runtimes. These are stripped and replaced with Veil's
+// combined bundle.
+var caEnvKeys = []string{
+	"NODE_EXTRA_CA_CERTS",
+	"SSL_CERT_FILE",
+	"CURL_CA_BUNDLE",
+	"REQUESTS_CA_BUNDLE",
+	"HTTPLIB2_CA_CERTS",
+}
+
+// isCAEnvKey returns true if the given key is a CA-related environment
+// variable that should be stripped and replaced.
+func isCAEnvKey(key string) bool {
+	for _, k := range caEnvKeys {
 		if strings.EqualFold(key, k) {
 			return true
 		}
