@@ -66,18 +66,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("load or create CA: %w", err)
 	}
 
-	// 3b. Resolve CA cert path for child env injection.
-	caCertPath, err := config.CAFile()
+	// 3b. Build combined CA bundle (system CAs + Veil CA).
+	bundlePath, err := proxy.BuildCABundle(ca.CertPEM)
 	if err != nil {
-		return nil, fmt.Errorf("ca cert path: %w", err)
+		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
-
-	// 4. Trust preflight.
-	if !proxy.IsTrusted(ca) {
-		fmt.Fprintln(os.Stderr,
-			"WARNING: Veil's root CA is not trusted by the system. "+
-				"Agents may see TLS errors. Run 'veil trust' to install it.")
-	}
+	defer proxy.RemoveCABundle(bundlePath)
 
 	// 5. Start proxy.
 	server, err := proxy.New(ca, vlt, auditStore, os.Getpid(), cfg.Command)
@@ -91,7 +85,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	// 6. Build child env: strip existing proxy vars and inject ours.
 	proxyURL := "http://" + server.Addr()
-	env := buildChildEnv(os.Environ(), proxyURL, caCertPath)
+	env := buildChildEnv(os.Environ(), proxyURL, bundlePath)
 
 	// 7. Exec child.
 	ttyFd := stdinTTYFd()
