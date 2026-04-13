@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/proxy"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 )
 
@@ -83,6 +85,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = server.Stop() }()
 
+	// 5b. Print startup line to stderr.
+	credCount := len(vlt.List())
+	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
+		ui.Success.Sprint("veil"), credCount)
+	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
+
 	// 6. Build child env: strip existing proxy vars and inject ours.
 	proxyURL := "http://" + server.Addr()
 	env := buildChildEnv(os.Environ(), proxyURL, bundlePath)
@@ -97,6 +105,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	child.SysProcAttr = procAttr(ttyFd)
 
 	// 8. Start child.
+	sessionStart := time.Now()
 	if err := child.Start(); err != nil {
 		return nil, fmt.Errorf("start child: %w", err)
 	}
@@ -112,6 +121,24 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	// 11. Reclaim foreground process group so veil can write to the terminal.
 	reclaimForeground(ttyFd)
+
+	// 11b. Print exit summary to stderr.
+	sessionDuration := time.Since(sessionStart)
+	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := auditStore.Summary(sessionStart)
+	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
+	fmt.Fprintf(os.Stderr, "%s session complete\n", ui.Success.Sprint("veil"))
+	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", formatDuration(sessionDuration))
+	if summaryErr == nil {
+		hostInfo := "0 hosts"
+		if len(sessionHosts) > 0 {
+			hostInfo = fmt.Sprintf("%d host(s)", len(sessionHosts))
+		}
+		fmt.Fprintf(os.Stderr, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
+		if sessionBlocked > 0 {
+			fmt.Fprintf(os.Stderr, "  Blocked:     %d\n", sessionBlocked)
+		}
+	}
+	fmt.Fprintln(os.Stderr)
 
 	// 12. Extract exit code.
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -185,4 +212,21 @@ func isCAEnvKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// formatDuration formats a duration as "Xh Ym Zs", omitting zero components.
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
 }

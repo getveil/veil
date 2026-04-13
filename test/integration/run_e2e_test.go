@@ -194,7 +194,7 @@ func TestE2E_InitAndRun(t *testing.T) {
 		t.Fatalf("veil status failed: %v\n%s", err, statusOut)
 	}
 	statusStr := string(statusOut)
-	if !strings.Contains(statusStr, "Credentials:") {
+	if !strings.Contains(statusStr, "Credentials") {
 		t.Error("status output missing Credentials line")
 	}
 	if !strings.Contains(statusStr, "Veil Status") {

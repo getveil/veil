@@ -94,6 +94,12 @@ func TestAddAndList(t *testing.T) {
 	if !strings.Contains(output, "OPENAI_API_KEY") {
 		t.Errorf("list should contain OPENAI_API_KEY, got: %s", output)
 	}
+	if strings.Contains(output, "CREATED") {
+		t.Errorf("list should not contain CREATED column, got: %s", output)
+	}
+	if !strings.Contains(output, "credentials") {
+		t.Errorf("list should contain footer with 'credentials', got: %s", output)
+	}
 }
 
 func TestAddForce(t *testing.T) {
@@ -145,6 +151,9 @@ func TestLogEmpty(t *testing.T) {
 	if !strings.Contains(out.String(), "No injection events found") {
 		t.Errorf("expected empty log message, got: %s", out.String())
 	}
+	if !strings.Contains(out.String(), "veil run") {
+		t.Errorf("expected hint about 'veil run', got: %s", out.String())
+	}
 }
 
 func TestLogJSON(t *testing.T) {
@@ -179,17 +188,17 @@ func TestStatusOutput(t *testing.T) {
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "Credentials:") {
-		t.Errorf("status should contain 'Credentials:', got: %s", output)
+	if !strings.Contains(output, "Credentials") {
+		t.Errorf("status should contain 'Credentials', got: %s", output)
 	}
-	if !strings.Contains(output, "CA:") {
-		t.Errorf("status should contain 'CA:', got: %s", output)
+	if !strings.Contains(output, "CA") {
+		t.Errorf("status should contain 'CA', got: %s", output)
 	}
 	if !strings.Contains(output, "Veil Status") {
 		t.Errorf("status should contain 'Veil Status', got: %s", output)
 	}
-	if !strings.Contains(output, "Injections:") {
-		t.Errorf("status should contain 'Injections:', got: %s", output)
+	if !strings.Contains(output, "Injections") {
+		t.Errorf("status should contain 'Injections', got: %s", output)
 	}
 }
 
@@ -230,6 +239,14 @@ func TestListEmpty(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
+}
+
+func TestColorFlagNoColor(t *testing.T) {
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--no-color", "status", "--path", "/nonexistent"})
+	_ = cmd.Execute()
 }
 
 func TestParseSince(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -42,18 +43,18 @@ func logCmd() *cobra.Command {
 func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked bool) error {
 	root, err := resolveRoot()
 	if err != nil {
-		return exitError(err.Error())
+		return cliError(err.Error(), "")
 	}
 
 	sinceTime, err := parseSince(since)
 	if err != nil {
-		return exitError(fmt.Sprintf("invalid --since value: %v", err))
+		return cliError(fmt.Sprintf("invalid --since value: %v", err), "")
 	}
 
 	auditDBPath := config.AuditDBFile(root)
 	store, err := audit.Open(auditDBPath)
 	if err != nil {
-		return exitError(fmt.Sprintf("opening audit db: %v", err))
+		return cliError(fmt.Sprintf("opening audit db: %v", err), "")
 	}
 	defer func() { _ = store.Close() }()
 
@@ -65,7 +66,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		IncludeBlocked: blocked,
 	})
 	if err != nil {
-		return exitError(fmt.Sprintf("querying audit log: %v", err))
+		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
 	}
 
 	w := cmd.OutOrStdout()
@@ -87,14 +88,15 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 
 	if len(rows) == 0 {
 		_, _ = fmt.Fprintln(w, "No injection events found.")
+		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("Injections are logged when you run commands through veil run"))
 		return nil
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 4, 4, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "TIMESTAMP\tHOST\tMETHOD\tCREDENTIAL\tLOCATION")
+	ui.TableHeader(tw, "TIMESTAMP", "HOST", "METHOD", "CREDENTIAL", "LOCATION")
 	for _, r := range rows {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			r.Timestamp.Format(time.RFC3339),
+			ui.RelativeTime(r.Timestamp),
 			r.Host,
 			r.Method,
 			r.CredentialName,
@@ -102,6 +104,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		)
 	}
 	_ = tw.Flush()
+	ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
 	return nil
 }
 

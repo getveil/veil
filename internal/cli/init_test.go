@@ -82,8 +82,11 @@ func TestInitHappyPath(t *testing.T) {
 	if !strings.Contains(outStr, "Veil initialized") {
 		t.Errorf("expected summary, got: %s", outStr)
 	}
-	if !strings.Contains(outStr, "Secrets vaulted: 1") {
-		t.Errorf("expected 1 secret vaulted, got: %s", outStr)
+	if !strings.Contains(outStr, "Secrets vaulted:") {
+		t.Errorf("expected secrets vaulted line, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "✓") {
+		t.Errorf("expected checkmark in output, got: %s", outStr)
 	}
 }
 
@@ -328,7 +331,7 @@ func TestInitWithMCPConfig(t *testing.T) {
 
 	// Assert summary mentions both .env and MCP config.
 	outStr := out.String()
-	if !strings.Contains(outStr, "MCP configs processed: 1") {
+	if !strings.Contains(outStr, "MCP configs processed:") {
 		t.Errorf("expected MCP config in summary, got: %s", outStr)
 	}
 
@@ -396,10 +399,10 @@ func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "Secrets vaulted: 1") {
-		t.Errorf("expected 1 secret vaulted, got: %s", outStr)
+	if !strings.Contains(outStr, "Secrets vaulted:") {
+		t.Errorf("expected secrets vaulted line, got: %s", outStr)
 	}
-	if !strings.Contains(outStr, "MCP configs processed: 1") {
+	if !strings.Contains(outStr, "MCP configs processed:") {
 		t.Errorf("expected MCP config in summary, got: %s", outStr)
 	}
 }

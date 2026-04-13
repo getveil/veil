@@ -12,6 +12,7 @@ import (
 	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/scanner"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -32,18 +33,20 @@ func initCmd() *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, force, dryRun bool) error {
+	w := cmd.OutOrStdout()
+
 	// 1. Resolve project root.
 	root := flagPath
 	if root == "" {
 		r, err := config.FindProjectRoot(".")
 		if err != nil {
-			return exitError(err.Error())
+			return cliError(err.Error(), "")
 		}
 		root = r
 	} else {
 		abs, err := filepath.Abs(root)
 		if err != nil {
-			return exitError(err.Error())
+			return cliError(err.Error(), "")
 		}
 		root = abs
 	}
@@ -51,26 +54,38 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 2. Check existing .veil/ directory.
 	stateDir := config.ProjectStateDir(root)
 	if info, err := os.Stat(stateDir); err == nil && info.IsDir() && !force {
-		return exitError("project already initialized (use --force to reinitialize)")
+		return cliError("project already initialized", "Use --force to reinitialize")
 	}
+
+	// Phase: Scanning project.
+	ui.Phase(w, "Scanning project...")
 
 	// 3. Scan .env files.
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
-		return exitError(fmt.Sprintf("scanning .env files: %v", err))
+		return cliError(fmt.Sprintf("scanning .env files: %v", err), "")
 	}
 
 	// 3b. Discover MCP config.
 	mcpConfigPath, err := mcpconfig.Discover()
 	if err != nil {
-		return exitError(fmt.Sprintf("discovering MCP config: %v", err))
+		return cliError(fmt.Sprintf("discovering MCP config: %v", err), "")
 	}
 
 	// Early exit if nothing to process.
 	if len(envPaths) == 0 && mcpConfigPath == "" {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no .env files or MCP configs found in %s\n", root)
+		_, _ = fmt.Fprintf(w, "no .env files or MCP configs found in %s\n", root)
 		return nil
 	}
+
+	// Report what was found.
+	if len(envPaths) > 0 {
+		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
+	}
+	if mcpConfigPath != "" {
+		ui.Step(w, "Found 1 MCP config")
+	}
+	_, _ = fmt.Fprintln(w)
 
 	// 4. Generate project ID.
 	projectID := vault.NewID()
@@ -78,33 +93,25 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 	// 5. Determine keystore.
 	ks, err := buildKeystore()
 	if err != nil {
-		return exitError(fmt.Sprintf("keystore: %v", err))
+		return cliError(fmt.Sprintf("keystore: %v", err), "")
 	}
 
 	// 6. Create vault.
 	v, err := vault.CreateVault(root, projectID, ks)
 	if err != nil {
-		return exitError(fmt.Sprintf("creating vault: %v", err))
+		return cliError(fmt.Sprintf("creating vault: %v", err), "")
 	}
 
-	// 7. Ensure CA.
-	ca, err := proxy.LoadOrCreateCA()
-	if err != nil {
-		return exitError(fmt.Sprintf("setting up CA: %v", err))
-	}
-	caFile, err := config.CAFile()
-	if err != nil {
-		return exitError(fmt.Sprintf("CA file path: %v", err))
-	}
-	_ = ca
+	// Phase: Vaulting secrets.
+	ui.Phase(w, "Vaulting secrets...")
 
-	// 8. Process each .env file.
+	// 7. Process each .env file.
 	var secretsVaulted int
 	var secretsScoped int
 	for _, envPath := range envPaths {
 		envFile, err := scanner.ParseFile(envPath)
 		if err != nil {
-			return exitError(fmt.Sprintf("parsing %s: %v", envPath, err))
+			return cliError(fmt.Sprintf("parsing %s: %v", envPath, err), "")
 		}
 
 		fileChanged := false
@@ -115,21 +122,21 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 			if strings.Contains(line.Raw, "# veil:skip") {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (veil:skip): %s\n", line.Key)
+					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (veil:skip): %s", line.Key))
 				}
 				continue
 			}
 
 			if !placeholder.IsSecretLike(line.Key, line.Value) {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (not secret-like): %s\n", line.Key)
+					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): %s", line.Key))
 				}
 				continue
 			}
 
 			ph, err := placeholder.Generate(line.Key, line.Value)
 			if err != nil {
-				return exitError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err))
+				return cliError(fmt.Sprintf("generating placeholder for %s: %v", line.Key, err), "")
 			}
 
 			credHosts := placeholder.HostsForCredential(line.Key, line.Value)
@@ -148,7 +155,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", line.Key)
 					continue
 				}
-				return exitError(fmt.Sprintf("vaulting %s: %v", line.Key, err))
+				return cliError(fmt.Sprintf("vaulting %s: %v", line.Key, err), "")
 			}
 
 			secretsVaulted++
@@ -157,7 +164,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 			}
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", line.Key, ph)
+				_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", line.Key, ph))
 			} else {
 				envFile.SetValue(line.Key, ph)
 				fileChanged = true
@@ -166,7 +173,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 		if !dryRun && fileChanged {
 			if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
-				return exitError(fmt.Sprintf("writing %s: %v", envPath, err))
+				return cliError(fmt.Sprintf("writing %s: %v", envPath, err), "")
 			}
 		}
 	}
@@ -185,27 +192,50 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		}
 	}
 
+	// Report vault results.
+	unscoped := secretsVaulted - secretsScoped
+	ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
+	if secretsScoped > 0 {
+		ui.Step(w, fmt.Sprintf("%d auto-scoped to hosts", secretsScoped))
+	}
+	if unscoped > 0 {
+		ui.Warn(w, fmt.Sprintf("%d unscoped (use veil add --host to scope)", unscoped))
+	}
+	_, _ = fmt.Fprintln(w)
+
+	// Phase: Setting up proxy.
+	ui.Phase(w, "Setting up proxy...")
+
+	ca, err := proxy.LoadOrCreateCA()
+	if err != nil {
+		return cliError(fmt.Sprintf("setting up CA: %v", err), "")
+	}
+	_ = ca
+	ui.Step(w, "CA certificate ready")
+	_, _ = fmt.Fprintln(w)
+
 	// 9. Append to project .gitignore.
 	if !dryRun {
 		appendGitignore(root)
 	}
 
-	// 10. Print summary.
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Veil initialized for %s\n", root)
-	_, _ = fmt.Fprintln(cmd.OutOrStdout())
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Secrets vaulted: %d\n", secretsVaulted)
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Auto-scoped to hosts: %d\n", secretsScoped)
-	unscoped := secretsVaulted - secretsScoped
-	if unscoped > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Unscoped (needs --host): %d\n", unscoped)
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  .env files processed: %d\n", len(envPaths))
+	// 10. Final summary.
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
+	_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
 	if mcpConfigsProcessed > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  MCP configs processed: %d\n", mcpConfigsProcessed)
+		_, _ = fmt.Fprintf(w, "  MCP configs processed: %d\n", mcpConfigsProcessed)
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CA: %s\n", caFile)
-	_, _ = fmt.Fprintln(cmd.OutOrStdout())
+	_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
+	_, _ = fmt.Fprintln(w)
 	return nil
+}
+
+// plural returns singular if n == 1, otherwise plural.
+func plural(n int, singular, pluralForm string) string {
+	if n == 1 {
+		return singular
+	}
+	return pluralForm
 }
 
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
@@ -221,7 +251,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 
 	cfg, err := mcpconfig.Parse(configPath)
 	if err != nil {
-		return 0, 0, exitError(fmt.Sprintf("parsing MCP config: %v", err))
+		return 0, 0, cliError(fmt.Sprintf("parsing MCP config: %v", err), "")
 	}
 
 	var count int
@@ -232,14 +262,14 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		for key, value := range server.Env {
 			if !placeholder.IsSecretLike(key, value) {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (not secret-like): mcp:%s:%s\n", serverName, key)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Muted.Sprintf("  skip (not secret-like): mcp:%s:%s", serverName, key))
 				}
 				continue
 			}
 
 			ph, err := placeholder.Generate(key, value)
 			if err != nil {
-				return 0, 0, exitError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err))
+				return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err), "")
 			}
 
 			credHosts := placeholder.HostsForCredential(key, value)
@@ -259,7 +289,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", credName)
 					continue
 				}
-				return 0, 0, exitError(fmt.Sprintf("vaulting %s: %v", credName, err))
+				return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")
 			}
 
 			count++
@@ -268,7 +298,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 			}
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", credName, ph)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
 			} else {
 				cfg.SetEnvValue(serverName, key, ph)
 				configChanged = true
@@ -280,19 +310,19 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		// Create backup of original.
 		originalData, err := os.ReadFile(configPath) // #nosec G304
 		if err != nil {
-			return 0, 0, exitError(fmt.Sprintf("reading MCP config for backup: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("reading MCP config for backup: %v", err), "")
 		}
 		if err := os.WriteFile(backupPath, originalData, 0600); err != nil {
-			return 0, 0, exitError(fmt.Sprintf("writing MCP config backup: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("writing MCP config backup: %v", err), "")
 		}
 
 		// Write updated config.
 		newData, err := cfg.Bytes()
 		if err != nil {
-			return 0, 0, exitError(fmt.Sprintf("serializing MCP config: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("serializing MCP config: %v", err), "")
 		}
 		if err := atomicWriteFile(configPath, newData); err != nil {
-			return 0, 0, exitError(fmt.Sprintf("writing MCP config: %v", err))
+			return 0, 0, cliError(fmt.Sprintf("writing MCP config: %v", err), "")
 		}
 	}
 
