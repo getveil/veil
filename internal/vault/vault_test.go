@@ -2,6 +2,7 @@ package vault
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -352,6 +353,74 @@ func TestDeleteSaveError(t *testing.T) {
 	}
 	if !deleted {
 		t.Fatal("Delete should return true even when Save fails")
+	}
+}
+
+func TestAddPlaceholderCollisionMessage(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+	v, err := CreateVault(dir, "test-collision", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cred1 := &Credential{
+		ID:          NewID(),
+		Name:        "KEY_A",
+		Real:        "real-a",
+		Placeholder: "ph-shared",
+		Source:      "test",
+	}
+	if err := v.Add(cred1); err != nil {
+		t.Fatal(err)
+	}
+
+	cred2 := &Credential{
+		ID:          NewID(),
+		Name:        "KEY_B",
+		Real:        "real-b",
+		Placeholder: "ph-shared",
+		Source:      "test",
+	}
+	err = v.Add(cred2)
+	if err == nil {
+		t.Fatal("expected placeholder collision error")
+	}
+	if !strings.Contains(err.Error(), "veil remove") {
+		t.Errorf("collision error should suggest veil remove, got: %v", err)
+	}
+}
+
+func TestOpenCorruptedVaultMessage(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+
+	// Create a valid vault first (to register the key in the keystore).
+	v, err := CreateVault(dir, "test-corrupt", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = v
+
+	// Corrupt the vault file.
+	vaultPath := filepath.Join(dir, ".veil", "vault.bin")
+	if err := os.WriteFile(vaultPath, []byte("corrupted-data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a backup file so the recovery message can reference it.
+	backupPath := filepath.Join(dir, ".veil", "vault.bin.bak")
+	if err := os.WriteFile(backupPath, []byte("backup-data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(dir, ks)
+	if err == nil {
+		t.Fatal("expected error for corrupted vault")
+	}
+	// The error should be about corruption, not a generic Go error.
+	if !strings.Contains(err.Error(), "corrupt") && !strings.Contains(err.Error(), "unseal") {
+		t.Errorf("error should reference corruption, got: %v", err)
 	}
 }
 

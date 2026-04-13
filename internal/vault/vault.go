@@ -51,7 +51,7 @@ func Open(root string, ks Keystore) (*Vault, error) {
 
 	plaintext, err := Unseal(key, blob)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vault: corrupt or truncated vault file (unseal failed): %w", err)
 	}
 
 	var creds []*Credential
@@ -129,7 +129,7 @@ func (v *Vault) Add(cred *Credential) error {
 			return fmt.Errorf("vault: credential %q already exists", cred.Name)
 		}
 		if c.Placeholder == cred.Placeholder {
-			return fmt.Errorf("vault: placeholder collision for %q", cred.Placeholder)
+			return fmt.Errorf("vault: placeholder collision for %q — the generated placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", cred.Placeholder, cred.Name, c.Name)
 		}
 	}
 	v.credentials = append(v.credentials, cred)
