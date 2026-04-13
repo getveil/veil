@@ -98,6 +98,9 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
 		ui.Success.Sprint("veil"), credCount)
 	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
+	if warning := formatStartupWarning(credCount); warning != "" {
+		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
+	}
 
 	// 6. Build child env: strip existing proxy vars and inject ours.
 	proxyURL := "http://" + server.Addr()
@@ -130,11 +133,17 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// 11. Reclaim foreground process group so veil can write to the terminal.
 	reclaimForeground(ttyFd)
 
-	// 11b. Print exit summary to stderr.
+	// 11b. Compute exit code for summary.
+	exitCode := 0
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	}
+
+	// 11c. Print exit summary to stderr.
 	sessionDuration := time.Since(sessionStart)
 	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := auditStore.Summary(sessionStart)
 	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
-	fmt.Fprintf(os.Stderr, "%s session complete\n", ui.Success.Sprint("veil"))
+	fmt.Fprintf(os.Stderr, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
 	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", formatDuration(sessionDuration))
 	if summaryErr == nil {
 		hostInfo := "0 hosts"
@@ -148,11 +157,11 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	fmt.Fprintln(os.Stderr)
 
-	// 12. Extract exit code.
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
-		return &Result{ExitCode: exitErr.ExitCode()}, nil
-	}
+	// 12. Return result.
 	if waitErr != nil {
+		if _, ok := waitErr.(*exec.ExitError); ok {
+			return &Result{ExitCode: exitCode}, nil
+		}
 		return nil, fmt.Errorf("child process failed: %w", waitErr)
 	}
 	return &Result{ExitCode: 0}, nil
@@ -220,6 +229,22 @@ func isCAEnvKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// formatStartupWarning returns a warning message if credCount is zero, or empty string otherwise.
+func formatStartupWarning(credCount int) string {
+	if credCount == 0 {
+		return "No credentials to inject. Add secrets with veil add or create a .env file and re-run veil init."
+	}
+	return ""
+}
+
+// formatExitSummary returns the session summary line based on exit code.
+func formatExitSummary(exitCode int) string {
+	if exitCode == 0 {
+		return "session complete"
+	}
+	return fmt.Sprintf("session ended (exit %d)", exitCode)
 }
 
 // formatDuration formats a duration as "Xh Ym Zs", omitting zero components.

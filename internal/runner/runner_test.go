@@ -217,6 +217,42 @@ func TestRunBookends(t *testing.T) {
 	}
 }
 
+func TestFormatStartupZeroCreds(t *testing.T) {
+	msg := formatStartupWarning(0)
+	if msg == "" {
+		t.Error("expected warning message for zero credentials")
+	}
+	if !strings.Contains(msg, "No credentials") {
+		t.Errorf("expected 'No credentials' in message, got: %s", msg)
+	}
+}
+
+func TestFormatStartupWithCreds(t *testing.T) {
+	msg := formatStartupWarning(5)
+	if msg != "" {
+		t.Errorf("expected empty message for non-zero credentials, got: %s", msg)
+	}
+}
+
+func TestFormatExitSummary(t *testing.T) {
+	tests := []struct {
+		exitCode int
+		want     string
+	}{
+		{0, "session complete"},
+		{1, "session ended (exit 1)"},
+		{130, "session ended (exit 130)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := formatExitSummary(tt.exitCode)
+			if got != tt.want {
+				t.Errorf("formatExitSummary(%d) = %q, want %q", tt.exitCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildChildEnv(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",
