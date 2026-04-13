@@ -151,6 +151,9 @@ func TestLogEmpty(t *testing.T) {
 	if !strings.Contains(out.String(), "No injection events found") {
 		t.Errorf("expected empty log message, got: %s", out.String())
 	}
+	if !strings.Contains(out.String(), "veil run") {
+		t.Errorf("expected hint about 'veil run', got: %s", out.String())
+	}
 }
 
 func TestLogJSON(t *testing.T) {
