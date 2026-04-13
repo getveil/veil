@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	filippo.io/age v1.3.1
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
 	github.com/elazarl/goproxy v1.8.3
 	github.com/fatih/color v1.19.0
@@ -12,12 +13,12 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.42.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.2
 )
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
@@ -30,7 +31,6 @@ require (
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
