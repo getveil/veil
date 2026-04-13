@@ -2,7 +2,9 @@
 package cli
 
 import (
+	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/8enji/veil/internal/ui"
 	"github.com/mattn/go-isatty"
@@ -21,7 +23,16 @@ func NewRoot(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "veil",
 		Short: "Secure AI coding agents by intercepting secrets at the network layer",
-		Long:  "Veil intercepts outbound HTTPS traffic from AI agents, replacing placeholder values with real credentials so the agent never sees real secrets.",
+		Long: `Veil — protect your secrets from AI agents
+
+Quick start:
+  veil init          Scan project, vault secrets, write placeholders
+  veil run claude    Launch agent with credential injection active
+  veil log           See what credentials were used
+
+Veil sits between your AI coding agent and the network. It replaces
+real secrets with format-aware placeholders, then injects the real
+credentials at the proxy layer — so the agent never sees them.`,
 
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -37,6 +48,7 @@ func NewRoot(version string) *cobra.Command {
 	root.PersistentFlags().BoolVar(&flagColor, "color", false, "force color output")
 	root.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	root.Version = version
+	root.SetVersionTemplate(fmt.Sprintf("veil v%s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH))
 
 	root.AddCommand(initCmd())
 	root.AddCommand(runCmd())

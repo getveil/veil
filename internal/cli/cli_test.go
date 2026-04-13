@@ -496,6 +496,42 @@ func TestRunVaultDecryptError(t *testing.T) {
 	}
 }
 
+func TestVersionOutput(t *testing.T) {
+	cmd := NewRoot("0.1.0")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--version failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "veil v0.1.0") {
+		t.Errorf("version should contain 'veil v0.1.0', got: %s", output)
+	}
+}
+
+func TestHelpOutput(t *testing.T) {
+	cmd := NewRoot("0.1.0")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--help failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Quick start") {
+		t.Errorf("help should contain 'Quick start' section, got: %s", output)
+	}
+	if !strings.Contains(output, "veil init") {
+		t.Errorf("help should mention 'veil init', got: %s", output)
+	}
+	if !strings.Contains(output, "veil run") {
+		t.Errorf("help should mention 'veil run', got: %s", output)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
