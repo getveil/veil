@@ -249,6 +249,62 @@ func TestColorFlagNoColor(t *testing.T) {
 	_ = cmd.Execute()
 }
 
+func TestRemove(t *testing.T) {
+	root := initProject(t)
+
+	// Add a credential.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetIn(strings.NewReader("my-secret-value-123456\n"))
+	addCmd.SetArgs([]string{"add", "--path", root, "MY_SECRET"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Remove it.
+	rmCmd := NewRoot("test")
+	rmOut := new(bytes.Buffer)
+	rmCmd.SetOut(rmOut)
+	rmCmd.SetErr(new(bytes.Buffer))
+	rmCmd.SetArgs([]string{"remove", "--path", root, "--force", "MY_SECRET"})
+	if err := rmCmd.Execute(); err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+	if !strings.Contains(rmOut.String(), "Removed MY_SECRET") {
+		t.Errorf("expected removal confirmation, got: %s", rmOut.String())
+	}
+
+	// Verify it's gone from list.
+	listCmd := NewRoot("test")
+	listOut := new(bytes.Buffer)
+	listCmd.SetOut(listOut)
+	listCmd.SetErr(new(bytes.Buffer))
+	listCmd.SetArgs([]string{"list", "--path", root})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	if strings.Contains(listOut.String(), "MY_SECRET") {
+		t.Error("MY_SECRET should not appear in list after removal")
+	}
+}
+
+func TestRemoveNonexistent(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"remove", "--path", root, "--force", "NONEXISTENT"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for nonexistent credential")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
