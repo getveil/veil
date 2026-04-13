@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/8enji/veil/internal/config"
 )
 
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
@@ -422,6 +424,70 @@ func TestAddHostFlagOverridesConfig(t *testing.T) {
 	}
 	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.override.com" {
 		t.Errorf("--host flag should override config, got %v", cred.AllowedHosts)
+	}
+}
+
+func TestCheckConfigDrift_Stale(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"EXISTS":    {"api.example.com"},
+			"STALE_KEY": {"api.stale.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"EXISTS"})
+
+	var foundStale bool
+	for _, w := range warnings {
+		if strings.Contains(w, "STALE_KEY") && strings.Contains(w, "stale") {
+			foundStale = true
+		}
+	}
+	if !foundStale {
+		t.Errorf("expected stale warning for STALE_KEY, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_Uncovered(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"COVERED": {"api.example.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"COVERED", "UNCOVERED_KEY"})
+
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, "UNCOVERED_KEY") && strings.Contains(w, "no scoping") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected uncovered warning for UNCOVERED_KEY, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_ZeroCredentials(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"ANYTHING": {"api.example.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, nil)
+	if len(warnings) != 0 {
+		t.Errorf("zero credentials should suppress drift warnings, got: %v", warnings)
+	}
+}
+
+func TestCheckConfigDrift_NoDrift(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Scoping: map[string][]string{
+			"KEY_A": {"api.a.com"},
+			"KEY_B": {"api.b.com"},
+		},
+	}
+	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
+	if len(warnings) != 0 {
+		t.Errorf("expected no drift, got: %v", warnings)
 	}
 }
 
