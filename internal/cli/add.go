@@ -14,20 +14,22 @@ import (
 func addCmd() *cobra.Command {
 	var force bool
 	var hosts []string
+	var value string
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a secret to the vault",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdd(cmd, args[0], force, hosts)
+			return runAdd(cmd, args[0], force, hosts, value)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing credential")
 	cmd.Flags().StringArrayVar(&hosts, "host", nil, "allowed destination host (repeatable)")
+	cmd.Flags().StringVar(&value, "value", "", "secret value (alternative to stdin prompt)")
 	return cmd
 }
 
-func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
+func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagValue string) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
@@ -38,17 +40,22 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string) error {
 		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
 
-	// Read value from stdin.
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Enter value for %s: ", name)
-	reader := bufio.NewReader(cmd.InOrStdin())
-	value, err := reader.ReadString('\n')
-	if err != nil {
-		// Accept EOF without newline (e.g. piped input).
-		if value == "" {
-			return cliError("no value provided", "")
+	var value string
+	if flagValue != "" {
+		value = flagValue
+	} else {
+		// Read value from stdin.
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Enter value for %s: ", name)
+		reader := bufio.NewReader(cmd.InOrStdin())
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			// Accept EOF without newline (e.g. piped input).
+			if raw == "" {
+				return cliError("no value provided", "")
+			}
 		}
+		value = strings.TrimRight(raw, "\r\n")
 	}
-	value = strings.TrimRight(value, "\r\n")
 
 	if value == "" {
 		return cliError("no value provided", "")

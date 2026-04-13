@@ -305,6 +305,51 @@ func TestRemoveNonexistent(t *testing.T) {
 	}
 }
 
+func TestAddWithValueFlag(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "my-api-key-1234567890", "API_KEY"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add --value failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "API_KEY") {
+		t.Errorf("expected confirmation, got: %s", out.String())
+	}
+
+	// Verify it's in the vault.
+	listCmd := NewRoot("test")
+	listOut := new(bytes.Buffer)
+	listCmd.SetOut(listOut)
+	listCmd.SetErr(new(bytes.Buffer))
+	listCmd.SetArgs([]string{"list", "--path", root})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	if !strings.Contains(listOut.String(), "API_KEY") {
+		t.Errorf("API_KEY should appear in list, got: %s", listOut.String())
+	}
+}
+
+func TestAddWithValueFlagEmpty(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "", "API_KEY"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for empty value")
+	}
+	if !strings.Contains(err.Error(), "no value") {
+		t.Errorf("error should mention 'no value', got: %v", err)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
