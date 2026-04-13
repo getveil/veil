@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/8enji/veil/internal/audit"
@@ -92,18 +91,50 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		return nil
 	}
 
-	tw := tabwriter.NewWriter(w, 0, 4, 4, ' ', 0)
-	ui.TableHeader(tw, "TIMESTAMP", "HOST", "METHOD", "CREDENTIAL", "LOCATION")
-	for _, r := range rows {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			ui.RelativeTime(r.Timestamp),
-			r.Host,
-			r.Method,
-			r.CredentialName,
-			r.Location,
-		)
+	// Collect plain-text row data for column width calculation.
+	type logRow struct {
+		timestamp, host, method, credential, location string
 	}
-	_ = tw.Flush()
+	logRows := make([]logRow, len(rows))
+	for i, r := range rows {
+		logRows[i] = logRow{
+			timestamp:  ui.RelativeTime(r.Timestamp),
+			host:       r.Host,
+			method:     r.Method,
+			credential: r.CredentialName,
+			location:   r.Location,
+		}
+	}
+
+	// Compute column widths from data and headers.
+	tsW := len("TIMESTAMP")
+	hostW := len("HOST")
+	methodW := len("METHOD")
+	credW := len("CREDENTIAL")
+	for _, r := range logRows {
+		tsW = maxInt(tsW, len(r.timestamp))
+		hostW = maxInt(hostW, len(r.host))
+		methodW = maxInt(methodW, len(r.method))
+		credW = maxInt(credW, len(r.credential))
+	}
+
+	// Print header and rows. Pad plain text first, then apply ANSI styling
+	// so escape codes don't break column alignment.
+	gap := "    "
+	fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+		ui.Muted.Sprint(padRight("TIMESTAMP", tsW)), gap,
+		ui.Muted.Sprint(padRight("HOST", hostW)), gap,
+		ui.Muted.Sprint(padRight("METHOD", methodW)), gap,
+		ui.Muted.Sprint(padRight("CREDENTIAL", credW)), gap,
+		ui.Muted.Sprint("LOCATION"))
+	for _, r := range logRows {
+		fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+			padRight(r.timestamp, tsW), gap,
+			padRight(r.host, hostW), gap,
+			padRight(r.method, methodW), gap,
+			padRight(r.credential, credW), gap,
+			r.location)
+	}
 	ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
 	return nil
 }

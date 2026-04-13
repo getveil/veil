@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/8enji/veil/internal/audit"
@@ -59,39 +58,118 @@ func runList(cmd *cobra.Command, reveal bool) error {
 		}
 	}
 
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 4, ' ', 0)
-	if reveal {
-		ui.TableHeader(w, "NAME", "HOSTS", "VALUE", "SOURCE", "LAST INJECTED")
-	} else {
-		ui.TableHeader(w, "NAME", "HOSTS", "SOURCE", "LAST INJECTED")
+	// Collect plain-text row data for column width calculation.
+	type row struct {
+		name, hosts, value, source, last string
 	}
-	for _, c := range creds {
-		last := "never"
+	rows := make([]row, len(creds))
+	for i, c := range creds {
+		r := row{name: c.Name, source: c.Source, last: "never"}
 		if t, ok := lastInjected[c.Name]; ok {
-			last = ui.RelativeTime(t)
+			r.last = ui.RelativeTime(t)
 		}
-		hostsStr := ui.Warning.Sprint("(none)")
 		if len(c.AllowedHosts) > 0 {
-			hostsStr = strings.Join(c.AllowedHosts, ", ")
+			r.hosts = formatHosts(c.AllowedHosts, 1)
+		} else {
+			r.hosts = "(none)"
 		}
 		if reveal {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				c.Name,
-				hostsStr,
-				c.Real,
-				c.Source,
-				last,
-			)
-		} else {
-			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				c.Name,
-				hostsStr,
-				c.Source,
-				last,
-			)
+			r.value = c.Real
+		}
+		rows[i] = r
+	}
+
+	// Compute column widths from data and headers.
+	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
+	valueW := len("VALUE")
+	for _, r := range rows {
+		nameW = maxInt(nameW, len(r.name))
+		hostsW = maxInt(hostsW, len(r.hosts))
+		sourceW = maxInt(sourceW, len(r.source))
+		if reveal {
+			valueW = maxInt(valueW, len(r.value))
 		}
 	}
-	_ = w.Flush()
-	ui.Footer(cmd.OutOrStdout(), fmt.Sprintf("%d credentials", len(creds)))
+
+	// Print header and rows. Pad plain text first, then apply ANSI styling
+	// so escape codes don't break column alignment.
+	out := cmd.OutOrStdout()
+	gap := "    "
+	if reveal {
+		fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
+			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
+			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
+			ui.Muted.Sprint("LAST INJECTED"))
+		for _, r := range rows {
+			hosts := styleHosts(r.hosts, hostsW)
+			fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+				padRight(r.name, nameW), gap,
+				hosts, gap,
+				padRight(r.value, valueW), gap,
+				padRight(r.source, sourceW), gap,
+				r.last)
+		}
+	} else {
+		fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
+			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
+			ui.Muted.Sprint("LAST INJECTED"))
+		for _, r := range rows {
+			hosts := styleHosts(r.hosts, hostsW)
+			fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+				padRight(r.name, nameW), gap,
+				hosts, gap,
+				padRight(r.source, sourceW), gap,
+				r.last)
+		}
+	}
+	ui.Footer(out, fmt.Sprintf("%d credentials", len(creds)))
 	return nil
+}
+
+// formatHosts returns a compact host string. If the list exceeds maxShow,
+// only the first maxShow hosts are shown with a "+N more" suffix.
+func formatHosts(hosts []string, maxShow int) string {
+	if len(hosts) <= maxShow {
+		return strings.Join(hosts, ", ")
+	}
+	return strings.Join(hosts[:maxShow], ", ") +
+		fmt.Sprintf(" +%d more", len(hosts)-maxShow)
+}
+
+// styleHosts returns a padded hosts string with ANSI styling applied after
+// padding so column alignment is preserved. The "+N more" suffix is dimmed,
+// and "(none)" is shown in warning color.
+func styleHosts(plain string, width int) string {
+	if plain == "(none)" {
+		return ui.Warning.Sprint(padRight("(none)", width))
+	}
+	if idx := strings.Index(plain, " +"); idx != -1 {
+		host := plain[:idx]
+		suffix := plain[idx:]
+		padding := ""
+		if extra := width - len(plain); extra > 0 {
+			padding = strings.Repeat(" ", extra)
+		}
+		return host + ui.Muted.Sprint(suffix) + padding
+	}
+	return padRight(plain, width)
+}
+
+// padRight pads s with spaces to width w. s must be plain text (no ANSI).
+func padRight(s string, w int) string {
+	if len(s) >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-len(s))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

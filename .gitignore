@@ -6,4 +6,5 @@ coverage.out
 *.test
 *.out
 .veil/
+.superpowers/
 tmp-test/
