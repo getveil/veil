@@ -19,7 +19,7 @@ import (
 )
 
 // mitmFilterWriter wraps an io.Writer and drops goproxy log lines that
-// match benign MITM read errors (client closed a keep-alive connection).
+// match benign MITM connection errors (client closed before proxy finished).
 type mitmFilterWriter struct {
 	out io.Writer
 }
@@ -28,6 +28,10 @@ func (w *mitmFilterWriter) Write(p []byte) (int, error) {
 	line := string(p)
 	if strings.Contains(line, "Cannot read request from mitm'd client") &&
 		strings.Contains(line, "connection reset by peer") {
+		return len(p), nil // silently discard
+	}
+	if strings.Contains(line, "Cannot write response from mitm'd client") &&
+		strings.Contains(line, "broken pipe") {
 		return len(p), nil // silently discard
 	}
 	return w.out.Write(p)
