@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -167,6 +168,52 @@ func TestRunChildCAEnvVars(t *testing.T) {
 	got := strings.TrimSpace(string(data))
 	if !strings.HasSuffix(got, "ca-bundle.pem") {
 		t.Fatalf("SSL_CERT_FILE = %q, want suffix ca-bundle.pem", got)
+	}
+}
+
+func TestRunBookends(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	root, ks := setupProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Capture stderr to check bookend output.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	result, err := Run(ctx, Config{
+		Root:     root,
+		Command:  "echo",
+		Args:     []string{"hello"},
+		Keystore: ks,
+	})
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	stderr := buf.String()
+
+	if !strings.Contains(stderr, "proxy active") {
+		t.Errorf("startup line should contain 'proxy active', got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "session complete") {
+		t.Errorf("exit summary should contain 'session complete', got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "Duration:") {
+		t.Errorf("exit summary should contain 'Duration:', got: %q", stderr)
 	}
 }
 
