@@ -296,6 +296,55 @@ func TestProviderSlack(t *testing.T) {
 	})
 }
 
+func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
+	var prov ProviderPattern
+	for _, p := range registry {
+		if p.Name == "github" {
+			prov = p
+			break
+		}
+	}
+
+	// github_pat_ tokens have the structure: github_pat_ + 22 alnum + _ + 59 alnum
+	value := "github_pat_11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXa"
+
+	t.Run("match_github_pat_prefix", func(t *testing.T) {
+		if !prov.Match("", value) {
+			t.Fatal("should match github_pat_ prefix")
+		}
+	})
+
+	t.Run("generate_github_pat_structure", func(t *testing.T) {
+		result := prov.Generate(value)
+		if len(result) != len(value) {
+			t.Fatalf("length mismatch: %d vs %d", len(result), len(value))
+		}
+		if result[:11] != "github_pat_" {
+			t.Fatalf("expected github_pat_ prefix, got: %s", result[:11])
+		}
+		// Position 33 (11 + 22) should be an underscore.
+		if result[33] != '_' {
+			t.Fatalf("expected underscore at position 33, got: %c in %s", result[33], result)
+		}
+		// Characters 11-32 should be alphanumeric.
+		for i := 11; i < 33; i++ {
+			c := rune(result[i])
+			isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !isAlnum {
+				t.Fatalf("expected alphanumeric at pos %d, got: %c", i, c)
+			}
+		}
+		// Characters 34-92 should be alphanumeric.
+		for i := 34; i < len(result); i++ {
+			c := rune(result[i])
+			isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+			if !isAlnum {
+				t.Fatalf("expected alphanumeric at pos %d, got: %c", i, c)
+			}
+		}
+	})
+}
+
 func TestRegisterFormat_BasicMatch(t *testing.T) {
 	before := len(registry)
 	registerFormat(Format{
