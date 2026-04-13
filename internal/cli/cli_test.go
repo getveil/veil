@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 )
 
@@ -900,5 +904,808 @@ func TestParseSince(t *testing.T) {
 				t.Errorf("parseSince(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// --- Sync command tests ---
+
+func TestSyncRemovesStaleEntry(t *testing.T) {
+	root := initProject(t)
+
+	// Add a credential then remove it, leaving a stale config entry.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "extra-secret-value-12345", "EXTRA_KEY"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Sync to add EXTRA_KEY to config.
+	sync1 := NewRoot("test")
+	sync1.SetOut(new(bytes.Buffer))
+	sync1.SetErr(new(bytes.Buffer))
+	sync1.SetArgs([]string{"sync", "--path", root})
+	if err := sync1.Execute(); err != nil {
+		t.Fatalf("first sync failed: %v", err)
+	}
+
+	// Verify EXTRA_KEY is in config.
+	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), "EXTRA_KEY") {
+		t.Fatal("EXTRA_KEY should be in config after sync")
+	}
+
+	// Remove the credential.
+	rmCmd := NewRoot("test")
+	rmCmd.SetOut(new(bytes.Buffer))
+	rmCmd.SetErr(new(bytes.Buffer))
+	rmCmd.SetArgs([]string{"remove", "--path", root, "--force", "EXTRA_KEY"})
+	if err := rmCmd.Execute(); err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+
+	// Sync again — should remove the stale entry.
+	sync2 := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	sync2.SetOut(syncOut)
+	sync2.SetErr(new(bytes.Buffer))
+	sync2.SetArgs([]string{"sync", "--path", root})
+	if err := sync2.Execute(); err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+
+	output := syncOut.String()
+	if !strings.Contains(output, "Remove") || !strings.Contains(output, "EXTRA_KEY") {
+		t.Errorf("expected removal of EXTRA_KEY in sync output, got: %s", output)
+	}
+
+	// Verify config no longer contains EXTRA_KEY.
+	configData2, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configData2), "EXTRA_KEY") {
+		t.Error("EXTRA_KEY should be removed from config after sync")
+	}
+}
+
+func TestSyncPreservesUserCustomizedHosts(t *testing.T) {
+	root := initProject(t)
+
+	// Manually edit config to change hosts for OPENAI_API_KEY.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	customConfig := "scoping:\n  OPENAI_API_KEY:\n    - custom.openai.proxy.com\n    - backup.openai.com\n"
+	if err := os.WriteFile(configPath, []byte(customConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a new credential.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "my-new-secret-value-12345", "NEW_CRED"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Sync — should add NEW_CRED but preserve custom hosts for OPENAI_API_KEY.
+	syncCmd := NewRoot("test")
+	syncCmd.SetOut(new(bytes.Buffer))
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(configData)
+	if !strings.Contains(content, "custom.openai.proxy.com") {
+		t.Error("sync should preserve user-customized hosts for OPENAI_API_KEY")
+	}
+	if !strings.Contains(content, "NEW_CRED") {
+		t.Error("sync should add NEW_CRED to config")
+	}
+}
+
+func TestSyncPreservesIgnoreAndSkipHosts(t *testing.T) {
+	root := initProject(t)
+
+	// Write config with ignore and skip_hosts sections.
+	configPath := filepath.Join(root, ".veil", "config.yaml")
+	configContent := "scoping:\n  OPENAI_API_KEY:\n    - api.openai.com\nignore:\n  - \".env.local\"\nskip_hosts:\n  - \"internal.corp.com\"\n"
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a credential to trigger a sync change.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "extra-secret-value-12345", "EXTRA"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Sync.
+	syncCmd := NewRoot("test")
+	syncCmd.SetOut(new(bytes.Buffer))
+	syncCmd.SetErr(new(bytes.Buffer))
+	syncCmd.SetArgs([]string{"sync", "--path", root})
+	if err := syncCmd.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(configData)
+	if !strings.Contains(content, "ignore:") || !strings.Contains(content, ".env.local") {
+		t.Error("sync should preserve ignore section")
+	}
+	if !strings.Contains(content, "skip_hosts:") || !strings.Contains(content, "internal.corp.com") {
+		t.Error("sync should preserve skip_hosts section")
+	}
+}
+
+func TestSyncUninitialized(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"sync", "--path", tmpDir})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for uninitialized project")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("error should mention 'not initialized', got: %v", err)
+	}
+}
+
+func TestSyncMultipleAddRemoveCycles(t *testing.T) {
+	root := initProject(t)
+
+	// Add three credentials.
+	for _, name := range []string{"KEY_A", "KEY_B", "KEY_C"} {
+		cmd := NewRoot("test")
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"add", "--path", root, "--value", "secret-value-" + name + "-1234567890", name})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("add %s failed: %v", name, err)
+		}
+	}
+
+	// Sync to update config.
+	sync1 := NewRoot("test")
+	sync1.SetOut(new(bytes.Buffer))
+	sync1.SetErr(new(bytes.Buffer))
+	sync1.SetArgs([]string{"sync", "--path", root})
+	if err := sync1.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Remove KEY_A and KEY_B.
+	for _, name := range []string{"KEY_A", "KEY_B"} {
+		cmd := NewRoot("test")
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"remove", "--path", root, "--force", name})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("remove %s failed: %v", name, err)
+		}
+	}
+
+	// Add KEY_D.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{"add", "--path", root, "--value", "secret-value-KEY_D-1234567890", "KEY_D"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add KEY_D failed: %v", err)
+	}
+
+	// Sync again.
+	sync2 := NewRoot("test")
+	syncOut := new(bytes.Buffer)
+	sync2.SetOut(syncOut)
+	sync2.SetErr(new(bytes.Buffer))
+	sync2.SetArgs([]string{"sync", "--path", root})
+	if err := sync2.Execute(); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Verify config reflects final vault state.
+	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(configData)
+	if strings.Contains(content, "KEY_A") {
+		t.Error("KEY_A should be removed from config")
+	}
+	if strings.Contains(content, "KEY_B") {
+		t.Error("KEY_B should be removed from config")
+	}
+	if !strings.Contains(content, "KEY_C") {
+		t.Error("KEY_C should be in config")
+	}
+	if !strings.Contains(content, "KEY_D") {
+		t.Error("KEY_D should be in config")
+	}
+	// OPENAI_API_KEY from initial initProject should still be there.
+	if !strings.Contains(content, "OPENAI_API_KEY") {
+		t.Error("OPENAI_API_KEY should still be in config")
+	}
+}
+
+// --- Audit log filter tests ---
+
+func TestLogWithFilters(t *testing.T) {
+	root := initProject(t)
+
+	// Seed audit records directly via the audit store.
+	auditDBPath := filepath.Join(root, ".veil", "audit.sqlite")
+	store, err := audit.Open(auditDBPath)
+	if err != nil {
+		t.Fatalf("open audit db: %v", err)
+	}
+
+	now := time.Now()
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-30 * time.Minute),
+		RequestID:      "req1",
+		Host:           "api.openai.com",
+		Method:         "POST",
+		URLPath:        "/v1/chat/completions",
+		CredentialID:   "cred1",
+		CredentialName: "OPENAI_API_KEY",
+		AgentPID:       1234,
+		AgentCmd:       "testclient",
+		BytesBefore:    100,
+		BytesAfter:     120,
+		Location:       "header",
+	})
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-10 * time.Minute),
+		RequestID:      "req2",
+		Host:           "api.github.com",
+		Method:         "GET",
+		URLPath:        "/repos",
+		CredentialID:   "cred2",
+		CredentialName: "GITHUB_TOKEN",
+		AgentPID:       1234,
+		AgentCmd:       "testclient",
+		BytesBefore:    50,
+		BytesAfter:     80,
+		Location:       "header",
+	})
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-5 * time.Minute),
+		RequestID:      "req3",
+		Host:           "api.openai.com",
+		Method:         "POST",
+		URLPath:        "/v1/embeddings",
+		CredentialID:   "cred1",
+		CredentialName: "OPENAI_API_KEY",
+		AgentPID:       1234,
+		AgentCmd:       "testclient",
+		BytesBefore:    0,
+		BytesAfter:     0,
+		Location:       "blocked",
+	})
+	if err := store.Close(); err != nil {
+		t.Fatalf("close audit db: %v", err)
+	}
+
+	// T-8.6: --host filter
+	t.Run("host_filter", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.github.com"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("log --host failed: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "GITHUB_TOKEN") {
+			t.Error("expected GITHUB_TOKEN in output")
+		}
+		if strings.Contains(output, "OPENAI_API_KEY") {
+			t.Error("OPENAI_API_KEY should be excluded by host filter")
+		}
+	})
+
+	// T-8.7: --credential filter
+	t.Run("credential_filter", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--credential", "OPENAI_API_KEY"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("log --credential failed: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "OPENAI_API_KEY") {
+			t.Error("expected OPENAI_API_KEY in output")
+		}
+		if strings.Contains(output, "GITHUB_TOKEN") {
+			t.Error("GITHUB_TOKEN should be excluded by credential filter")
+		}
+	})
+
+	// T-8.4: --blocked filter
+	t.Run("blocked_filter", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--blocked"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("log --blocked failed: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "blocked") {
+			t.Error("expected blocked event in output")
+		}
+	})
+
+	// T-8.8: --limit flag
+	t.Run("limit", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--blocked", "--limit", "1"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("log --limit failed: %v", err)
+		}
+		output := out.String()
+		// Count data rows (non-header, non-footer lines with actual content).
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		dataLines := 0
+		for _, line := range lines {
+			// Header line contains "TIMESTAMP" and footer starts with spaces or has "events".
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.Contains(trimmed, "TIMESTAMP") || strings.Contains(trimmed, "event") {
+				continue
+			}
+			dataLines++
+		}
+		if dataLines > 1 {
+			t.Errorf("expected at most 1 data row with --limit 1, got %d", dataLines)
+		}
+	})
+
+	// T-8.3: --json with actual data
+	t.Run("json_output", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--json", "--blocked"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("log --json failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) == 0 || lines[0] == "" {
+			t.Fatal("expected at least one JSON line")
+		}
+		for _, line := range lines {
+			var entry map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("invalid JSON line: %v\nline: %s", err, line)
+			}
+			// Validate required fields.
+			for _, field := range []string{"timestamp", "host", "method", "credential", "location"} {
+				if _, ok := entry[field]; !ok {
+					t.Errorf("JSON entry missing field %q: %v", field, entry)
+				}
+			}
+		}
+	})
+
+	// T-8.9: Combined filters
+	t.Run("combined_filters", func(t *testing.T) {
+		cmd := NewRoot("test")
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.openai.com", "--credential", "OPENAI_API_KEY", "--since", "1h", "--limit", "10", "--json", "--blocked"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("combined filter failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			var entry map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if entry["host"] != "api.openai.com" {
+				t.Errorf("host filter not applied: %v", entry["host"])
+			}
+			if entry["credential"] != "OPENAI_API_KEY" {
+				t.Errorf("credential filter not applied: %v", entry["credential"])
+			}
+		}
+	})
+
+	// T-8.10: Invalid --since value
+	t.Run("invalid_since", func(t *testing.T) {
+		cmd := NewRoot("test")
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"log", "--path", root, "--since", "gibberish"})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for invalid --since")
+		}
+		if !strings.Contains(err.Error(), "invalid") {
+			t.Errorf("error should mention 'invalid', got: %v", err)
+		}
+	})
+}
+
+// --- First-run and help tests ---
+
+func TestUnknownSubcommand(t *testing.T) {
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	errBuf := new(bytes.Buffer)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"foobar"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown subcommand")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error should mention 'unknown', got: %v", err)
+	}
+}
+
+func TestSubcommandHelp(t *testing.T) {
+	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove", "sync"}
+	for _, sub := range subcommands {
+		t.Run(sub, func(t *testing.T) {
+			cmd := NewRoot("test")
+			out := new(bytes.Buffer)
+			cmd.SetOut(out)
+			cmd.SetErr(new(bytes.Buffer))
+			cmd.SetArgs([]string{sub, "--help"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("%s --help failed: %v", sub, err)
+			}
+			if out.Len() == 0 {
+				t.Errorf("%s --help produced no output", sub)
+			}
+		})
+	}
+}
+
+func TestNoArgsShowsHelp(t *testing.T) {
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("no-args failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Available Commands") {
+		t.Errorf("expected 'Available Commands' in help output, got: %s", output)
+	}
+	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove", "sync"} {
+		if !strings.Contains(output, sub) {
+			t.Errorf("help should list %q subcommand", sub)
+		}
+	}
+}
+
+// --- Add/remove edge case tests ---
+
+func TestAddUnscopedWarning(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-random-long-value-with-no-provider-match-1234567890", "GENERIC_SECRET"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "No target hosts") {
+		t.Errorf("expected unscoped warning, got: %s", output)
+	}
+}
+
+func TestAddViaPipedStdinNoNewline(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	// Simulate piped input without trailing newline.
+	cmd.SetIn(strings.NewReader("my-secret-value-1234567890"))
+	cmd.SetArgs([]string{"add", "--path", root, "PIPED_KEY"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add with piped stdin failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "PIPED_KEY") {
+		t.Errorf("expected confirmation, got: %s", out.String())
+	}
+
+	// Verify it's in the vault.
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	cred, found := v.Get("PIPED_KEY")
+	if !found {
+		t.Fatal("PIPED_KEY not found in vault")
+	}
+	if cred.Real != "my-secret-value-1234567890" {
+		t.Errorf("unexpected value: %s", cred.Real)
+	}
+}
+
+func TestRemoveCancelled(t *testing.T) {
+	root := initProject(t)
+
+	// Add a credential.
+	addCmd := NewRoot("test")
+	addCmd.SetOut(new(bytes.Buffer))
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetIn(strings.NewReader("my-secret-1234567890abc\n"))
+	addCmd.SetArgs([]string{"add", "--path", root, "CANCEL_ME"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	// Attempt to remove but say "n".
+	rmCmd := NewRoot("test")
+	rmOut := new(bytes.Buffer)
+	rmCmd.SetOut(rmOut)
+	rmCmd.SetErr(new(bytes.Buffer))
+	rmCmd.SetIn(strings.NewReader("n\n"))
+	rmCmd.SetArgs([]string{"remove", "--path", root, "CANCEL_ME"})
+	if err := rmCmd.Execute(); err != nil {
+		t.Fatalf("remove cancelled should not error: %v", err)
+	}
+	if !strings.Contains(rmOut.String(), "Cancelled") {
+		t.Errorf("expected Cancelled message, got: %s", rmOut.String())
+	}
+
+	// Credential should still exist.
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := v.Get("CANCEL_ME"); !found {
+		t.Error("CANCEL_ME should still exist after cancelled removal")
+	}
+}
+
+// --- Init edge case tests ---
+
+func TestInitEmptyEnvFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with empty .env should not error: %v", err)
+	}
+}
+
+func TestInitExportPrefixPreserved(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "export OPENAI_API_KEY=sk-proj-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	envData, err := os.ReadFile(filepath.Join(tmpDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envStr := string(envData)
+	if !strings.HasPrefix(envStr, "export OPENAI_API_KEY=") {
+		t.Errorf("export prefix should be preserved, got: %s", envStr)
+	}
+	if strings.Contains(envStr, "sk-proj-1234567890abcdef") {
+		t.Error("original value should be replaced")
+	}
+}
+
+func TestInitQuotedValuesRoundTrip(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SINGLE='my-very-long-secret-value-1234567890'\nDOUBLE=\"my-very-long-secret-value-0987654321\"\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	envData, err := os.ReadFile(filepath.Join(tmpDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envStr := string(envData)
+
+	// Single-quoted line should still use single quotes.
+	for _, line := range strings.Split(envStr, "\n") {
+		if strings.HasPrefix(line, "SINGLE=") {
+			val := strings.TrimPrefix(line, "SINGLE=")
+			if !strings.HasPrefix(val, "'") || !strings.HasSuffix(val, "'") {
+				t.Errorf("SINGLE should remain single-quoted, got: %s", line)
+			}
+		}
+		if strings.HasPrefix(line, "DOUBLE=") {
+			val := strings.TrimPrefix(line, "DOUBLE=")
+			if !strings.HasPrefix(val, "\"") || !strings.HasSuffix(val, "\"") {
+				t.Errorf("DOUBLE should remain double-quoted, got: %s", line)
+			}
+		}
+	}
+}
+
+func TestInitVeilSkipAnnotation(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "OPENAI_API_KEY=sk-proj-1234567890abcdef\nSKIPPED=sk-proj-should-not-be-vaulted # veil:skip\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// SKIPPED should not be in the vault.
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	if _, found := v.Get("SKIPPED"); found {
+		t.Error("SKIPPED should not be vaulted (has # veil:skip annotation)")
+	}
+	// OPENAI_API_KEY should be vaulted.
+	if _, found := v.Get("OPENAI_API_KEY"); !found {
+		t.Error("OPENAI_API_KEY should be vaulted")
+	}
+}
+
+func TestInitNoSecretsInOutput(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	secretValue := "sk-proj-supersecretvalue1234567890"
+	envContent := "OPENAI_API_KEY=" + secretValue + "\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(outBuf)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	allOutput := outBuf.String() + errBuf.String()
+	if strings.Contains(allOutput, secretValue) {
+		t.Error("real secret value should never appear in init output")
+	}
+}
+
+// --- Scale tests ---
+
+func TestManyCredentials(t *testing.T) {
+	root := initProject(t)
+
+	// Add 50 credentials.
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("KEY_%03d", i)
+		value := fmt.Sprintf("secret-value-%03d-1234567890abcdefghij", i)
+		cmd := NewRoot("test")
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs([]string{"add", "--path", root, "--value", value, name})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("add %s failed: %v", name, err)
+		}
+	}
+
+	// List should show all of them plus the initial OPENAI_API_KEY.
+	listCmd := NewRoot("test")
+	listOut := new(bytes.Buffer)
+	listCmd.SetOut(listOut)
+	listCmd.SetErr(new(bytes.Buffer))
+	listCmd.SetArgs([]string{"list", "--path", root})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	output := listOut.String()
+	if !strings.Contains(output, "KEY_000") {
+		t.Error("KEY_000 missing from list")
+	}
+	if !strings.Contains(output, "KEY_049") {
+		t.Error("KEY_049 missing from list")
+	}
+	if !strings.Contains(output, "51 credentials") {
+		t.Errorf("expected 51 credentials in footer, got: %s", output)
 	}
 }

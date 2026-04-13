@@ -259,3 +259,115 @@ func TestQueryOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestConcurrentRecords(t *testing.T) {
+	s := openTestStore(t)
+
+	base := time.Now().UTC()
+	const goroutines = 10
+	const perGoroutine = 20
+	done := make(chan struct{}, goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(gid int) {
+			defer func() { done <- struct{}{} }()
+			for i := 0; i < perGoroutine; i++ {
+				s.Record(makeInjection(
+					fmt.Sprintf("host-%d.example.com", gid),
+					fmt.Sprintf("key-%d-%d", gid, i),
+					base.Add(time.Duration(gid*perGoroutine+i)*time.Millisecond),
+				))
+			}
+		}(g)
+	}
+
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+
+	// Wait for the background flusher to process all pending records.
+	// Records accumulate past the 50-row threshold which triggers the flush
+	// signal, plus the 100ms ticker ensures everything gets flushed.
+	time.Sleep(500 * time.Millisecond)
+
+	rows, err := s.Query(Filter{Limit: 300})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	expected := goroutines * perGoroutine
+	if len(rows) != expected {
+		t.Errorf("got %d rows, want %d (concurrent writes)", len(rows), expected)
+	}
+}
+
+func TestQueryBlockedFilter(t *testing.T) {
+	s := openTestStore(t)
+
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	// Regular injection.
+	s.Record(makeInjection("api.example.com", "regular-key", base))
+
+	// Blocked injection.
+	blocked := makeInjection("evil.com", "blocked-key", base.Add(time.Second))
+	blocked.Location = "blocked"
+	s.Record(blocked)
+
+	s.flushPending()
+
+	// Without IncludeBlocked, should only get regular.
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("without IncludeBlocked: got %d rows, want 1", len(rows))
+	}
+
+	// With IncludeBlocked, should get both.
+	rows, err = s.Query(Filter{IncludeBlocked: true})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("with IncludeBlocked: got %d rows, want 2", len(rows))
+	}
+}
+
+func TestQueryCombinedFilters(t *testing.T) {
+	s := openTestStore(t)
+
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	// Mix of hosts, credentials, and times.
+	s.Record(makeInjection("api.openai.com", "openai-key", base))
+	s.Record(makeInjection("api.openai.com", "other-key", base.Add(time.Second)))
+	s.Record(makeInjection("api.github.com", "openai-key", base.Add(2*time.Second)))
+	s.Record(makeInjection("api.openai.com", "openai-key", base.Add(3*time.Second)))
+	s.flushPending()
+
+	// Filter: host=api.openai.com AND credential=openai-key.
+	rows, err := s.Query(Filter{
+		Host:           "api.openai.com",
+		CredentialName: "openai-key",
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("combined host+cred filter: got %d rows, want 2", len(rows))
+	}
+
+	// Add time filter to further narrow.
+	rows, err = s.Query(Filter{
+		Host:           "api.openai.com",
+		CredentialName: "openai-key",
+		Since:          base.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("combined host+cred+since filter: got %d rows, want 1", len(rows))
+	}
+}

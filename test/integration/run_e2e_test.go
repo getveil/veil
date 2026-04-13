@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -472,6 +473,321 @@ func TestE2E_ProxyInjection(t *testing.T) {
 		if entry["location"] != "blocked" {
 			t.Errorf("audit entry location = %v, want blocked", entry["location"])
 		}
+	}
+}
+
+// buildTestClientPost compiles the testclient_post helper binary into binDir.
+func buildTestClientPost(t *testing.T, binDir string) string {
+	t.Helper()
+	clientBin := filepath.Join(binDir, "testclient_post")
+	build := exec.Command("go", "build", "-o", clientBin, "./test/integration/testclient_post")
+	build.Dir = projectRoot(t)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	out, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build testclient_post binary: %v\n%s", err, out)
+	}
+	return clientBin
+}
+
+// TestE2E_ProxyBodyInjection verifies that the proxy replaces placeholder
+// values in HTTP POST request bodies.
+func TestE2E_ProxyBodyInjection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	type captured struct {
+		Body string `json:"body"`
+	}
+	captureCh := make(chan captured, 1)
+
+	// Start HTTP test server that captures the request body.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captureCh <- captured{Body: string(body)}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+
+	env := makeEnv()
+
+	binDir := t.TempDir()
+	veilBin := buildVeil(t, binDir)
+	postClientBin := buildTestClientPost(t, binDir)
+
+	// Create project with a credential manually scoped to the test server.
+	projDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	originalKey := "sk-proj-bodytest1234567890abcdef1234567890"
+	envContent := fmt.Sprintf("OPENAI_API_KEY=%s\n", originalKey)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	// Init to vault the secret.
+	initCmd := exec.Command(veilBin, "init", "--path", projDir)
+	initCmd.Env = env
+	initOut, err := initCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil init failed: %v\n%s", err, initOut)
+	}
+
+	// Read the placeholder.
+	rewritten, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("reading .env: %v", err)
+	}
+	var placeholder string
+	for _, line := range strings.Split(string(rewritten), "\n") {
+		if strings.HasPrefix(line, "OPENAI_API_KEY=") {
+			placeholder = strings.TrimPrefix(line, "OPENAI_API_KEY=")
+			break
+		}
+	}
+	if placeholder == "" || placeholder == originalKey {
+		t.Fatal("could not find placeholder in rewritten .env")
+	}
+
+	// Extract the test server's host (without port) for scoping.
+	// HostMatches strips port from the request host, so allowed hosts must be portless.
+	tsHostPort := strings.TrimPrefix(ts.URL, "http://")
+	tsHost, _, _ := net.SplitHostPort(tsHostPort)
+
+	// Manually add the credential scoped to the test server host.
+	addCmd := exec.Command(veilBin, "add", "--path", projDir, "--force",
+		"--value", originalKey, "--host", tsHost, "OPENAI_API_KEY")
+	addCmd.Env = env
+	addOut, err := addCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil add failed: %v\n%s", err, addOut)
+	}
+
+	// Re-read the updated placeholder.
+	rewritten2, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("reading .env: %v", err)
+	}
+	for _, line := range strings.Split(string(rewritten2), "\n") {
+		if strings.HasPrefix(line, "OPENAI_API_KEY=") {
+			placeholder = strings.TrimPrefix(line, "OPENAI_API_KEY=")
+			break
+		}
+	}
+
+	// Build a JSON body containing the placeholder.
+	testBody := fmt.Sprintf(`{"model":"gpt-4","key":"%s"}`, placeholder)
+
+	// Run testclient_post through veil run.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
+		postClientBin, ts.URL+"/v1/chat")
+	runCmd.Env = append(env, "TEST_BODY="+testBody)
+	runOut, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Logf("veil run output: %s", runOut)
+		t.Fatalf("veil run failed: %v", err)
+	}
+
+	// Check what the test server received.
+	cap := <-captureCh
+	t.Logf("server received body: %s", cap.Body)
+
+	// The body should contain the REAL key, not the placeholder.
+	if !strings.Contains(cap.Body, originalKey) {
+		t.Errorf("body injection failed — real key not found in body:\n  got: %s", cap.Body)
+	}
+	if strings.Contains(cap.Body, placeholder) {
+		t.Errorf("placeholder was not replaced in body:\n  got: %s", cap.Body)
+	}
+}
+
+// TestE2E_ProxyHeaderInjectionAuthorizedHost verifies that the proxy injects
+// credentials into requests to authorized hosts (not just blocks wrong hosts).
+func TestE2E_ProxyHeaderInjectionAuthorizedHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	type captured struct {
+		Auth string
+	}
+	captureCh := make(chan captured, 1)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captureCh <- captured{Auth: r.Header.Get("Authorization")}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+
+	env := makeEnv()
+	binDir := t.TempDir()
+	veilBin := buildVeil(t, binDir)
+	clientBin := buildTestClient(t, binDir)
+
+	projDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	originalKey := "ghp_authtest1234567890abcdef1234567890ab"
+	envContent := fmt.Sprintf("GITHUB_TOKEN=%s\n", originalKey)
+	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	// Init.
+	initCmd := exec.Command(veilBin, "init", "--path", projDir)
+	initCmd.Env = env
+	initOut, err := initCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil init failed: %v\n%s", err, initOut)
+	}
+
+	// Read the placeholder.
+	rewritten, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("reading .env: %v", err)
+	}
+	var placeholder string
+	for _, line := range strings.Split(string(rewritten), "\n") {
+		if strings.HasPrefix(line, "GITHUB_TOKEN=") {
+			placeholder = strings.TrimPrefix(line, "GITHUB_TOKEN=")
+			break
+		}
+	}
+	if placeholder == "" || placeholder == originalKey {
+		t.Fatal("could not find placeholder in rewritten .env")
+	}
+
+	// Scope the credential to the test server host (without port).
+	tsHostPort := strings.TrimPrefix(ts.URL, "http://")
+	tsHost, _, _ := net.SplitHostPort(tsHostPort)
+	addCmd := exec.Command(veilBin, "add", "--path", projDir, "--force",
+		"--value", originalKey, "--host", tsHost, "GITHUB_TOKEN")
+	addCmd.Env = env
+	addOut, err := addCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil add --force failed: %v\n%s", err, addOut)
+	}
+
+	// Re-read the updated placeholder.
+	rewritten2, err := os.ReadFile(filepath.Join(projDir, ".env"))
+	if err != nil {
+		t.Fatalf("reading .env: %v", err)
+	}
+	for _, line := range strings.Split(string(rewritten2), "\n") {
+		if strings.HasPrefix(line, "GITHUB_TOKEN=") {
+			placeholder = strings.TrimPrefix(line, "GITHUB_TOKEN=")
+			break
+		}
+	}
+
+	// Run testclient through veil run with the placeholder as TEST_API_KEY.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
+		clientBin, ts.URL+"/repos")
+	runCmd.Env = append(env, "TEST_API_KEY="+placeholder)
+	runOut, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Logf("veil run output: %s", runOut)
+		t.Fatalf("veil run failed: %v", err)
+	}
+
+	// The server should have received the REAL token, not the placeholder.
+	cap := <-captureCh
+	t.Logf("server received Authorization: %s", cap.Auth)
+
+	expectedAuth := "Bearer " + originalKey
+	if cap.Auth != expectedAuth {
+		t.Errorf("header injection to authorized host failed:\n  got:  %s\n  want: %s", cap.Auth, expectedAuth)
+	}
+	if strings.Contains(cap.Auth, placeholder) {
+		t.Errorf("placeholder was not replaced in header:\n  got: %s", cap.Auth)
+	}
+
+	// Verify audit log shows successful injection (not blocked).
+	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json")
+	logCmd.Env = env
+	logOut, err := logCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil log failed: %v\n%s", err, logOut)
+	}
+	logStr := strings.TrimSpace(string(logOut))
+	if logStr == "" {
+		t.Error("audit log is empty; expected injection event")
+	} else {
+		var entry map[string]interface{}
+		lines := strings.Split(logStr, "\n")
+		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+			t.Fatalf("parsing audit log JSON: %v", err)
+		}
+		if entry["location"] == "blocked" {
+			t.Error("injection should not be blocked for authorized host")
+		}
+		if entry["credential"] != "GITHUB_TOKEN" {
+			t.Errorf("expected credential GITHUB_TOKEN, got %v", entry["credential"])
+		}
+	}
+}
+
+// TestE2E_ExitCodeAndEnvVars verifies proxy environment injection and exit code propagation.
+func TestE2E_ExitCodeAndEnvVars(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e test in short mode")
+	}
+
+	env := makeEnv()
+	binDir := t.TempDir()
+	veilBin := buildVeil(t, binDir)
+
+	projDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, ".env"),
+		[]byte("API_KEY=sk-proj-envtest1234567890abcdef1234567890\n"), 0644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	initCmd := exec.Command(veilBin, "init", "--path", projDir)
+	initCmd.Env = env
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("veil init failed: %v\n%s", err, out)
+	}
+
+	// Verify proxy env vars are set in child.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
+		"sh", "-c", "echo PROXY=$HTTPS_PROXY; echo CA=$SSL_CERT_FILE; echo NP=$NO_PROXY")
+	runCmd.Env = env
+	runOut, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("veil run failed: %v\n%s", err, runOut)
+	}
+	outStr := string(runOut)
+	if !strings.Contains(outStr, "PROXY=http://127.0.0.1:") {
+		t.Error("HTTPS_PROXY not set to loopback")
+	}
+	if !strings.Contains(outStr, "CA=") {
+		t.Error("SSL_CERT_FILE not set")
+	}
+	if !strings.Contains(outStr, "NP=localhost,127.0.0.1,::1") {
+		t.Error("NO_PROXY defaults not set")
+	}
+
+	// Verify exit code propagation.
+	runCmd2 := exec.Command(veilBin, "run", "--path", projDir, "--",
+		"sh", "-c", "exit 42")
+	runCmd2.Env = env
+	_ = runCmd2.Run()
+	if runCmd2.ProcessState == nil {
+		t.Fatal("no ProcessState")
+	}
+	if got := runCmd2.ProcessState.ExitCode(); got != 42 {
+		t.Errorf("exit code: got %d, want 42", got)
 	}
 }
 
