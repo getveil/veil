@@ -232,6 +232,14 @@ func TestListEmpty(t *testing.T) {
 	}
 }
 
+func TestColorFlagNoColor(t *testing.T) {
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--no-color", "status", "--path", "/nonexistent"})
+	_ = cmd.Execute()
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
