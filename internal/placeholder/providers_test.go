@@ -295,3 +295,115 @@ func TestProviderSlack(t *testing.T) {
 		}
 	})
 }
+
+func TestRegisterFormat_BasicMatch(t *testing.T) {
+	before := len(registry)
+	registerFormat(Format{
+		Name:     "testprovider",
+		Prefixes: []string{"tp_"},
+		KeyHints: []string{"TESTPROV"},
+		Length:   20,
+		Charset:  "alphanumeric",
+		Hosts:    []string{"api.testprovider.com"},
+	})
+	defer func() { registry = registry[:before] }()
+
+	var prov ProviderPattern
+	for _, p := range registry[before:] {
+		if p.Name == "testprovider" {
+			prov = p
+			break
+		}
+	}
+	if prov.Name == "" {
+		t.Fatal("testprovider not registered")
+	}
+	if !prov.Match("ANY_KEY", "tp_abc123") {
+		t.Fatal("should match tp_ prefix")
+	}
+	if !prov.Match("TESTPROV_KEY", "anything") {
+		t.Fatal("should match TESTPROV in key name")
+	}
+	if prov.Match("OTHER", "other") {
+		t.Fatal("should not match unrelated")
+	}
+
+	result := prov.Generate("tp_originalvalue1234")
+	if len(result) != 20 {
+		t.Fatalf("expected length 20, got %d: %s", len(result), result)
+	}
+	if result[:3] != "tp_" {
+		t.Fatalf("expected tp_ prefix, got: %s", result)
+	}
+	for _, c := range result[3:] {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !isAlnum {
+			t.Fatalf("expected alphanumeric char, got: %c", c)
+		}
+	}
+	if len(prov.Hosts) != 1 || prov.Hosts[0] != "api.testprovider.com" {
+		t.Fatalf("unexpected hosts: %v", prov.Hosts)
+	}
+}
+
+func TestRegisterFormat_HexCharset(t *testing.T) {
+	before := len(registry)
+	registerFormat(Format{
+		Name:     "testhex",
+		Prefixes: nil,
+		KeyHints: []string{"TESTHEX"},
+		Length:   32,
+		Charset:  "hex",
+		Hosts:    []string{"api.testhex.com"},
+	})
+	defer func() { registry = registry[:before] }()
+
+	var prov ProviderPattern
+	for _, p := range registry[before:] {
+		if p.Name == "testhex" {
+			prov = p
+			break
+		}
+	}
+
+	result := prov.Generate("anything-at-all-here-for-32chars")
+	if len(result) != 32 {
+		t.Fatalf("expected length 32, got %d", len(result))
+	}
+	for _, c := range result {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !isHex {
+			t.Fatalf("expected hex char, got: %c in %s", c, result)
+		}
+	}
+}
+
+func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
+	before := len(registry)
+	registerFormat(Format{
+		Name:     "testflex",
+		Prefixes: []string{"flex_"},
+		KeyHints: nil,
+		Length:   0,
+		Charset:  "alphanumeric",
+		Hosts:    nil,
+	})
+	defer func() { registry = registry[:before] }()
+
+	var prov ProviderPattern
+	for _, p := range registry[before:] {
+		if p.Name == "testflex" {
+			prov = p
+			break
+		}
+	}
+
+	input := "flex_shortvalue"
+	result := prov.Generate(input)
+	if len(result) != len(input) {
+		t.Fatalf("expected length %d (same as input), got %d", len(input), len(result))
+	}
+	if result[:5] != "flex_" {
+		t.Fatalf("expected flex_ prefix, got: %s", result)
+	}
+}
