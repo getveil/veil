@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/runner"
@@ -41,9 +42,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Verbose: flagVerbose,
 	})
 	if err != nil {
-		return cliError(fmt.Sprintf("run failed: %v", err), "")
+		return cliError(mapRunError(err), "")
 	}
 
 	os.Exit(result.ExitCode)
 	return nil // unreachable
+}
+
+// mapRunError converts internal runner errors to user-friendly messages.
+func mapRunError(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "open vault") || strings.Contains(msg, "retrieve master key"):
+		return "Cannot decrypt vault. Your keychain may have changed. Run veil init --force to reinitialize."
+	case strings.Contains(msg, "load or create CA") || strings.Contains(msg, "CA"):
+		return "CA certificate not found or corrupt. Run veil init to regenerate."
+	case strings.Contains(msg, "bind") || strings.Contains(msg, "address already in use"):
+		return "Cannot start proxy. Another instance may be running."
+	default:
+		return fmt.Sprintf("run failed: %v", err)
+	}
 }

@@ -462,6 +462,40 @@ func TestStatusShowsProxyNotRunning(t *testing.T) {
 	}
 }
 
+func TestRunVaultDecryptError(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create .veil with a corrupted vault.
+	veilDir := filepath.Join(tmpDir, ".veil")
+	if err := os.MkdirAll(veilDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(veilDir, "vault.meta"), []byte(`{"project_id":"test","version":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(veilDir, "vault.bin"), []byte("corrupted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"run", "--path", tmpDir, "--", "echo", "hi"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for corrupted vault")
+	}
+	errStr := err.Error()
+	// Should get a user-friendly message, not a raw Go error.
+	if !strings.Contains(errStr, "decrypt") && !strings.Contains(errStr, "vault") {
+		t.Errorf("error should reference vault/decrypt issue, got: %v", err)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
