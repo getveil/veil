@@ -447,7 +447,7 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	}
 
 	// 8. Verify audit log recorded the blocked injection.
-	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json")
+	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json", "--blocked")
 	logCmd.Env = env
 	logOut, err := logCmd.CombinedOutput()
 	if err != nil {
