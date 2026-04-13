@@ -118,3 +118,46 @@ func TestTableHeader(t *testing.T) {
 		t.Errorf("TableHeader should contain column names, got: %q", got)
 	}
 }
+
+func TestFormatError(t *testing.T) {
+	SetColor("never")
+	var buf bytes.Buffer
+	err := FormatError(&buf, "project not initialized", "Run veil init to get started")
+	if err == nil {
+		t.Error("FormatError should return a non-nil error")
+	}
+	got := buf.String()
+	if !strings.Contains(got, "error:") {
+		t.Errorf("FormatError should contain 'error:', got: %q", got)
+	}
+	if !strings.Contains(got, "project not initialized") {
+		t.Errorf("FormatError should contain message, got: %q", got)
+	}
+	if !strings.Contains(got, "veil init") {
+		t.Errorf("FormatError should contain hint, got: %q", got)
+	}
+}
+
+func TestFormatErrorNoHint(t *testing.T) {
+	SetColor("never")
+	var buf bytes.Buffer
+	_ = FormatError(&buf, "no value provided", "")
+	got := buf.String()
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 1 {
+		t.Errorf("FormatError with no hint should be 1 line, got %d: %q", len(lines), got)
+	}
+}
+
+func TestFormatWarning(t *testing.T) {
+	SetColor("never")
+	var buf bytes.Buffer
+	FormatWarning(&buf, "2 credentials have no host scope", "Use veil add --host to scope them")
+	got := buf.String()
+	if !strings.Contains(got, "warning:") {
+		t.Errorf("FormatWarning should contain 'warning:', got: %q", got)
+	}
+	if !strings.Contains(got, "2 credentials have no host scope") {
+		t.Errorf("FormatWarning should contain message, got: %q", got)
+	}
+}
