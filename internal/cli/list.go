@@ -22,6 +22,7 @@ func listCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only)")
 	cmd.Flags().BoolVar(&showPlaceholder, "placeholder", false, "show placeholder values")
+	cmd.MarkFlagsMutuallyExclusive("reveal", "placeholder")
 	return cmd
 }
 

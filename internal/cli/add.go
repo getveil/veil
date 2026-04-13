@@ -101,16 +101,16 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError(fmt.Sprintf("adding credential: %v", err), "")
 	}
 
+	w := cmd.OutOrStdout()
+
 	// If --force replaced a credential, update .env files with the new placeholder.
 	if oldPlaceholder != "" && oldPlaceholder != cred.Placeholder {
 		updated := syncPlaceholderInEnvFiles(root, oldPlaceholder, cred.Placeholder)
 		if updated > 0 {
-			w := cmd.OutOrStdout()
 			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
 		}
 	}
 
-	w := cmd.OutOrStdout()
 	ui.Step(w, fmt.Sprintf("Added %s to vault", name))
 	fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
 	if len(allowedHosts) > 0 {

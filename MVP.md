@@ -28,7 +28,6 @@ Every credential injection is logged locally: timestamp, credential name, destin
 | `veil add <name>` | Manually add a credential to the store |
 | `veil list` | List managed credentials (names only, never values) |
 | `veil log` | Query the audit log. Supports `--since`, `--host`, `--credential` filters |
-| `veil trust` | Install the proxy CA cert into the system trust store |
 
 ## Constraints
 
