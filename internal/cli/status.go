@@ -9,6 +9,7 @@ import (
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/proxy"
+	"github.com/8enji/veil/internal/runner"
 	"github.com/8enji/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -85,6 +86,22 @@ func runStatus(cmd *cobra.Command) error {
 			ui.Bold.Sprint("CA"),
 			ui.Success.Sprint("ready"),
 			ui.Muted.Sprint(caPath),
+		)
+	}
+
+	// Proxy status.
+	pidPath := config.PidFile(root)
+	pid, pidErr := runner.ReadPidFile(pidPath)
+	if pidErr == nil && runner.IsProcessAlive(pid) {
+		_, _ = fmt.Fprintf(w, "  %s        %s %s\n",
+			ui.Bold.Sprint("Proxy"),
+			ui.Success.Sprint("active"),
+			ui.Muted.Sprintf("(PID %d)", pid),
+		)
+	} else {
+		_, _ = fmt.Fprintf(w, "  %s        %s\n",
+			ui.Bold.Sprint("Proxy"),
+			ui.Muted.Sprint("not running"),
 		)
 	}
 

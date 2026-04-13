@@ -442,6 +442,26 @@ func TestListPlaceholder(t *testing.T) {
 	}
 }
 
+func TestStatusShowsProxyNotRunning(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"status", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Proxy") {
+		t.Errorf("status should show Proxy line, got: %s", output)
+	}
+	if !strings.Contains(output, "not running") {
+		t.Errorf("status should show 'not running' when proxy is inactive, got: %s", output)
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string
