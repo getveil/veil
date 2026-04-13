@@ -86,8 +86,8 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	}
 
 	if len(rows) == 0 {
-		_, _ = fmt.Fprintln(w, "No injection events found.")
-		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("Injections are logged when you run commands through veil run"))
+		_, _ = fmt.Fprintln(w, "No credential injections during this period.")
+		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("The proxy was active but no managed credentials were used in outbound requests"))
 		return nil
 	}
 

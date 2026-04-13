@@ -148,11 +148,12 @@ func TestLogEmpty(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("log failed: %v", err)
 	}
-	if !strings.Contains(out.String(), "No injection events found") {
-		t.Errorf("expected empty log message, got: %s", out.String())
+	output := out.String()
+	if !strings.Contains(output, "No credential injections") {
+		t.Errorf("expected empty log message, got: %s", output)
 	}
-	if !strings.Contains(out.String(), "veil run") {
-		t.Errorf("expected hint about 'veil run', got: %s", out.String())
+	if !strings.Contains(output, "proxy was active") {
+		t.Errorf("expected proxy-active clarification, got: %s", output)
 	}
 }
 
