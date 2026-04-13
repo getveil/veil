@@ -19,6 +19,18 @@ var (
 	flagNoColor bool
 )
 
+// init registers template functions used by custom help and version templates.
+// These are package-level in Cobra and are looked up at render time, so the
+// current color state (set by PersistentPreRunE for regular commands, or
+// auto-detected by fatih/color for --help/--version) is respected. We register
+// once at package init to avoid racing on Cobra's unprotected template func map
+// if NewRoot is ever called concurrently.
+func init() {
+	cobra.AddTemplateFunc("bold", func(s string) string { return ui.Bold.Sprint(s) })
+	cobra.AddTemplateFunc("muted", func(s string) string { return ui.Muted.Sprint(s) })
+	cobra.AddTemplateFunc("styledFlags", styledFlags)
+}
+
 // NewRoot returns the top-level cobra command for veil.
 func NewRoot(version string) *cobra.Command {
 	root := &cobra.Command{
@@ -50,21 +62,12 @@ credentials at the proxy layer — so the agent never sees them.`,
 	root.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	root.Version = version
 
-	// Register template functions used by custom help and version templates.
-	// These are package-level in Cobra and are looked up at render time, so the
-	// current color state (set by PersistentPreRunE for regular commands, or
-	// auto-detected by fatih/color for --help/--version) is respected.
-	cobra.AddTemplateFunc("bold", func(s string) string { return ui.Bold.Sprint(s) })
-	cobra.AddTemplateFunc("muted", func(s string) string { return ui.Muted.Sprint(s) })
-	cobra.AddTemplateFunc("styledFlags", styledFlags)
-
 	// Styled version line: bold "veil vX.Y.Z", muted "(goos/goarch)".
-	// Pre-formatted because --version bypasses PersistentPreRunE; fatih/color
-	// auto-detects terminal status and NO_COLOR at package init, which covers
-	// the common cases.
-	root.SetVersionTemplate(fmt.Sprintf("%s %s\n",
-		ui.Bold.Sprintf("veil v%s", version),
-		ui.Muted.Sprintf("(%s/%s)", runtime.GOOS, runtime.GOARCH)))
+	// Uses the bold/muted template functions so color state is evaluated at
+	// render time, matching the usage template pattern.
+	root.SetVersionTemplate(fmt.Sprintf(
+		`{{bold "veil v%s"}} {{muted "(%s/%s)"}}`+"\n",
+		version, runtime.GOOS, runtime.GOARCH))
 
 	root.AddCommand(initCmd())
 	root.AddCommand(runCmd())
@@ -130,7 +133,7 @@ func styledFlags(s string) string {
 			continue
 		}
 		b.WriteString(line[:idx])
-		b.WriteString(strings.Repeat(" ", descStart-idx))
+		b.WriteString(line[idx:descStart])
 		b.WriteString(ui.Muted.Sprint(line[descStart:]))
 	}
 	return b.String()
@@ -139,6 +142,9 @@ func styledFlags(s string) string {
 // flagDescriptionStart returns the index of the first run of 2+ consecutive
 // spaces that follows non-space content. Returns -1 if no such boundary exists.
 func flagDescriptionStart(line string) int {
+	if len(line) < 2 {
+		return -1
+	}
 	inContent := false
 	for i := 0; i < len(line)-1; i++ {
 		if line[i] != ' ' {
