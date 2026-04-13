@@ -377,6 +377,49 @@ func TestAddOutputShowsPlaceholderAndHosts(t *testing.T) {
 	}
 }
 
+func TestAddForceUpdatesEnvFile(t *testing.T) {
+	root := initProject(t)
+
+	// Read the .env to find the existing placeholder for OPENAI_API_KEY.
+	envData, err := os.ReadFile(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldPlaceholder string
+	for _, line := range strings.Split(string(envData), "\n") {
+		if strings.HasPrefix(line, "OPENAI_API_KEY=") {
+			oldPlaceholder = strings.TrimPrefix(line, "OPENAI_API_KEY=")
+			break
+		}
+	}
+	if oldPlaceholder == "" {
+		t.Fatal("could not find OPENAI_API_KEY placeholder in .env")
+	}
+
+	// Force-replace OPENAI_API_KEY with a new value.
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "--force", "--value", "sk-proj-newkey9876543210fedcba", "OPENAI_API_KEY"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add --force failed: %v", err)
+	}
+
+	// Read .env again — the old placeholder should be replaced with the new one.
+	envData2, err := os.ReadFile(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envStr := string(envData2)
+	if strings.Contains(envStr, oldPlaceholder) {
+		t.Error("old placeholder should have been replaced in .env")
+	}
+	if !strings.Contains(envStr, "OPENAI_API_KEY=") {
+		t.Error("OPENAI_API_KEY key should still exist in .env")
+	}
+}
+
 func TestParseSince(t *testing.T) {
 	tests := []struct {
 		input   string

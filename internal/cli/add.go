@@ -3,10 +3,12 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/8enji/veil/internal/placeholder"
+	"github.com/8enji/veil/internal/scanner"
 	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
@@ -74,8 +76,12 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		allowedHosts = placeholder.HostsForCredential(name, value)
 	}
 
-	// Handle --force: delete existing credential first.
+	// Handle --force: delete existing credential, capture old placeholder for .env sync.
+	var oldPlaceholder string
 	if force {
+		if existing, found := v.Get(name); found {
+			oldPlaceholder = existing.Placeholder
+		}
 		_, _ = v.Delete(name)
 	}
 
@@ -95,6 +101,15 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError(fmt.Sprintf("adding credential: %v", err), "")
 	}
 
+	// If --force replaced a credential, update .env files with the new placeholder.
+	if oldPlaceholder != "" && oldPlaceholder != cred.Placeholder {
+		updated := syncPlaceholderInEnvFiles(root, oldPlaceholder, cred.Placeholder)
+		if updated > 0 {
+			w := cmd.OutOrStdout()
+			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
+		}
+	}
+
 	w := cmd.OutOrStdout()
 	ui.Step(w, fmt.Sprintf("Added %s to vault", name))
 	fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
@@ -106,4 +121,30 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 	}
 
 	return nil
+}
+
+// syncPlaceholderInEnvFiles replaces oldPh with newPh in all .env files under root.
+// Returns the number of files updated.
+func syncPlaceholderInEnvFiles(root, oldPh, newPh string) int {
+	envPaths, err := scanner.Scan(root)
+	if err != nil {
+		return 0
+	}
+	var count int
+	for _, path := range envPaths {
+		data, err := os.ReadFile(path) // #nosec G304
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if !strings.Contains(content, oldPh) {
+			continue
+		}
+		updated := strings.ReplaceAll(content, oldPh, newPh)
+		if err := atomicWriteFile(path, []byte(updated)); err != nil {
+			continue
+		}
+		count++
+	}
+	return count
 }
