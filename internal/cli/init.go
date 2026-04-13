@@ -12,6 +12,7 @@ import (
 	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/scanner"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,8 @@ func initCmd() *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, force, dryRun bool) error {
+	w := cmd.OutOrStdout()
+
 	// 1. Resolve project root.
 	root := flagPath
 	if root == "" {
@@ -54,6 +57,9 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		return cliError("project already initialized", "Use --force to reinitialize")
 	}
 
+	// Phase: Scanning project.
+	ui.Phase(w, "Scanning project...")
+
 	// 3. Scan .env files.
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
@@ -68,9 +74,18 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 	// Early exit if nothing to process.
 	if len(envPaths) == 0 && mcpConfigPath == "" {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "no .env files or MCP configs found in %s\n", root)
+		_, _ = fmt.Fprintf(w, "no .env files or MCP configs found in %s\n", root)
 		return nil
 	}
+
+	// Report what was found.
+	if len(envPaths) > 0 {
+		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
+	}
+	if mcpConfigPath != "" {
+		ui.Step(w, "Found 1 MCP config")
+	}
+	_, _ = fmt.Fprintln(w)
 
 	// 4. Generate project ID.
 	projectID := vault.NewID()
@@ -87,18 +102,10 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		return cliError(fmt.Sprintf("creating vault: %v", err), "")
 	}
 
-	// 7. Ensure CA.
-	ca, err := proxy.LoadOrCreateCA()
-	if err != nil {
-		return cliError(fmt.Sprintf("setting up CA: %v", err), "")
-	}
-	caFile, err := config.CAFile()
-	if err != nil {
-		return cliError(fmt.Sprintf("CA file path: %v", err), "")
-	}
-	_ = ca
+	// Phase: Vaulting secrets.
+	ui.Phase(w, "Vaulting secrets...")
 
-	// 8. Process each .env file.
+	// 7. Process each .env file.
 	var secretsVaulted int
 	var secretsScoped int
 	for _, envPath := range envPaths {
@@ -115,14 +122,14 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 
 			if strings.Contains(line.Raw, "# veil:skip") {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (veil:skip): %s\n", line.Key)
+					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (veil:skip): %s", line.Key))
 				}
 				continue
 			}
 
 			if !placeholder.IsSecretLike(line.Key, line.Value) {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (not secret-like): %s\n", line.Key)
+					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): %s", line.Key))
 				}
 				continue
 			}
@@ -157,7 +164,7 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 			}
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", line.Key, ph)
+				_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", line.Key, ph))
 			} else {
 				envFile.SetValue(line.Key, ph)
 				fileChanged = true
@@ -185,27 +192,50 @@ func runInit(cmd *cobra.Command, force, dryRun bool) error {
 		}
 	}
 
+	// Report vault results.
+	unscoped := secretsVaulted - secretsScoped
+	ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
+	if secretsScoped > 0 {
+		ui.Step(w, fmt.Sprintf("%d auto-scoped to hosts", secretsScoped))
+	}
+	if unscoped > 0 {
+		ui.Warn(w, fmt.Sprintf("%d unscoped (use veil add --host to scope)", unscoped))
+	}
+	_, _ = fmt.Fprintln(w)
+
+	// Phase: Setting up proxy.
+	ui.Phase(w, "Setting up proxy...")
+
+	ca, err := proxy.LoadOrCreateCA()
+	if err != nil {
+		return cliError(fmt.Sprintf("setting up CA: %v", err), "")
+	}
+	_ = ca
+	ui.Step(w, "CA certificate ready")
+	_, _ = fmt.Fprintln(w)
+
 	// 9. Append to project .gitignore.
 	if !dryRun {
 		appendGitignore(root)
 	}
 
-	// 10. Print summary.
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Veil initialized for %s\n", root)
-	_, _ = fmt.Fprintln(cmd.OutOrStdout())
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Secrets vaulted: %d\n", secretsVaulted)
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Auto-scoped to hosts: %d\n", secretsScoped)
-	unscoped := secretsVaulted - secretsScoped
-	if unscoped > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Unscoped (needs --host): %d\n", unscoped)
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  .env files processed: %d\n", len(envPaths))
+	// 10. Final summary.
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
+	_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
 	if mcpConfigsProcessed > 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  MCP configs processed: %d\n", mcpConfigsProcessed)
+		_, _ = fmt.Fprintf(w, "  MCP configs processed: %d\n", mcpConfigsProcessed)
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CA: %s\n", caFile)
-	_, _ = fmt.Fprintln(cmd.OutOrStdout())
+	_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
+	_, _ = fmt.Fprintln(w)
 	return nil
+}
+
+// plural returns singular if n == 1, otherwise plural.
+func plural(n int, singular, pluralForm string) string {
+	if n == 1 {
+		return singular
+	}
+	return pluralForm
 }
 
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
@@ -232,7 +262,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 		for key, value := range server.Env {
 			if !placeholder.IsSecretLike(key, value) {
 				if flagVerbose {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  skip (not secret-like): mcp:%s:%s\n", serverName, key)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Muted.Sprintf("  skip (not secret-like): mcp:%s:%s", serverName, key))
 				}
 				continue
 			}
@@ -268,7 +298,7 @@ func processMCPConfig(cmd *cobra.Command, v *vault.Vault, configPath string, for
 			}
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  would vault: %s -> %s\n", credName, ph)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
 			} else {
 				cfg.SetEnvValue(serverName, key, ph)
 				configChanged = true
