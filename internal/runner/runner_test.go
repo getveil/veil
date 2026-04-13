@@ -136,6 +136,40 @@ func TestRunCommandNotFound(t *testing.T) {
 	}
 }
 
+func TestRunChildCAEnvVars(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	root, ks := setupProject(t)
+	outFile := filepath.Join(t.TempDir(), "ca-env-out.txt")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := Run(ctx, Config{
+		Root:     root,
+		Command:  "sh",
+		Args:     []string{"-c", "printenv SSL_CERT_FILE > " + outFile},
+		Keystore: ks,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read env output: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if !strings.HasSuffix(got, "ca-bundle.pem") {
+		t.Fatalf("SSL_CERT_FILE = %q, want suffix ca-bundle.pem", got)
+	}
+}
+
 func TestBuildChildEnv(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",
