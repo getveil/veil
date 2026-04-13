@@ -162,15 +162,32 @@ func TestSummary(t *testing.T) {
 	for i, h := range hosts {
 		s.Record(makeInjection(h, fmt.Sprintf("key-%d", i), base.Add(time.Duration(i)*time.Second)))
 	}
+
+	// Add two blocked injections.
+	blockedInj := makeInjection("evil.example.com", "stolen-key", base.Add(5*time.Second))
+	blockedInj.Location = "blocked"
+	blockedInj.BytesBefore = 0
+	blockedInj.BytesAfter = 0
+	s.Record(blockedInj)
+
+	blockedInj2 := makeInjection("api.openai.com", "openai-key", base.Add(6*time.Second))
+	blockedInj2.Location = "blocked"
+	blockedInj2.BytesBefore = 0
+	blockedInj2.BytesAfter = 0
+	s.Record(blockedInj2)
+
 	s.flushPending()
 
-	total, hostList, last, err := s.Summary(base)
+	total, blocked, hostList, last, err := s.Summary(base)
 	if err != nil {
 		t.Fatalf("Summary: %v", err)
 	}
 
 	if total != 3 {
 		t.Errorf("total = %d, want 3", total)
+	}
+	if blocked != 2 {
+		t.Errorf("blocked = %d, want 2", blocked)
 	}
 	if len(hostList) != 3 {
 		t.Errorf("hosts = %v, want 3 distinct", hostList)

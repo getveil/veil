@@ -104,18 +104,26 @@ func buildSelectQuery(clauses []string) string { //nolint:gosec // clauses are s
 }
 
 // Summary returns aggregate information about injections since the given time.
-// It returns the total count, distinct hosts, and the most recent injection.
-func (s *Store) Summary(since time.Time) (total int, hosts []string, lastInjection *Row, err error) {
+// It returns the total count of successful injections, a separate blocked
+// count, distinct hosts (excluding blocked), and the most recent successful
+// injection.
+func (s *Store) Summary(since time.Time) (total int, blocked int, hosts []string, lastInjection *Row, err error) {
 	sinceMillis := since.UnixMilli()
 
-	// Total count.
-	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ?", sinceMillis).Scan(&total)
+	// Total successful count.
+	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location != 'blocked'", sinceMillis).Scan(&total)
 	if err != nil {
 		return
 	}
 
-	// Distinct hosts.
-	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? ORDER BY host", sinceMillis)
+	// Blocked count.
+	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location = 'blocked'", sinceMillis).Scan(&blocked)
+	if err != nil {
+		return
+	}
+
+	// Distinct hosts (successful injections only).
+	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? AND location != 'blocked' ORDER BY host", sinceMillis)
 	if err != nil {
 		return
 	}
@@ -131,11 +139,11 @@ func (s *Store) Summary(since time.Time) (total int, hosts []string, lastInjecti
 		return
 	}
 
-	// Most recent injection.
+	// Most recent successful injection.
 	r := &Row{}
 	var tsMillis int64
 	scanErr := s.db.QueryRow(
-		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? ORDER BY ts DESC LIMIT 1",
+		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? AND location != 'blocked' ORDER BY ts DESC LIMIT 1",
 		sinceMillis,
 	).Scan(
 		&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,

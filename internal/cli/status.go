@@ -57,7 +57,7 @@ func runStatus(cmd *cobra.Command) error {
 	defer func() { _ = store.Close() }()
 
 	since := time.Now().Add(-24 * time.Hour)
-	total, hosts, lastInj, err := store.Summary(since)
+	total, blocked, hosts, lastInj, err := store.Summary(since)
 	if err != nil {
 		return exitError(fmt.Sprintf("querying audit: %v", err))
 	}
@@ -70,6 +70,9 @@ func runStatus(cmd *cobra.Command) error {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "  Last 24h:")
 	_, _ = fmt.Fprintf(w, "    Injections:   %d\n", total)
+	if blocked > 0 {
+		_, _ = fmt.Fprintf(w, "    Blocked:      %d\n", blocked)
+	}
 
 	if len(hosts) > 0 {
 		_, _ = fmt.Fprintf(w, "    Hosts:        %s\n", strings.Join(hosts, ", "))
