@@ -12,6 +12,7 @@ import (
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/skiphost"
 )
 
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
@@ -32,7 +33,7 @@ func initProject(t *testing.T) string {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -538,165 +539,37 @@ func TestHelpOutput(t *testing.T) {
 	}
 }
 
-func TestInitGeneratesConfig(t *testing.T) {
+func TestAddHostResolution(t *testing.T) {
 	root := initProject(t)
 
-	// Config file should exist after init.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("config file should exist after init: %v", err)
-	}
-	content := string(data)
-
-	if !strings.Contains(content, "scoping:") {
-		t.Error("config should contain scoping section")
-	}
-	if !strings.Contains(content, "OPENAI_API_KEY") {
-		t.Error("config should contain the vaulted credential name")
-	}
-	if !strings.Contains(content, "api.openai.com") {
-		t.Error("config should contain auto-detected host")
-	}
-}
-
-func TestInitRespectsIgnorePatterns(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create two .env files.
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("API_KEY=sk-proj-1234567890abcdef\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env.local"), []byte("LOCAL_KEY=sk-proj-abcdef1234567890\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create .veil dir and config that ignores .env.local.
-	veilDir := filepath.Join(tmpDir, ".veil")
-	if err := os.MkdirAll(veilDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	configContent := "ignore:\n  - \".env.local\"\n"
-	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	output := out.String()
-	// Should process 1 .env file (not .env.local).
-	if !strings.Contains(output, "1 secret") {
-		t.Errorf("expected 1 secret vaulted (ignoring .env.local), got: %s", output)
-	}
-}
-
-func TestInitRespectsScopingConfig(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("CUSTOM_TOKEN=secret1234567890abc\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pre-create config with scoping.
-	veilDir := filepath.Join(tmpDir, ".veil")
-	if err := os.MkdirAll(veilDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	configContent := "scoping:\n  CUSTOM_TOKEN:\n    - api.custom.com\n    - cdn.custom.com\n"
-	if err := os.WriteFile(filepath.Join(veilDir, "config.yaml"), []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--force"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Verify the credential got the config-specified hosts.
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("open vault: %v", err)
-	}
-	cred, found := v.Get("CUSTOM_TOKEN")
-	if !found {
-		t.Fatal("CUSTOM_TOKEN not found in vault")
-	}
-	if len(cred.AllowedHosts) != 2 {
-		t.Fatalf("expected 2 allowed hosts from config, got %d: %v", len(cred.AllowedHosts), cred.AllowedHosts)
-	}
-	if cred.AllowedHosts[0] != "api.custom.com" {
-		t.Errorf("expected first host 'api.custom.com', got %q", cred.AllowedHosts[0])
-	}
-}
-
-func TestAddRespectsConfigScoping(t *testing.T) {
-	root := initProject(t)
-
-	// Write config with scoping for a new credential.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	configContent := "scoping:\n  NEW_TOKEN:\n    - api.newservice.com\n    - cdn.newservice.com\n"
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add credential without --host flags.
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "NEW_TOKEN"})
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "sk-test-1234567890abcdef", "--host", "api.custom.com", "MY_KEY"})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
+		t.Fatalf("add with --host failed: %v", err)
 	}
 
-	// Check vault has config-specified hosts.
 	v, err := openVault(root)
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	cred, found := v.Get("NEW_TOKEN")
-	if !found {
-		t.Fatal("NEW_TOKEN not found in vault")
+	cred, ok := v.Get("MY_KEY")
+	if !ok {
+		t.Fatal("MY_KEY not found in vault")
 	}
-	if len(cred.AllowedHosts) != 2 || cred.AllowedHosts[0] != "api.newservice.com" {
-		t.Errorf("expected config hosts, got %v", cred.AllowedHosts)
+	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.custom.com" {
+		t.Errorf("expected [api.custom.com], got %v", cred.AllowedHosts)
 	}
 }
 
-func TestAddHostFlagOverridesConfig(t *testing.T) {
+func TestAddAutoDetectsHosts(t *testing.T) {
 	root := initProject(t)
 
-	// Write config with scoping.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	configContent := "scoping:\n  NEW_TOKEN:\n    - api.config.com\n"
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add credential with explicit --host flag — should override config.
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "--value", "some-secret-value-123456", "--host", "api.override.com", "NEW_TOKEN"})
+	cmd.SetArgs([]string{"add", "--path", root, "--value", "ghp_1234567890abcdefghijklmnopqrstuvwxyz1234", "GITHUB_TOKEN"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("add failed: %v", err)
 	}
@@ -705,184 +578,12 @@ func TestAddHostFlagOverridesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	cred, found := v.Get("NEW_TOKEN")
-	if !found {
-		t.Fatal("NEW_TOKEN not found")
+	cred, ok := v.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not found in vault")
 	}
-	if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != "api.override.com" {
-		t.Errorf("--host flag should override config, got %v", cred.AllowedHosts)
-	}
-}
-
-func TestCheckConfigDrift_Stale(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Scoping: map[string][]string{
-			"EXISTS":    {"api.example.com"},
-			"STALE_KEY": {"api.stale.com"},
-		},
-	}
-	warnings := checkConfigDrift(cfg, []string{"EXISTS"})
-
-	var foundStale bool
-	for _, w := range warnings {
-		if strings.Contains(w, "STALE_KEY") && strings.Contains(w, "stale") {
-			foundStale = true
-		}
-	}
-	if !foundStale {
-		t.Errorf("expected stale warning for STALE_KEY, got: %v", warnings)
-	}
-}
-
-func TestCheckConfigDrift_Uncovered(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Scoping: map[string][]string{
-			"COVERED": {"api.example.com"},
-		},
-	}
-	warnings := checkConfigDrift(cfg, []string{"COVERED", "UNCOVERED_KEY"})
-
-	var found bool
-	for _, w := range warnings {
-		if strings.Contains(w, "UNCOVERED_KEY") && strings.Contains(w, "no scoping") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected uncovered warning for UNCOVERED_KEY, got: %v", warnings)
-	}
-}
-
-func TestCheckConfigDrift_ZeroCredentials(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Scoping: map[string][]string{
-			"ANYTHING": {"api.example.com"},
-		},
-	}
-	warnings := checkConfigDrift(cfg, nil)
-	if len(warnings) != 0 {
-		t.Errorf("zero credentials should suppress drift warnings, got: %v", warnings)
-	}
-}
-
-func TestCheckConfigDrift_NoDrift(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Scoping: map[string][]string{
-			"KEY_A": {"api.a.com"},
-			"KEY_B": {"api.b.com"},
-		},
-	}
-	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
-	if len(warnings) != 0 {
-		t.Errorf("expected no drift, got: %v", warnings)
-	}
-}
-
-func TestCheckConfigDrift_EmptyScoping(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Scoping: map[string][]string{}, // no scoping entries
-	}
-	// Should NOT warn about uncovered credentials when scoping is empty.
-	warnings := checkConfigDrift(cfg, []string{"KEY_A", "KEY_B"})
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings when scoping is empty, got: %v", warnings)
-	}
-}
-
-func TestSyncAddsNewCredential(t *testing.T) {
-	root := initProject(t)
-
-	// Add a new credential that won't be in the generated config.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "my-new-secret-value-1234", "BRAND_NEW_KEY"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-
-	// Run sync.
-	syncCmd := NewRoot("test")
-	syncOut := new(bytes.Buffer)
-	syncCmd.SetOut(syncOut)
-	syncCmd.SetErr(new(bytes.Buffer))
-	syncCmd.SetArgs([]string{"sync", "--path", root})
-	if err := syncCmd.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	output := syncOut.String()
-	if !strings.Contains(output, "BRAND_NEW_KEY") {
-		t.Errorf("sync should report adding BRAND_NEW_KEY, got: %s", output)
-	}
-
-	// Verify config file contains the new credential.
-	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatalf("reading config: %v", err)
-	}
-	if !strings.Contains(string(configData), "BRAND_NEW_KEY") {
-		t.Error("config file should contain BRAND_NEW_KEY after sync")
-	}
-}
-
-func TestSyncDryRun(t *testing.T) {
-	root := initProject(t)
-
-	// Add a credential.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "another-secret-value-1234", "DRY_KEY"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-
-	// Read config before sync.
-	configBefore, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Run sync --dry-run.
-	syncCmd := NewRoot("test")
-	syncOut := new(bytes.Buffer)
-	syncCmd.SetOut(syncOut)
-	syncCmd.SetErr(new(bytes.Buffer))
-	syncCmd.SetArgs([]string{"sync", "--path", root, "--dry-run"})
-	if err := syncCmd.Execute(); err != nil {
-		t.Fatalf("sync --dry-run failed: %v", err)
-	}
-
-	if !strings.Contains(syncOut.String(), "dry run") {
-		t.Error("expected dry run notice in output")
-	}
-
-	// Config file should be unchanged.
-	configAfter, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(configBefore) != string(configAfter) {
-		t.Error("config should not change during dry run")
-	}
-}
-
-func TestSyncNoChanges(t *testing.T) {
-	root := initProject(t)
-
-	// Sync immediately after init — should be in sync already.
-	syncCmd := NewRoot("test")
-	syncOut := new(bytes.Buffer)
-	syncCmd.SetOut(syncOut)
-	syncCmd.SetErr(new(bytes.Buffer))
-	syncCmd.SetArgs([]string{"sync", "--path", root})
-	if err := syncCmd.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	if !strings.Contains(syncOut.String(), "in sync") {
-		t.Errorf("expected 'in sync' message, got: %s", syncOut.String())
+	if len(cred.AllowedHosts) == 0 {
+		t.Error("expected auto-detected hosts, got none")
 	}
 }
 
@@ -904,252 +605,6 @@ func TestParseSince(t *testing.T) {
 				t.Errorf("parseSince(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
-	}
-}
-
-// --- Sync command tests ---
-
-func TestSyncRemovesStaleEntry(t *testing.T) {
-	root := initProject(t)
-
-	// Add a credential then remove it, leaving a stale config entry.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "extra-secret-value-12345", "EXTRA_KEY"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-
-	// Sync to add EXTRA_KEY to config.
-	sync1 := NewRoot("test")
-	sync1.SetOut(new(bytes.Buffer))
-	sync1.SetErr(new(bytes.Buffer))
-	sync1.SetArgs([]string{"sync", "--path", root})
-	if err := sync1.Execute(); err != nil {
-		t.Fatalf("first sync failed: %v", err)
-	}
-
-	// Verify EXTRA_KEY is in config.
-	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(configData), "EXTRA_KEY") {
-		t.Fatal("EXTRA_KEY should be in config after sync")
-	}
-
-	// Remove the credential.
-	rmCmd := NewRoot("test")
-	rmCmd.SetOut(new(bytes.Buffer))
-	rmCmd.SetErr(new(bytes.Buffer))
-	rmCmd.SetArgs([]string{"remove", "--path", root, "--force", "EXTRA_KEY"})
-	if err := rmCmd.Execute(); err != nil {
-		t.Fatalf("remove failed: %v", err)
-	}
-
-	// Sync again — should remove the stale entry.
-	sync2 := NewRoot("test")
-	syncOut := new(bytes.Buffer)
-	sync2.SetOut(syncOut)
-	sync2.SetErr(new(bytes.Buffer))
-	sync2.SetArgs([]string{"sync", "--path", root})
-	if err := sync2.Execute(); err != nil {
-		t.Fatalf("second sync failed: %v", err)
-	}
-
-	output := syncOut.String()
-	if !strings.Contains(output, "Remove") || !strings.Contains(output, "EXTRA_KEY") {
-		t.Errorf("expected removal of EXTRA_KEY in sync output, got: %s", output)
-	}
-
-	// Verify config no longer contains EXTRA_KEY.
-	configData2, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(configData2), "EXTRA_KEY") {
-		t.Error("EXTRA_KEY should be removed from config after sync")
-	}
-}
-
-func TestSyncPreservesUserCustomizedHosts(t *testing.T) {
-	root := initProject(t)
-
-	// Manually edit config to change hosts for OPENAI_API_KEY.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	customConfig := "scoping:\n  OPENAI_API_KEY:\n    - custom.openai.proxy.com\n    - backup.openai.com\n"
-	if err := os.WriteFile(configPath, []byte(customConfig), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add a new credential.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "my-new-secret-value-12345", "NEW_CRED"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-
-	// Sync — should add NEW_CRED but preserve custom hosts for OPENAI_API_KEY.
-	syncCmd := NewRoot("test")
-	syncCmd.SetOut(new(bytes.Buffer))
-	syncCmd.SetErr(new(bytes.Buffer))
-	syncCmd.SetArgs([]string{"sync", "--path", root})
-	if err := syncCmd.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(configData)
-	if !strings.Contains(content, "custom.openai.proxy.com") {
-		t.Error("sync should preserve user-customized hosts for OPENAI_API_KEY")
-	}
-	if !strings.Contains(content, "NEW_CRED") {
-		t.Error("sync should add NEW_CRED to config")
-	}
-}
-
-func TestSyncPreservesIgnoreAndSkipHosts(t *testing.T) {
-	root := initProject(t)
-
-	// Write config with ignore and skip_hosts sections.
-	configPath := filepath.Join(root, ".veil", "config.yaml")
-	configContent := "scoping:\n  OPENAI_API_KEY:\n    - api.openai.com\nignore:\n  - \".env.local\"\nskip_hosts:\n  - \"internal.corp.com\"\n"
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Add a credential to trigger a sync change.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "extra-secret-value-12345", "EXTRA"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add failed: %v", err)
-	}
-
-	// Sync.
-	syncCmd := NewRoot("test")
-	syncCmd.SetOut(new(bytes.Buffer))
-	syncCmd.SetErr(new(bytes.Buffer))
-	syncCmd.SetArgs([]string{"sync", "--path", root})
-	if err := syncCmd.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(configData)
-	if !strings.Contains(content, "ignore:") || !strings.Contains(content, ".env.local") {
-		t.Error("sync should preserve ignore section")
-	}
-	if !strings.Contains(content, "skip_hosts:") || !strings.Contains(content, "internal.corp.com") {
-		t.Error("sync should preserve skip_hosts section")
-	}
-}
-
-func TestSyncUninitialized(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"sync", "--path", tmpDir})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for uninitialized project")
-	}
-	if !strings.Contains(err.Error(), "not initialized") {
-		t.Errorf("error should mention 'not initialized', got: %v", err)
-	}
-}
-
-func TestSyncMultipleAddRemoveCycles(t *testing.T) {
-	root := initProject(t)
-
-	// Add three credentials.
-	for _, name := range []string{"KEY_A", "KEY_B", "KEY_C"} {
-		cmd := NewRoot("test")
-		cmd.SetOut(new(bytes.Buffer))
-		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"add", "--path", root, "--value", "secret-value-" + name + "-1234567890", name})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("add %s failed: %v", name, err)
-		}
-	}
-
-	// Sync to update config.
-	sync1 := NewRoot("test")
-	sync1.SetOut(new(bytes.Buffer))
-	sync1.SetErr(new(bytes.Buffer))
-	sync1.SetArgs([]string{"sync", "--path", root})
-	if err := sync1.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	// Remove KEY_A and KEY_B.
-	for _, name := range []string{"KEY_A", "KEY_B"} {
-		cmd := NewRoot("test")
-		cmd.SetOut(new(bytes.Buffer))
-		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"remove", "--path", root, "--force", name})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("remove %s failed: %v", name, err)
-		}
-	}
-
-	// Add KEY_D.
-	addCmd := NewRoot("test")
-	addCmd.SetOut(new(bytes.Buffer))
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{"add", "--path", root, "--value", "secret-value-KEY_D-1234567890", "KEY_D"})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add KEY_D failed: %v", err)
-	}
-
-	// Sync again.
-	sync2 := NewRoot("test")
-	syncOut := new(bytes.Buffer)
-	sync2.SetOut(syncOut)
-	sync2.SetErr(new(bytes.Buffer))
-	sync2.SetArgs([]string{"sync", "--path", root})
-	if err := sync2.Execute(); err != nil {
-		t.Fatalf("sync failed: %v", err)
-	}
-
-	// Verify config reflects final vault state.
-	configData, err := os.ReadFile(filepath.Join(root, ".veil", "config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(configData)
-	if strings.Contains(content, "KEY_A") {
-		t.Error("KEY_A should be removed from config")
-	}
-	if strings.Contains(content, "KEY_B") {
-		t.Error("KEY_B should be removed from config")
-	}
-	if !strings.Contains(content, "KEY_C") {
-		t.Error("KEY_C should be in config")
-	}
-	if !strings.Contains(content, "KEY_D") {
-		t.Error("KEY_D should be in config")
-	}
-	// OPENAI_API_KEY from initial initProject should still be there.
-	if !strings.Contains(content, "OPENAI_API_KEY") {
-		t.Error("OPENAI_API_KEY should still be in config")
 	}
 }
 
@@ -1383,7 +838,7 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandHelp(t *testing.T) {
-	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove", "sync"}
+	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove", "skip"}
 	for _, sub := range subcommands {
 		t.Run(sub, func(t *testing.T) {
 			cmd := NewRoot("test")
@@ -1414,7 +869,7 @@ func TestNoArgsShowsHelp(t *testing.T) {
 	if !strings.Contains(output, "Available Commands") {
 		t.Errorf("expected 'Available Commands' in help output, got: %s", output)
 	}
-	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove", "sync"} {
+	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove", "skip"} {
 		if !strings.Contains(output, sub) {
 			t.Errorf("help should list %q subcommand", sub)
 		}
@@ -1608,40 +1063,6 @@ func TestInitQuotedValuesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestInitVeilSkipAnnotation(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "OPENAI_API_KEY=sk-proj-1234567890abcdef\nSKIPPED=sk-proj-should-not-be-vaulted # veil:skip\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// SKIPPED should not be in the vault.
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("open vault: %v", err)
-	}
-	if _, found := v.Get("SKIPPED"); found {
-		t.Error("SKIPPED should not be vaulted (has # veil:skip annotation)")
-	}
-	// OPENAI_API_KEY should be vaulted.
-	if _, found := v.Get("OPENAI_API_KEY"); !found {
-		t.Error("OPENAI_API_KEY should be vaulted")
-	}
-}
-
 func TestInitNoSecretsInOutput(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
@@ -1707,5 +1128,120 @@ func TestManyCredentials(t *testing.T) {
 	}
 	if !strings.Contains(output, "51 credentials") {
 		t.Errorf("expected 51 credentials in footer, got: %s", output)
+	}
+}
+
+func TestSkipAdd(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("skip add failed: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "api.anthropic.com") {
+		t.Errorf("expected confirmation output, got %q", out.String())
+	}
+
+	hosts, err := skiphost.Load(config.SkipHostsFile(root))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "api.anthropic.com" {
+		t.Errorf("expected [api.anthropic.com], got %v", hosts)
+	}
+}
+
+func TestSkipDuplicate(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	cmd.Execute()
+
+	cmd2 := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd2.SetOut(out)
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("skip duplicate failed: %v", err)
+	}
+
+	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
+	if len(hosts) != 1 {
+		t.Errorf("expected 1 host, got %d", len(hosts))
+	}
+}
+
+func TestSkipList(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	cmd.Execute()
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"skip", "--path", root, "*.internal.com"})
+	cmd2.Execute()
+
+	cmd3 := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd3.SetOut(out)
+	cmd3.SetErr(new(bytes.Buffer))
+	cmd3.SetArgs([]string{"skip", "--path", root, "--list"})
+	if err := cmd3.Execute(); err != nil {
+		t.Fatalf("skip list failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "api.anthropic.com") || !strings.Contains(output, "*.internal.com") {
+		t.Errorf("expected both hosts in output, got %q", output)
+	}
+}
+
+func TestSkipRemove(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	cmd.Execute()
+
+	cmd2 := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd2.SetOut(out)
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"skip", "--path", root, "--remove", "api.anthropic.com"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("skip remove failed: %v", err)
+	}
+
+	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
+	if len(hosts) != 0 {
+		t.Errorf("expected empty list, got %v", hosts)
+	}
+}
+
+func TestSkipRemoveNotFound(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "--remove", "not.there.com"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("expected error for removing nonexistent host")
 	}
 }

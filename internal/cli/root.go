@@ -116,7 +116,7 @@ Protect your secrets from AI agents.
 	root.AddCommand(listCmd())
 	root.AddCommand(logCmd())
 	root.AddCommand(removeCmd())
-	root.AddCommand(syncCmd())
+	root.AddCommand(skipCmd())
 	return root
 }
 

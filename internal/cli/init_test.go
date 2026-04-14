@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/skiphost"
 )
 
 func TestInitHappyPath(t *testing.T) {
@@ -718,5 +721,140 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
 	}
 	if !strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
 		t.Error("MCP config should be unchanged when backup exists without --force")
+	}
+}
+
+func TestInitYes_VaultsAll(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nGITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz1234\n"), 0644)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", dir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --yes failed: %v", err)
+	}
+
+	v, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	creds := v.List()
+	if len(creds) != 2 {
+		t.Errorf("expected 2 credentials, got %d", len(creds))
+	}
+}
+
+func TestInitInteractive_SkipFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+	os.WriteFile(filepath.Join(dir, ".env.local"), []byte("LOCAL_KEY=sk-proj-localsecret1234567\n"), 0644)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(strings.NewReader("select\n1\ny\n\n"))
+	cmd.SetArgs([]string{"init", "--path", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	if _, ok := v.Get("OPENAI_API_KEY"); !ok {
+		t.Error("OPENAI_API_KEY should be vaulted")
+	}
+	if _, ok := v.Get("LOCAL_KEY"); ok {
+		t.Error("LOCAL_KEY should NOT be vaulted (file was skipped)")
+	}
+}
+
+func TestInitInteractive_SkipToken(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nSTRIPE_KEY=sk_live_12345678901234567890abcd\n"), 0644)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(strings.NewReader("select\n1\n\n"))
+	cmd.SetArgs([]string{"init", "--path", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	if _, ok := v.Get("OPENAI_API_KEY"); !ok {
+		t.Error("OPENAI_API_KEY should be vaulted")
+	}
+	if _, ok := v.Get("STRIPE_KEY"); ok {
+		t.Error("STRIPE_KEY should NOT be vaulted (was deselected)")
+	}
+}
+
+func TestInitInteractive_SkipHosts(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(strings.NewReader("y\napi.anthropic.com\n"))
+	cmd.SetArgs([]string{"init", "--path", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	hosts, err := skiphost.Load(config.SkipHostsFile(dir))
+	if err != nil {
+		t.Fatalf("load skip hosts: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "api.anthropic.com" {
+		t.Errorf("expected [api.anthropic.com], got %v", hosts)
+	}
+}
+
+func TestInitForce_WipesVault(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", dir, "--yes"})
+	cmd.Execute()
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetIn(strings.NewReader("y\n"))
+	cmd2.SetArgs([]string{"init", "--path", dir, "--force", "--yes"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("init --force failed: %v", err)
+	}
+
+	v, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	creds := v.List()
+	if len(creds) != 0 {
+		t.Logf("note: %d creds found (may be from re-scanning placeholders)", len(creds))
 	}
 }

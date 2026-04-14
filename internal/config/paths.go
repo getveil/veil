@@ -82,3 +82,7 @@ func PidFile(root string, pid int) string {
 func PidFileGlob(root string) string {
 	return filepath.Join(ProjectStateDir(root), "proxy-*.pid")
 }
+
+func SkipHostsFile(root string) string {
+	return filepath.Join(ProjectStateDir(root), "skip_hosts")
+}
