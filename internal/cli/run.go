@@ -1,13 +1,15 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/runner"
 	"github.com/8enji/veil/internal/skiphost"
+	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -63,15 +65,17 @@ func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
 
 // mapRunError converts internal runner errors to user-friendly messages.
 func mapRunError(err error) string {
-	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "open vault") || strings.Contains(msg, "retrieve master key"):
+	case errors.Is(err, vault.ErrOpen), errors.Is(err, vault.ErrMasterKey), errors.Is(err, vault.ErrCorrupt):
 		return "Cannot decrypt vault. Your keychain may have changed. Run veil init --force to reinitialize."
-	case strings.Contains(msg, "load or create CA") || strings.Contains(msg, "CA"):
+	case errors.Is(err, proxy.ErrCALoad), errors.Is(err, proxy.ErrCAGenerate):
 		return "CA certificate not found or corrupt. Run veil init to regenerate."
-	case strings.Contains(msg, "bind") || strings.Contains(msg, "address already in use"):
+	case errors.Is(err, proxy.ErrListen):
 		return "Cannot start proxy. Another instance may be running."
 	default:
 		return fmt.Sprintf("run failed: %v", err)
 	}
 }
+
+// MapRunErrorForTest is exported for tests that assert error-to-message mapping.
+var MapRunErrorForTest = mapRunError
