@@ -107,7 +107,7 @@ func TestAdd_Duplicate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
 
-	Add(path, "api.anthropic.com")
+	_, _ = Add(path, "api.anthropic.com")
 	added, err := Add(path, "api.anthropic.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -126,8 +126,8 @@ func TestRemove_Existing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
 
-	Add(path, "api.anthropic.com")
-	Add(path, "*.internal.corp.com")
+	_, _ = Add(path, "api.anthropic.com")
+	_, _ = Add(path, "*.internal.corp.com")
 
 	removed, err := Remove(path, "api.anthropic.com")
 	if err != nil {
@@ -147,7 +147,7 @@ func TestRemove_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
 
-	Add(path, "api.anthropic.com")
+	_, _ = Add(path, "api.anthropic.com")
 
 	removed, err := Remove(path, "not.there.com")
 	if err != nil {

@@ -1163,7 +1163,7 @@ func TestSkipDuplicate(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
 	cmd2 := NewRoot("test")
 	out := new(bytes.Buffer)
@@ -1187,13 +1187,13 @@ func TestSkipList(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
 	cmd2 := NewRoot("test")
 	cmd2.SetOut(new(bytes.Buffer))
 	cmd2.SetErr(new(bytes.Buffer))
 	cmd2.SetArgs([]string{"skip", "--path", root, "*.internal.com"})
-	cmd2.Execute()
+	_ = cmd2.Execute()
 
 	cmd3 := NewRoot("test")
 	out := new(bytes.Buffer)
@@ -1216,7 +1216,7 @@ func TestSkipRemove(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
 	cmd2 := NewRoot("test")
 	out := new(bytes.Buffer)

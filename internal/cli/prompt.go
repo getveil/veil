@@ -20,7 +20,7 @@ const (
 
 // promptYNS asks a Y/n/select question. Default is Y (empty input = yes).
 func promptYNS(r io.Reader, w io.Writer, question string) ynsChoice {
-	fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint("(Y/n/select):"))
+	_, _ = fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint("(Y/n/select):"))
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		return choiceYes
@@ -44,7 +44,7 @@ func promptYN(r io.Reader, w io.Writer, question string, defaultYes bool) bool {
 	if defaultYes {
 		hint = "(Y/n)"
 	}
-	fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint(hint))
+	_, _ = fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint(hint))
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		return defaultYes
@@ -65,7 +65,7 @@ func promptYN(r io.Reader, w io.Writer, question string, defaultYes bool) bool {
 // promptCSV asks for comma-separated input and returns trimmed, non-empty values.
 // Returns nil if the user enters nothing.
 func promptCSV(r io.Reader, w io.Writer, prompt string) []string {
-	fmt.Fprintf(w, "%s ", prompt)
+	_, _ = fmt.Fprintf(w, "%s ", prompt)
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		return nil
@@ -90,9 +90,9 @@ func promptCSV(r io.Reader, w io.Writer, prompt string) []string {
 // in their original order.
 func promptMultiSelect(r io.Reader, w io.Writer, items []string) []string {
 	for i, item := range items {
-		fmt.Fprintf(w, "  %s %s\n", ui.Muted.Sprintf("[%d]", i+1), item)
+		_, _ = fmt.Fprintf(w, "  %s %s\n", ui.Muted.Sprintf("[%d]", i+1), item)
 	}
-	fmt.Fprintf(w, "\n%s ", ui.Bold.Sprint("Select (comma-separated numbers, or Enter for all):"))
+	_, _ = fmt.Fprintf(w, "\n%s ", ui.Bold.Sprint("Select (comma-separated numbers, or Enter for all):"))
 
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {

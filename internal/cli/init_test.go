@@ -727,8 +727,8 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
 func TestInitYes_VaultsAll(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nGITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz1234\n"), 0644)
+	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nGITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz1234\n"), 0644)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
@@ -751,9 +751,9 @@ func TestInitYes_VaultsAll(t *testing.T) {
 func TestInitInteractive_SkipFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
-	os.WriteFile(filepath.Join(dir, ".env.local"), []byte("LOCAL_KEY=sk-proj-localsecret1234567\n"), 0644)
+	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, ".env.local"), []byte("LOCAL_KEY=sk-proj-localsecret1234567\n"), 0644)
 
 	cmd := NewRoot("test")
 	out := new(bytes.Buffer)
@@ -780,8 +780,8 @@ func TestInitInteractive_SkipFile(t *testing.T) {
 func TestInitInteractive_SkipToken(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nSTRIPE_KEY=sk_live_12345678901234567890abcd\n"), 0644)
+	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nSTRIPE_KEY=sk_live_12345678901234567890abcd\n"), 0644)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
@@ -807,8 +807,8 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
@@ -831,14 +831,14 @@ func TestInitInteractive_SkipHosts(t *testing.T) {
 func TestInitForce_WipesVault(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"init", "--path", dir, "--yes"})
-	cmd.Execute()
+	_ = cmd.Execute()
 
 	cmd2 := NewRoot("test")
 	cmd2.SetOut(new(bytes.Buffer))

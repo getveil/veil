@@ -36,28 +36,28 @@ func SetColor(mode string) {
 
 // Step prints a success step line: "  ✓ msg\n"
 func Step(w io.Writer, msg string) {
-	fmt.Fprintf(w, "  %s %s\n", Success.Sprint("✓"), msg)
+	_, _ = fmt.Fprintf(w, "  %s %s\n", Success.Sprint("✓"), msg)
 }
 
 // Warn prints a warning step line: "  ! msg\n"
 func Warn(w io.Writer, msg string) {
-	fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), msg)
+	_, _ = fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), msg)
 }
 
 // Warnf prints a warning step line with Printf-style formatting:
 // "  ! <formatted message>\n"
 func Warnf(w io.Writer, format string, args ...any) {
-	fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), fmt.Sprintf(format, args...))
+	_, _ = fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), fmt.Sprintf(format, args...))
 }
 
 // Phase prints a muted phase header line: "msg\n"
 func Phase(w io.Writer, msg string) {
-	fmt.Fprintln(w, Muted.Sprint(msg))
+	_, _ = fmt.Fprintln(w, Muted.Sprint(msg))
 }
 
 // Header prints a bold section label followed by a newline.
 func Header(w io.Writer, label string) {
-	fmt.Fprintln(w, Bold.Sprint(label))
+	_, _ = fmt.Fprintln(w, Bold.Sprint(label))
 }
 
 // TableHeader prints dimmed, tab-separated column headers to a tabwriter.
@@ -66,12 +66,12 @@ func TableHeader(tw *tabwriter.Writer, cols ...string) {
 	for i, c := range cols {
 		styled[i] = Muted.Sprint(c)
 	}
-	fmt.Fprintln(tw, strings.Join(styled, "\t"))
+	_, _ = fmt.Fprintln(tw, strings.Join(styled, "\t"))
 }
 
 // Footer prints a dimmed footer line preceded by a blank line.
 func Footer(w io.Writer, msg string) {
-	fmt.Fprintf(w, "\n%s\n", Muted.Sprint(msg))
+	_, _ = fmt.Fprintf(w, "\n%s\n", Muted.Sprint(msg))
 }
 
 // RelativeTime formats a time relative to now:
@@ -100,17 +100,17 @@ func RelativeTime(t time.Time) string {
 // FormatError prints a red "error: msg" line with an optional dimmed hint to w.
 // Returns a sentinel error for use as a cobra RunE return value.
 func FormatError(w io.Writer, msg string, hint string) error {
-	fmt.Fprintf(w, "%s %s\n", Err.Sprint("error:"), msg)
+	_, _ = fmt.Fprintf(w, "%s %s\n", Err.Sprint("error:"), msg)
 	if hint != "" {
-		fmt.Fprintf(w, "  %s\n", Muted.Sprint(hint))
+		_, _ = fmt.Fprintf(w, "  %s\n", Muted.Sprint(hint))
 	}
 	return fmt.Errorf("%s", msg)
 }
 
 // FormatWarning prints a yellow "warning: msg" line with an optional dimmed hint to w.
 func FormatWarning(w io.Writer, msg string, hint string) {
-	fmt.Fprintf(w, "%s %s\n", Warning.Sprint("warning:"), msg)
+	_, _ = fmt.Fprintf(w, "%s %s\n", Warning.Sprint("warning:"), msg)
 	if hint != "" {
-		fmt.Fprintf(w, "  %s\n", Muted.Sprint(hint))
+		_, _ = fmt.Fprintf(w, "  %s\n", Muted.Sprint(hint))
 	}
 }

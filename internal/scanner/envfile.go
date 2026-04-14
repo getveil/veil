@@ -173,8 +173,8 @@ func parseValue(raw string) (string, QuoteStyle, bool) {
 }
 
 // extractSingleQuoted extracts content from inside single quotes, honouring
-// the shell idiom '\'' (close quote, literal quote, open quote) which lets
-// users embed a literal single quote inside a single-quoted string.
+// the shell idiom backslash-quote (close quote, literal quote, open quote)
+// which lets users embed a literal single quote inside a single-quoted string.
 //
 // Input starts after the opening quote. Returns the literal content and
 // true on success; "" and false if the quote is unclosed.

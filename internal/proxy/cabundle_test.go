@@ -18,7 +18,7 @@ func TestBuildCABundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCABundle: %v", err)
 	}
-	defer os.Remove(bundlePath)
+	defer func() { _ = os.Remove(bundlePath) }()
 
 	data, err := os.ReadFile(bundlePath)
 	if err != nil {

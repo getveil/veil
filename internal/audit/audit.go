@@ -78,7 +78,7 @@ func Open(dbPath string) (*Store, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: create parent dir: %w", ErrAuditOpen, err)
 	}
-	if err := os.Chmod(parent, 0o700); err != nil {
+	if err := os.Chmod(parent, 0o700); err != nil { // #nosec G302 -- 0700 is correct for a directory
 		return nil, fmt.Errorf("%w: chmod parent dir: %w", ErrAuditOpen, err)
 	}
 

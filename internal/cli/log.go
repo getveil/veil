@@ -121,14 +121,14 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	// Print header and rows. Pad plain text first, then apply ANSI styling
 	// so escape codes don't break column alignment.
 	gap := "    "
-	fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
 		ui.Muted.Sprint(padRight("TIMESTAMP", tsW)), gap,
 		ui.Muted.Sprint(padRight("HOST", hostW)), gap,
 		ui.Muted.Sprint(padRight("METHOD", methodW)), gap,
 		ui.Muted.Sprint(padRight("CREDENTIAL", credW)), gap,
 		ui.Muted.Sprint("LOCATION"))
 	for _, r := range logRows {
-		fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
 			padRight(r.timestamp, tsW), gap,
 			padRight(r.host, hostW), gap,
 			padRight(r.method, methodW), gap,

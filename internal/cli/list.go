@@ -105,7 +105,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 	out := cmd.OutOrStdout()
 	gap := "    "
 	if reveal {
-		fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
 			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
@@ -113,7 +113,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
-			fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 				padRight(r.name, nameW), gap,
 				hosts, gap,
 				padRight(r.value, valueW), gap,
@@ -121,7 +121,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 				r.last)
 		}
 	} else if showPlaceholder {
-		fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
 			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
@@ -129,7 +129,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
-			fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 				padRight(r.name, nameW), gap,
 				hosts, gap,
 				padRight(r.placeholder, phW), gap,
@@ -137,14 +137,14 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 				r.last)
 		}
 	} else {
-		fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
-			fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
 				padRight(r.name, nameW), gap,
 				hosts, gap,
 				padRight(r.source, sourceW), gap,

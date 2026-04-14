@@ -103,7 +103,7 @@ func TestProviderSupabase(t *testing.T) {
 		parts := strings.Split(result, ".")
 		payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
 		var payload map[string]interface{}
-		json.Unmarshal(payloadJSON, &payload)
+		_ = json.Unmarshal(payloadJSON, &payload)
 
 		role, ok := payload["role"].(string)
 		if !ok {

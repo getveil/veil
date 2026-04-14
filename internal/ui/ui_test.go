@@ -124,7 +124,7 @@ func TestTableHeader(t *testing.T) {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 4, 4, ' ', 0)
 	TableHeader(tw, "NAME", "HOST", "SOURCE")
-	tw.Flush()
+	_ = tw.Flush()
 	got := buf.String()
 	if !strings.Contains(got, "NAME") || !strings.Contains(got, "HOST") || !strings.Contains(got, "SOURCE") {
 		t.Errorf("TableHeader should contain column names, got: %q", got)

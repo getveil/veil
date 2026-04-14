@@ -16,7 +16,7 @@ import (
 func stdinTTYFd() int {
 	fd := os.Stdin.Fd()
 	if isatty.IsTerminal(fd) {
-		return int(fd)
+		return int(fd) // #nosec G115 -- stdin fd fits in int
 	}
 	return -1
 }

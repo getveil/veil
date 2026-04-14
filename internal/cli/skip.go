@@ -47,12 +47,12 @@ func runSkip(cmd *cobra.Command, args []string, list bool, remove string) error 
 			return cliError(fmt.Sprintf("reading skip hosts: %v", err), "")
 		}
 		if len(hosts) == 0 {
-			fmt.Fprintln(w, ui.Muted.Sprint("No skip hosts configured."))
-			fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("Add one with: veil skip <host>"))
+			_, _ = fmt.Fprintln(w, ui.Muted.Sprint("No skip hosts configured."))
+			_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("Add one with: veil skip <host>"))
 			return nil
 		}
 		for _, h := range hosts {
-			fmt.Fprintf(w, "  %s\n", h)
+			_, _ = fmt.Fprintf(w, "  %s\n", h)
 		}
 		return nil
 	}
@@ -79,7 +79,7 @@ func runSkip(cmd *cobra.Command, args []string, list bool, remove string) error 
 		return cliError(fmt.Sprintf("adding skip host: %v", err), "")
 	}
 	if !added {
-		fmt.Fprintf(w, "  %s %s is already in the skip list\n", ui.Muted.Sprint("·"), host)
+		_, _ = fmt.Fprintf(w, "  %s %s is already in the skip list\n", ui.Muted.Sprint("·"), host)
 		return nil
 	}
 	ui.Step(w, fmt.Sprintf("Added %s to skip list", host))

@@ -41,12 +41,12 @@ func runRemove(cmd *cobra.Command, name string, force bool) error {
 
 	// Confirm unless --force.
 	if !force {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from vault? [y/N] ", name)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Remove %s from vault? [y/N] ", name)
 		var answer string
-		fmt.Fscanln(cmd.InOrStdin(), &answer)
+		_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer != "y" && answer != "yes" {
-			fmt.Fprintln(cmd.OutOrStdout(), "Cancelled.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Cancelled.")
 			return nil
 		}
 	}
@@ -63,7 +63,7 @@ func runRemove(cmd *cobra.Command, name string, force bool) error {
 
 	ui.Step(w, fmt.Sprintf("Removed %s from vault", name))
 	if len(cred.AllowedHosts) > 0 {
-		fmt.Fprintf(w, "    %s\n", ui.Muted.Sprintf("Hosts: %s", strings.Join(cred.AllowedHosts, ", ")))
+		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprintf("Hosts: %s", strings.Join(cred.AllowedHosts, ", ")))
 	}
 	ui.Warn(w, "Placeholder in .env will no longer be injected")
 

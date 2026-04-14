@@ -112,12 +112,12 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 	}
 
 	ui.Step(w, fmt.Sprintf("Added %s to vault", name))
-	fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
+	_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
 	if len(allowedHosts) > 0 {
-		fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
 	} else {
 		ui.Warn(w, fmt.Sprintf("No target hosts detected for %s", name))
-		fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope it"))
+		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope it"))
 	}
 
 	return nil

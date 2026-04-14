@@ -87,7 +87,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		if f, ok := stdin.(*os.File); ok {
 			if !isatty.IsTerminal(f.Fd()) && !isatty.IsCygwinTerminal(f.Fd()) {
 				interactive = false
-				fmt.Fprintln(w, ui.Muted.Sprint("Non-interactive mode: vaulting all detected secrets"))
+				_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Non-interactive mode: vaulting all detected secrets"))
 			}
 		}
 	}
@@ -121,7 +121,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		// --force: confirm destructive reset.
 		if interactive {
 			if !promptYN(in, w, "This will replace your existing vault. Continue?", false) {
-				fmt.Fprintln(w, ui.Muted.Sprint("Aborted."))
+				_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Aborted."))
 				return nil
 			}
 		}
@@ -150,7 +150,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	// 3c. Interactive file selection.
 	if interactive && len(envPaths) > 1 {
-		fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
+		_, _ = fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
 		names := make([]string, len(envPaths))
 		for i, p := range envPaths {
 			rel, _ := filepath.Rel(root, p)
@@ -158,9 +158,9 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 				rel = filepath.Base(p)
 			}
 			names[i] = rel
-			fmt.Fprintf(w, "  %s\n", rel)
+			_, _ = fmt.Fprintf(w, "  %s\n", rel)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 		choice := promptYNS(in, w, "Scan all?")
 		switch choice {
 		case choiceNo:
@@ -249,14 +249,14 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 			if rel == "" {
 				rel = filepath.Base(envPath)
 			}
-			fmt.Fprintf(w, "\nDetected %d %s in %s:\n", len(secrets), plural(len(secrets), "secret", "secrets"), rel)
+			_, _ = fmt.Fprintf(w, "\nDetected %d %s in %s:\n", len(secrets), plural(len(secrets), "secret", "secrets"), rel)
 			names := make([]string, len(secrets))
 			for i, s := range secrets {
 				redacted := redactValue(s.value)
-				fmt.Fprintf(w, "  %-24s %s\n", s.key, ui.Muted.Sprint(redacted))
+				_, _ = fmt.Fprintf(w, "  %-24s %s\n", s.key, ui.Muted.Sprint(redacted))
 				names[i] = s.key
 			}
-			fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w)
 			choice := promptYNS(in, w, "Vault all?")
 			switch choice {
 			case choiceYes:
@@ -355,10 +355,10 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	// Phase: Skip hosts.
 	if interactive && !dryRun {
-		fmt.Fprintln(w, "Skip hosts — any hosts the proxy should pass through untouched?")
-		fmt.Fprintln(w, ui.Muted.Sprint("Common examples: api.anthropic.com, *.internal.company.com"))
-		fmt.Fprintln(w, ui.Muted.Sprint("(You can manage these later with: veil skip)"))
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Skip hosts — any hosts the proxy should pass through untouched?")
+		_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Common examples: api.anthropic.com, *.internal.company.com"))
+		_, _ = fmt.Fprintln(w, ui.Muted.Sprint("(You can manage these later with: veil skip)"))
+		_, _ = fmt.Fprintln(w)
 		hosts := promptCSV(in, w, "Hosts to skip (comma-separated, or Enter to skip):")
 		if len(hosts) > 0 {
 			skipPath := config.SkipHostsFile(root)
@@ -467,15 +467,15 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	selectedKeys := make(map[string]bool) // key = "server\x00key"
 	keyOf := func(s mcpSecret) string { return s.server + "\x00" + s.key }
 	if interactive {
-		fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
+		_, _ = fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
 		names := make([]string, len(allSecrets))
 		for i, s := range allSecrets {
 			redacted := redactValue(s.value)
 			label := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-			fmt.Fprintf(w, "  %-32s %s\n", label, ui.Muted.Sprint(redacted))
+			_, _ = fmt.Fprintf(w, "  %-32s %s\n", label, ui.Muted.Sprint(redacted))
 			names[i] = label
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 		choice := promptYNS(in, w, "Vault all MCP secrets?")
 		switch choice {
 		case choiceYes:
@@ -559,7 +559,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 		if err != nil {
 			return 0, 0, cliError(fmt.Sprintf("reading MCP config for backup: %v", err), "")
 		}
-		if err := os.WriteFile(backupPath, originalData, 0600); err != nil {
+		if err := os.WriteFile(backupPath, originalData, 0600); err != nil { // #nosec G304 G703 -- backupPath is derived from configPath
 			return 0, 0, cliError(fmt.Sprintf("writing MCP config backup: %v", err), "")
 		}
 

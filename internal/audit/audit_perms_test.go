@@ -20,7 +20,7 @@ func TestOpenSetsRestrictivePerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		p := dbPath + suffix
@@ -56,7 +56,7 @@ func TestOpenCorrectsExistingPerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	info, err := os.Stat(dbPath)
 	if err != nil {

@@ -20,7 +20,7 @@ func systemCAPEM() ([]byte, error) {
 	var combined []byte
 	var errs []error
 	for _, kc := range keychains {
-		out, err := exec.Command("security", "export", "-t", "certs", "-p", "-k", kc).Output()
+		out, err := exec.Command("security", "export", "-t", "certs", "-p", "-k", kc).Output() // #nosec G204 -- kc values are hardcoded above
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", kc, err))
 			continue

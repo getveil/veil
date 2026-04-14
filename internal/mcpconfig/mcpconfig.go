@@ -16,7 +16,7 @@ const configFileName = "claude_desktop_config.json"
 // If VEIL_MCP_CONFIG_PATH is set, it is used instead (for testing).
 func Discover() (string, error) {
 	if override := os.Getenv("VEIL_MCP_CONFIG_PATH"); override != "" {
-		info, err := os.Stat(override)
+		info, err := os.Stat(override) // #nosec G304 G703 -- override is an opt-in test hook
 		if err != nil {
 			return "", nil
 		}

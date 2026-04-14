@@ -116,7 +116,7 @@ func (f *FileKeystore) saveMap(m map[string]string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("%w: create dir %q: %w", ErrKeystoreWrite, dir, err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- 0700 is correct for a directory
 		return fmt.Errorf("%w: chmod dir %q: %w", ErrKeystoreWrite, dir, err)
 	}
 
