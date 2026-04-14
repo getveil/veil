@@ -12,12 +12,31 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/8enji/veil/internal/audit"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/elazarl/goproxy"
 	"github.com/oklog/ulid/v2"
 )
+
+var (
+	bodyWarnMu   sync.Mutex
+	bodyWarnSeen = map[string]struct{}{}
+)
+
+// warnBodyReadOnce emits a warning on stderr at most once per host per
+// session, preventing log spam from misbehaving clients.
+func warnBodyReadOnce(host string, err error) {
+	bodyWarnMu.Lock()
+	defer bodyWarnMu.Unlock()
+	if _, seen := bodyWarnSeen[host]; seen {
+		return
+	}
+	bodyWarnSeen[host] = struct{}{}
+	ui.Warnf(os.Stderr, "body read failed for %s: %v", host, err)
+}
 
 // mitmFilterWriter wraps an io.Writer and drops goproxy log lines that
 // match benign MITM connection errors (client closed before proxy finished).
@@ -101,11 +120,19 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 			return req, nil
 		}
 
-		// Read the body up to bodyCap.
 		var body []byte
-		if req.Body != nil {
-			body, _ = io.ReadAll(io.LimitReader(req.Body, int64(bodyCap)+1))
+		if req.Body != nil && ShouldInjectBody(req.Header.Get("Content-Type")) {
+			var err error
+			body, err = io.ReadAll(io.LimitReader(req.Body, int64(bodyCap)+1))
 			_ = req.Body.Close()
+			if err != nil {
+				// H6: body read failed; surface 502 rather than forwarding a
+				// possibly-truncated payload that may still contain placeholder
+				// strings.
+				warnBodyReadOnce(req.Host, err)
+				return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
+					"veil: upstream body read failed")
+			}
 		}
 
 		requestID := ulid.Make().String()
@@ -123,8 +150,10 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 
 		// Apply modified headers and body.
 		req.Header = newHeader
-		req.Body = io.NopCloser(bytes.NewReader(newBody))
-		req.ContentLength = int64(len(newBody))
+		if body != nil {
+			req.Body = io.NopCloser(bytes.NewReader(newBody))
+			req.ContentLength = int64(len(newBody))
+		}
 
 		return req, nil
 	})
