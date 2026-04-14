@@ -89,19 +89,36 @@ func runStatus(cmd *cobra.Command) error {
 		)
 	}
 
-	// Proxy status.
-	pidPath := config.PidFile(root)
-	pid, pidErr := runner.ReadPidFile(pidPath)
-	if pidErr == nil && runner.IsProcessAlive(pid) {
+	// Proxy status — enumerate every live session pidfile. Stale files are
+	// removed by ListSessions as a side effect.
+	sessions, sessErr := runner.ListSessions(config.PidFileGlob(root))
+	switch {
+	case sessErr != nil:
 		_, _ = fmt.Fprintf(w, "  %s        %s %s\n",
 			ui.Bold.Sprint("Proxy"),
-			ui.Success.Sprint("active"),
-			ui.Muted.Sprintf("(PID %d)", pid),
+			ui.Err.Sprint("error"),
+			sessErr.Error(),
 		)
-	} else {
+	case len(sessions) == 0:
 		_, _ = fmt.Fprintf(w, "  %s        %s\n",
 			ui.Bold.Sprint("Proxy"),
 			ui.Muted.Sprint("not running"),
+		)
+	case len(sessions) == 1:
+		_, _ = fmt.Fprintf(w, "  %s        %s %s\n",
+			ui.Bold.Sprint("Proxy"),
+			ui.Success.Sprint("active"),
+			ui.Muted.Sprintf("(PID %d)", sessions[0].PID),
+		)
+	default:
+		pids := make([]string, len(sessions))
+		for i, s := range sessions {
+			pids[i] = fmt.Sprintf("%d", s.PID)
+		}
+		_, _ = fmt.Fprintf(w, "  %s        %s %s\n",
+			ui.Bold.Sprint("Proxy"),
+			ui.Success.Sprintf("%d active sessions", len(sessions)),
+			ui.Muted.Sprintf("(PIDs %s)", strings.Join(pids, ", ")),
 		)
 	}
 

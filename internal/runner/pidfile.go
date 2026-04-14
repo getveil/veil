@@ -3,6 +3,8 @@ package runner
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,4 +42,33 @@ func IsProcessAlive(pid int) bool {
 	// On Unix, FindProcess always succeeds. Send signal 0 to check liveness.
 	err = proc.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// SessionInfo describes a live veil run session discovered via its pidfile.
+type SessionInfo struct {
+	PID  int    // process id
+	Path string // absolute path to the pidfile
+}
+
+// ListSessions enumerates every per-session pidfile matching glob, returning
+// info for each live process. Stale pidfiles (whose PID is no longer alive
+// or whose contents are unreadable) are removed as a side effect.
+func ListSessions(glob string) ([]SessionInfo, error) {
+	matches, err := filepath.Glob(glob)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+
+	var live []SessionInfo
+	for _, p := range matches {
+		pid, err := ReadPidFile(p)
+		if err != nil || !IsProcessAlive(pid) {
+			// Stale or unreadable — clean up.
+			RemovePidFile(p)
+			continue
+		}
+		live = append(live, SessionInfo{PID: pid, Path: p})
+	}
+	return live, nil
 }

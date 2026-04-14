@@ -36,6 +36,6 @@ func init() {
 			rest := len(value) - len(prefix)
 			return prefix + randAlphanumeric(rest)
 		},
-		Hosts: []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com"},
+		Hosts: []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com", "ghcr.io"},
 	})
 }
