@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"text/tabwriter"
@@ -47,6 +48,17 @@ func TestWarn(t *testing.T) {
 	}
 	if !strings.Contains(got, "2 unscoped credentials") {
 		t.Errorf("Warn should contain message, got: %q", got)
+	}
+}
+
+func TestWarnFormats(t *testing.T) {
+	SetColor("never")
+	var buf bytes.Buffer
+	Warnf(&buf, "could not write pid file: %v", os.ErrPermission)
+	got := buf.String()
+	if !strings.Contains(got, "could not write pid file:") ||
+		!strings.Contains(got, "permission denied") {
+		t.Fatalf("unexpected output: %q", got)
 	}
 }
 

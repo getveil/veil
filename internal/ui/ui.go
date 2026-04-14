@@ -44,6 +44,12 @@ func Warn(w io.Writer, msg string) {
 	fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), msg)
 }
 
+// Warnf prints a warning step line with Printf-style formatting:
+// "  ! <formatted message>\n"
+func Warnf(w io.Writer, format string, args ...any) {
+	fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), fmt.Sprintf(format, args...))
+}
+
 // Phase prints a muted phase header line: "msg\n"
 func Phase(w io.Writer, msg string) {
 	fmt.Fprintln(w, Muted.Sprint(msg))
