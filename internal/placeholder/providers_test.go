@@ -456,3 +456,35 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 		t.Fatalf("expected flex_ prefix, got: %s", result)
 	}
 }
+
+func TestRegistryIsolation(t *testing.T) {
+	r := NewRegistry()
+	r.Register(ProviderPattern{
+		Name:     "only-test",
+		Match:    func(name, value string) bool { return name == "ONLY" },
+		Generate: func(value string) string { return "fake-only" },
+	})
+	p, ok := r.Get("only-test")
+	if !ok {
+		t.Fatal("expected provider found in isolated registry")
+	}
+	if p.Name != "only-test" {
+		t.Fatalf("unexpected name: %s", p.Name)
+	}
+	if _, ok := DefaultRegistry().Get("only-test"); ok {
+		t.Fatal("isolated registry leaked into default")
+	}
+}
+
+func TestDefaultRegistryMatchesPackageRegistry(t *testing.T) {
+	def := DefaultRegistry()
+	for _, p := range registry {
+		got, ok := def.Get(p.Name)
+		if !ok {
+			t.Fatalf("DefaultRegistry missing %q", p.Name)
+		}
+		if got.Name != p.Name {
+			t.Fatalf("name mismatch: %q vs %q", got.Name, p.Name)
+		}
+	}
+}
