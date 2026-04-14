@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/placeholder"
 )
 
 // vaultMeta is the on-disk JSON written to vault.meta.
@@ -171,6 +172,16 @@ func (v *Vault) Delete(name string) (bool, error) {
 // Credentials is an alias for List.
 func (v *Vault) Credentials() []*Credential {
 	return v.List()
+}
+
+// PlaceholderSet returns the set of currently-used placeholder strings,
+// suitable for passing to placeholder.Generate to prevent collisions.
+func (v *Vault) PlaceholderSet() placeholder.Set {
+	out := make(placeholder.Set, len(v.credentials))
+	for _, c := range v.credentials {
+		out[c.Placeholder] = struct{}{}
+	}
+	return out
 }
 
 // PlaceholderMap returns a map from placeholder value to credential,

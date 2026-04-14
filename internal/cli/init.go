@@ -211,6 +211,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	// 7. Process each .env file.
 	var secretsVaulted int
 	var secretsScoped int
+	seen := make(placeholder.Set)
 	for _, envPath := range envPaths {
 		envFile, err := scanner.ParseFile(envPath)
 		if err != nil {
@@ -282,7 +283,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 				continue
 			}
 
-			ph, err := placeholder.Generate(s.key, s.value)
+			ph, err := placeholder.Generate(s.key, s.value, seen)
 			if err != nil {
 				return cliError(fmt.Sprintf("generating placeholder for %s: %v", s.key, err), "")
 			}
@@ -305,6 +306,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 				}
 				return cliError(fmt.Sprintf("vaulting %s: %v", s.key, err), "")
 			}
+			seen[ph] = struct{}{}
 
 			secretsVaulted++
 			if len(credHosts) > 0 {
@@ -504,6 +506,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	var count int
 	var scoped int
 	configChanged := false
+	seen := make(placeholder.Set)
 
 	for _, s := range allSecrets {
 		if !selectedKeys[keyOf(s)] {
@@ -511,7 +514,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 		}
 		serverName, key, value := s.server, s.key, s.value
 
-		ph, err := placeholder.Generate(key, value)
+		ph, err := placeholder.Generate(key, value, seen)
 		if err != nil {
 			return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err), "")
 		}
@@ -535,6 +538,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 			}
 			return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")
 		}
+		seen[ph] = struct{}{}
 
 		count++
 		if len(credHosts) > 0 {

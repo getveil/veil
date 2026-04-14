@@ -65,7 +65,7 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 	}
 
 	// Generate placeholder.
-	ph, err := placeholder.Generate(name, value)
+	ph, err := placeholder.Generate(name, value, v.PlaceholderSet())
 	if err != nil {
 		return cliError(fmt.Sprintf("generating placeholder: %v", err), "")
 	}
