@@ -37,16 +37,12 @@ func NewRoot(version string) *cobra.Command {
 		Use:   "veil",
 		Short: "Secure AI coding agents by intercepting secrets at the network layer",
 		Long: fmt.Sprintf(`%s
-Protect your secrets from AI agents
+Protect your secrets from AI agents.
 
 %s
-  veil init          %s
-  veil run claude    %s
-  veil log           %s
-
-Veil sits between your AI coding agent and the network. It replaces
-real secrets with format-aware placeholders, then injects the real
-credentials at the proxy layer — so the agent never sees them.`,
+  veil init           %s
+  veil run claude     %s
+  veil log            %s`,
 			ui.Bold.Sprint("Veil"),
 			ui.Bold.Sprint("Quick start:"),
 			ui.Muted.Sprint("Scan project, vault secrets, write placeholders"),
@@ -93,13 +89,13 @@ credentials at the proxy layer — so the agent never sees them.`,
 {{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
 
 {{bold "Available Commands:"}}{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
-  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+  {{rpad .Name 19}} {{muted .Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
 
 {{bold .Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
-  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+  {{rpad .Name 19}} {{muted .Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
 
 {{bold "Additional Commands:"}}{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
-  {{rpad .Name .NamePadding }} {{muted .Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+  {{rpad .Name 19}} {{muted .Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
 
 {{bold "Flags:"}}
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces | styledFlags}}{{end}}{{if .HasAvailableInheritedFlags}}
