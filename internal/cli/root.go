@@ -36,9 +36,10 @@ func NewRoot(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "veil",
 		Short: "Secure AI coding agents by intercepting secrets at the network layer",
-		Long: `Veil — protect your secrets from AI agents
+		Long: fmt.Sprintf(`%s
+protect your secrets from AI agents
 
-Quick start:
+%s
   veil init          Scan project, vault secrets, write placeholders
   veil run claude    Launch agent with credential injection active
   veil log           See what credentials were used
@@ -46,6 +47,8 @@ Quick start:
 Veil sits between your AI coding agent and the network. It replaces
 real secrets with format-aware placeholders, then injects the real
 credentials at the proxy layer — so the agent never sees them.`,
+			ui.Bold.Sprint("Veil"),
+			ui.Bold.Sprint("Quick start:")),
 
 		SilenceUsage:  true,
 		SilenceErrors: true,
