@@ -111,10 +111,13 @@ func (f *FileKeystore) saveMap(m map[string]string) error {
 		return fmt.Errorf("%w: finalize encrypt: %w", ErrKeystoreWrite, err)
 	}
 
-	// Ensure parent directory exists.
+	// Ensure parent directory exists and has restrictive mode.
 	dir := filepath.Dir(f.path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("%w: create dir %q: %w", ErrKeystoreWrite, dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("%w: chmod dir %q: %w", ErrKeystoreWrite, dir, err)
 	}
 
 	// Atomic write: temp file + rename.

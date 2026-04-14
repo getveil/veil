@@ -208,3 +208,29 @@ func TestFileKeystoreOverwriteKey(t *testing.T) {
 		t.Fatal("expected updated key")
 	}
 }
+
+func TestFileKeystoreEnforcesParentMode(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "state")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(parent, "master.key.age")
+	t.Setenv("VEIL_PASSPHRASE", "hunter2")
+
+	ks := NewFileKeystore(path)
+	ks.SetWorkFactor(1)
+
+	var key [32]byte
+	if err := ks.Set("proj", key); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat parent: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("parent mode %o, want 0700", info.Mode().Perm())
+	}
+}
