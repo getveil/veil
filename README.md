@@ -83,6 +83,10 @@ make vet        # go vet
 make lint       # golangci-lint
 ```
 
+## Security
+
+See [Threat Model](docs/THREAT_MODEL.md) for the boundaries of Veil's protection.
+
 ## License
 
 MIT
