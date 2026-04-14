@@ -34,8 +34,10 @@ func startParentWatch(childPid int) (*parentWatcher, error) {
 	// pauses briefly, and escalates to SIGKILL. Errors from kill are swallowed
 	// so the script doesn't fail when the child is already gone.
 	script := fmt.Sprintf(
-		`cat >/dev/null; kill -TERM -%d 2>/dev/null; sleep 3; kill -KILL -%d 2>/dev/null`,
-		childPid, childPid,
+		`cat >/dev/null; kill -TERM -%d 2>/dev/null; sleep %d; kill -KILL -%d 2>/dev/null`,
+		childPid,
+		int(childTerminationGrace.Seconds()),
+		childPid,
 	)
 	cmd := exec.Command("/bin/sh", "-c", script) //nolint:gosec // G204: childPid is a locally-allocated pid
 	cmd.Stdin = pr
