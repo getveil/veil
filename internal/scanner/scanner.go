@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/bmatcuk/doublestar/v4"
 )
 
 // curatedNames is the list of .env file basenames we look for.
@@ -27,7 +25,7 @@ var excludeSuffixes = []string{
 // Scan discovers .env files in root by checking a curated list of names.
 // It returns absolute paths sorted alphabetically. Files matching example/sample
 // patterns are excluded. If no files are found, an empty slice is returned.
-func Scan(root string, ignorePatterns ...string) ([]string, error) {
+func Scan(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -36,9 +34,6 @@ func Scan(root string, ignorePatterns ...string) ([]string, error) {
 	var found []string
 	for _, name := range curatedNames {
 		if isExcluded(name) {
-			continue
-		}
-		if isIgnored(name, ignorePatterns) {
 			continue
 		}
 		p := filepath.Join(root, name)
@@ -56,20 +51,6 @@ func Scan(root string, ignorePatterns ...string) ([]string, error) {
 		found = []string{}
 	}
 	return found, nil
-}
-
-// isIgnored returns true if the relPath matches any of the provided glob patterns.
-func isIgnored(relPath string, patterns []string) bool {
-	for _, pattern := range patterns {
-		matched, err := doublestar.Match(pattern, relPath)
-		if err != nil {
-			continue
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }
 
 // isExcluded returns true if the name matches an exclusion pattern.
