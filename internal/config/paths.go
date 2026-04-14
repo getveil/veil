@@ -70,6 +70,15 @@ func keystoreFallback(goos, home, xdgState string) (string, error) {
 	}
 }
 
-func PidFile(root string) string {
-	return filepath.Join(ProjectStateDir(root), "proxy.pid")
+// PidFile returns the per-session pidfile path for the given PID. Each
+// concurrent veil run writes its own file (proxy-<pid>.pid) so multiple
+// sessions in the same project do not collide.
+func PidFile(root string, pid int) string {
+	return filepath.Join(ProjectStateDir(root), fmt.Sprintf("proxy-%d.pid", pid))
+}
+
+// PidFileGlob returns the glob pattern (suitable for filepath.Glob) that
+// matches every per-session pidfile in the project state directory.
+func PidFileGlob(root string) string {
+	return filepath.Join(ProjectStateDir(root), "proxy-*.pid")
 }

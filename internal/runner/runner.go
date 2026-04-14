@@ -87,7 +87,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	defer func() { _ = server.Stop() }()
 
 	// Write PID file for veil status to detect running proxy.
-	pidPath := config.PidFile(cfg.Root)
+	pidPath := config.PidFile(cfg.Root, os.Getpid())
 	if err := WritePidFile(pidPath, os.Getpid()); err != nil {
 		// Non-fatal — status won't detect proxy, but run still works.
 		fmt.Fprintf(os.Stderr, "%s\n", ui.Muted.Sprintf("warning: could not write pid file: %v", err))
@@ -121,6 +121,16 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err := child.Start(); err != nil {
 		return nil, fmt.Errorf("start child: %w", err)
 	}
+
+	// 8b. Guard against parent crash. On Linux this is a no-op; on macOS
+	// (which lacks Pdeathsig) it spawns a helper that kills the child's
+	// process group if veil dies unexpectedly.
+	watcher, werr := startParentWatch(child.Process.Pid)
+	if werr != nil {
+		fmt.Fprintf(os.Stderr, "%s\n",
+			ui.Muted.Sprintf("warning: could not start parent watcher: %v", werr))
+	}
+	defer watcher.Close()
 
 	// 9. Signal forwarding.
 	sigCtx, sigCancel := context.WithCancel(ctx)
