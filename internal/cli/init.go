@@ -27,7 +27,8 @@ import (
 // via read-ahead buffering, enabling multiple sequential prompts against the
 // same underlying reader.
 type lineReader struct {
-	br *bufio.Reader
+	br       *bufio.Reader
+	overflow []byte
 }
 
 func newLineReader(r io.Reader) *lineReader {
@@ -38,11 +39,21 @@ func newLineReader(r io.Reader) *lineReader {
 }
 
 func (l *lineReader) Read(p []byte) (int, error) {
+	// Drain any leftover bytes from a previous oversized line first.
+	if len(l.overflow) > 0 {
+		n := copy(p, l.overflow)
+		l.overflow = l.overflow[n:]
+		if len(l.overflow) == 0 {
+			l.overflow = nil
+		}
+		return n, nil
+	}
 	line, err := l.br.ReadString('\n')
 	if len(line) > 0 {
 		n := copy(p, line)
 		if n < len(line) {
-			return n, io.ErrShortBuffer
+			// Stash the bytes that didn't fit; return what did.
+			l.overflow = []byte(line[n:])
 		}
 		return n, nil
 	}
@@ -349,7 +360,10 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		if len(hosts) > 0 {
 			skipPath := config.SkipHostsFile(root)
 			for _, h := range hosts {
-				_, _ = skiphost.Add(skipPath, h)
+				if _, err := skiphost.Add(skipPath, h); err != nil {
+					ui.Warn(w, fmt.Sprintf("failed to add %s to skip list: %v", h, err))
+					continue
+				}
 				ui.Step(w, fmt.Sprintf("%s added to skip list", h))
 			}
 			_, _ = fmt.Fprintln(w)
@@ -383,10 +397,12 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	return nil
 }
 
-// redactValue returns a redacted display of a secret value, showing the
-// first 4 characters followed by **** for visual identification.
+// redactValue returns a redacted display of a secret value. For values shorter
+// than 12 characters the full value is masked (****) to avoid leaking most of
+// a short secret. For longer values the first 4 characters are shown followed
+// by **** to aid visual identification without materially reducing security.
 func redactValue(value string) string {
-	if len(value) <= 4 {
+	if len(value) < 12 {
 		return "****"
 	}
 	return value[:4] + "****"
@@ -442,8 +458,10 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	}
 
 	// Interactive MCP selection.
-	selectedKeys := make(map[string]bool) // key = "server:key"
-	keyOf := func(s mcpSecret) string { return s.server + ":" + s.key }
+	// keyOf uses a NUL byte separator to avoid collisions with colons that
+	// may legitimately appear in server names derived from JSON keys.
+	selectedKeys := make(map[string]bool) // key = "server\x00key"
+	keyOf := func(s mcpSecret) string { return s.server + "\x00" + s.key }
 	if interactive {
 		fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
 		names := make([]string, len(allSecrets))
