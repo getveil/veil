@@ -150,6 +150,13 @@ func (f *FileKeystore) saveMap(m map[string]string) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("%w: atomic rename: %w", ErrKeystoreWrite, err)
 	}
+	// H4b: overwrite in-memory plaintext so the hex-encoded key material is
+	// not left lying on the heap after the write completes. The strings in
+	// the caller's map remain (Go strings are immutable), but the marshalled
+	// JSON buffer is the copy we have authority over.
+	for i := range plaintext {
+		plaintext[i] = 0
+	}
 	return nil
 }
 

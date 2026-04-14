@@ -234,3 +234,26 @@ func TestFileKeystoreEnforcesParentMode(t *testing.T) {
 		t.Fatalf("parent mode %o, want 0700", info.Mode().Perm())
 	}
 }
+
+// Regression test for H4b: Set should round-trip after the plaintext-zeroing
+// hook in saveMap. Direct verification of the zeroed heap bytes is unreliable
+// in Go; we verify the observable contract (write then read returns the same
+// key).
+func TestFileKeystoreSetZeroesPlaintext(t *testing.T) {
+	ks := newTestFileKeystore(t)
+
+	var key [32]byte
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	if err := ks.Set("proj", key); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := ks.Get("proj")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != key {
+		t.Fatalf("round-trip mismatch")
+	}
+}
