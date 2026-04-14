@@ -33,7 +33,7 @@ func initProject(t *testing.T) string {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
