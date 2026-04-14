@@ -81,8 +81,13 @@ func (inj *Injector) ProcessRequest(
 
 	now := time.Now()
 
-	// Parse host and path from the URL for audit records.
-	host, urlPath := parseHostPath(rawURL)
+	// Parse host and path from the URL for audit records. The raw query is
+	// intentionally discarded here: it may contain placeholder-sized tokens,
+	// and URLPath is logged in plaintext — keeping it path-only prevents a
+	// secondary leak into audit storage. Query-string injection still works
+	// because the URL-scanning block below runs Aho-Corasick against the
+	// full rawURL.
+	host, urlPath, _ := parseRequestURL(rawURL)
 
 	// Helper to build an audit.Injection record.
 	makeInjection := func(cred *vault.Credential, location string, before, after int) audit.Injection {
@@ -226,12 +231,13 @@ func matchedPatterns(matcher *ahocorasick.Matcher, input []byte, patterns []stri
 	return result
 }
 
-// parseHostPath extracts the host and path from a raw URL string. On parse
-// failure it returns empty strings.
-func parseHostPath(rawURL string) (host, path string) {
+// parseRequestURL extracts host, path, and raw query from a URL. On parse
+// failure all three are empty. Callers that want to avoid leaking query
+// contents into audit logs should discard rawQuery.
+func parseRequestURL(rawURL string) (host, path, rawQuery string) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
-	return u.Host, u.Path
+	return u.Host, u.Path, u.RawQuery
 }

@@ -416,3 +416,26 @@ func TestHostScoping_WildcardMatch(t *testing.T) {
 // Verify the audit package is importable and the Injection type is used
 // correctly. This is a compile-time check more than a runtime one.
 var _ audit.Injection
+
+func TestProcessRequestInjectsQueryString(t *testing.T) {
+	cred := makeCred("API_KEY", "sk_fake_ABCDEFGHIJ", "sk_real_1234567890", "api.example.com")
+	inj := NewInjector(placeholderMap(cred), nil, 1234, "agent")
+
+	newURL, _, _, injections := inj.ProcessRequest(
+		"req-1",
+		"GET",
+		"https://api.example.com/v1/thing?api_key=sk_fake_ABCDEFGHIJ",
+		http.Header{},
+		nil,
+	)
+	if !strings.Contains(newURL, "api_key=sk_real_1234567890") {
+		t.Fatalf("query string not injected: %s", newURL)
+	}
+	if len(injections) != 1 || injections[0].Location != "url" {
+		t.Fatalf("expected 1 url injection, got %+v", injections)
+	}
+	if strings.Contains(injections[0].URLPath, "?") ||
+		strings.Contains(injections[0].URLPath, "sk_") {
+		t.Fatalf("audit URLPath leaked query data: %q", injections[0].URLPath)
+	}
+}
