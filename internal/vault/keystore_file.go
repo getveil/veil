@@ -36,7 +36,7 @@ func (f *FileKeystore) SetWorkFactor(logN int) {
 func passphrase() (string, error) {
 	p := os.Getenv("VEIL_PASSPHRASE")
 	if p == "" {
-		return "", errors.New("file keystore: VEIL_PASSPHRASE is not set (required for age-encrypted key file)")
+		return "", fmt.Errorf("%w: VEIL_PASSPHRASE is not set (required for age-encrypted key file)", ErrKeystoreUnavailable)
 	}
 	return p, nil
 }
@@ -49,7 +49,7 @@ func (f *FileKeystore) loadMap() (map[string]string, error) {
 		return make(map[string]string), nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("file keystore: read %q: %w", f.path, err)
+		return nil, fmt.Errorf("%w: read %q: %w", ErrKeystoreUnavailable, f.path, err)
 	}
 
 	pass, err := passphrase()
@@ -59,22 +59,22 @@ func (f *FileKeystore) loadMap() (map[string]string, error) {
 
 	identity, err := age.NewScryptIdentity(pass)
 	if err != nil {
-		return nil, fmt.Errorf("file keystore: create identity: %w", err)
+		return nil, fmt.Errorf("%w: create identity: %w", ErrKeystoreUnavailable, err)
 	}
 
 	reader, err := age.Decrypt(bytes.NewReader(data), identity)
 	if err != nil {
-		return nil, fmt.Errorf("file keystore: decrypt %q: %w", f.path, err)
+		return nil, fmt.Errorf("%w: decrypt %q: %w", ErrKeystoreUnavailable, f.path, err)
 	}
 
 	plaintext, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("file keystore: read decrypted data: %w", err)
+		return nil, fmt.Errorf("%w: read decrypted data: %w", ErrKeystoreUnavailable, err)
 	}
 
 	m := make(map[string]string)
 	if err := json.Unmarshal(plaintext, &m); err != nil {
-		return nil, fmt.Errorf("file keystore: unmarshal key map: %w", err)
+		return nil, fmt.Errorf("%w: unmarshal key map: %w", ErrKeystoreUnavailable, err)
 	}
 	return m, nil
 }
@@ -83,17 +83,17 @@ func (f *FileKeystore) loadMap() (map[string]string, error) {
 func (f *FileKeystore) saveMap(m map[string]string) error {
 	pass, err := passphrase()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrKeystoreWrite, err)
 	}
 
 	plaintext, err := json.Marshal(m)
 	if err != nil {
-		return fmt.Errorf("file keystore: marshal key map: %w", err)
+		return fmt.Errorf("%w: marshal key map: %w", ErrKeystoreWrite, err)
 	}
 
 	recipient, err := age.NewScryptRecipient(pass)
 	if err != nil {
-		return fmt.Errorf("file keystore: create recipient: %w", err)
+		return fmt.Errorf("%w: create recipient: %w", ErrKeystoreWrite, err)
 	}
 	if f.workFactor > 0 {
 		recipient.SetWorkFactor(f.workFactor)
@@ -102,50 +102,50 @@ func (f *FileKeystore) saveMap(m map[string]string) error {
 	var buf bytes.Buffer
 	writer, err := age.Encrypt(&buf, recipient)
 	if err != nil {
-		return fmt.Errorf("file keystore: init encrypt: %w", err)
+		return fmt.Errorf("%w: init encrypt: %w", ErrKeystoreWrite, err)
 	}
 	if _, err := writer.Write(plaintext); err != nil {
-		return fmt.Errorf("file keystore: write plaintext: %w", err)
+		return fmt.Errorf("%w: write plaintext: %w", ErrKeystoreWrite, err)
 	}
 	if err := writer.Close(); err != nil {
-		return fmt.Errorf("file keystore: finalize encrypt: %w", err)
+		return fmt.Errorf("%w: finalize encrypt: %w", ErrKeystoreWrite, err)
 	}
 
 	// Ensure parent directory exists.
 	dir := filepath.Dir(f.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("file keystore: create dir %q: %w", dir, err)
+		return fmt.Errorf("%w: create dir %q: %w", ErrKeystoreWrite, dir, err)
 	}
 
 	// Atomic write: temp file + rename.
 	tmp, err := os.CreateTemp(dir, "veil-keys-*.tmp")
 	if err != nil {
-		return fmt.Errorf("file keystore: create temp file: %w", err)
+		return fmt.Errorf("%w: create temp file: %w", ErrKeystoreWrite, err)
 	}
 	tmpName := tmp.Name()
 
 	if _, err := tmp.Write(buf.Bytes()); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("file keystore: write temp file: %w", err)
+		return fmt.Errorf("%w: write temp file: %w", ErrKeystoreWrite, err)
 	}
 	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("file keystore: chmod temp file: %w", err)
+		return fmt.Errorf("%w: chmod temp file: %w", ErrKeystoreWrite, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("file keystore: sync temp file: %w", err)
+		return fmt.Errorf("%w: sync temp file: %w", ErrKeystoreWrite, err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("file keystore: close temp file: %w", err)
+		return fmt.Errorf("%w: close temp file: %w", ErrKeystoreWrite, err)
 	}
 	if err := os.Rename(tmpName, f.path); err != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("file keystore: atomic rename: %w", err)
+		return fmt.Errorf("%w: atomic rename: %w", ErrKeystoreWrite, err)
 	}
 	return nil
 }

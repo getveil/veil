@@ -3,6 +3,7 @@ package audit
 
 import (
 	"database/sql"
+	"fmt"
 	"sync"
 	"time"
 
@@ -69,12 +70,12 @@ func Open(dbPath string) (*Store, error) {
 	dsn := "file:" + dbPath + "?_journal_mode=wal&_synchronous=normal"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: open db: %w", ErrAuditOpen, err)
 	}
 
 	if _, err := db.Exec(schemaDDL); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: apply schema: %w", ErrAuditOpen, err)
 	}
 
 	s := &Store{
