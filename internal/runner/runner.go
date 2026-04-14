@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ var proxyEnvKeys = []string{
 // Run starts the proxy, launches the child command with proxy env vars injected,
 // forwards signals, waits for the child to exit, then cleans up.
 func Run(ctx context.Context, cfg Config) (*Result, error) {
+	sweepStaleSessionDirs()
+
 	// 1. Load vault.
 	ks := cfg.Keystore
 	if ks == nil {
@@ -69,12 +72,18 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("load or create CA: %w", err)
 	}
 
-	// 3b. Build combined CA bundle (system CAs + Veil CA).
-	bundlePath, err := proxy.BuildCABundle(ca.CertPEM)
+	// 3b. Per-session temp directory that holds the CA bundle and any other
+	// short-lived artifacts. Cleaned up on exit.
+	sessionDir, err := os.MkdirTemp("", "veil-session-*")
+	if err != nil {
+		return nil, fmt.Errorf("create session dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(sessionDir) }()
+
+	bundlePath, err := proxy.BuildCABundleIn(sessionDir, ca.CertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
-	defer proxy.RemoveCABundle(bundlePath)
 
 	// 5. Start proxy.
 	server, err := proxy.New(ca, vlt, auditStore, os.Getpid(), cfg.Command)
@@ -279,3 +288,28 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", s)
 	}
 }
+
+// sweepStaleSessionDirs removes veil-session-* directories under the OS temp
+// root that are older than 24h. Best-effort; errors are silently tolerated.
+func sweepStaleSessionDirs() {
+	root := os.TempDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "veil-session-") {
+			continue
+		}
+		p := filepath.Join(root, e.Name())
+		info, err := os.Stat(p)
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(p)
+	}
+}
+
+// SweepStaleSessionDirsForTest exposes the sweeper for tests.
+var SweepStaleSessionDirsForTest = sweepStaleSessionDirs

@@ -44,6 +44,36 @@ func BuildCABundle(veilCAPEM []byte) (string, error) {
 	return bundlePath, nil
 }
 
+// BuildCABundleIn writes the combined CA bundle into sessionDir and returns
+// the full file path. Prefer this over BuildCABundle in new code; the latter
+// is preserved for callers still using the shared location.
+func BuildCABundleIn(sessionDir string, veilCAPEM []byte) (string, error) {
+	systemPEM, err := systemCAPEM()
+	if err != nil {
+		log.Printf("[veil] warning: could not extract system CAs: %v (bundle will contain only Veil CA)", err)
+		systemPEM = nil
+	}
+
+	combined := make([]byte, 0, len(systemPEM)+len(veilCAPEM)+1)
+	if len(systemPEM) > 0 {
+		combined = append(combined, systemPEM...)
+		if combined[len(combined)-1] != '\n' {
+			combined = append(combined, '\n')
+		}
+	}
+	combined = append(combined, veilCAPEM...)
+
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return "", fmt.Errorf("%w: ensure session dir: %w", ErrCABundle, err)
+	}
+
+	path := filepath.Join(sessionDir, "ca-bundle.pem")
+	if err := atomicWrite(path, combined, 0o644); err != nil {
+		return "", fmt.Errorf("%w: write bundle: %w", ErrCABundle, err)
+	}
+	return path, nil
+}
+
 // RemoveCABundle deletes the combined CA bundle file.
 func RemoveCABundle(path string) {
 	_ = os.Remove(path)
