@@ -32,11 +32,11 @@ type CA struct {
 func LoadOrCreateCA() (*CA, error) {
 	certPath, err := config.CAFile()
 	if err != nil {
-		return nil, fmt.Errorf("ca cert path: %w", err)
+		return nil, fmt.Errorf("%w: ca cert path: %w", ErrCALoad, err)
 	}
 	keyPath, err := config.CAKeyFile()
 	if err != nil {
-		return nil, fmt.Errorf("ca key path: %w", err)
+		return nil, fmt.Errorf("%w: ca key path: %w", ErrCALoad, err)
 	}
 
 	certExists := fileExists(certPath)
