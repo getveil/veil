@@ -1,6 +1,8 @@
 package audit_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,10 +26,10 @@ func TestOpenSetsRestrictivePerms(t *testing.T) {
 		p := dbPath + suffix
 		info, err := os.Stat(p)
 		if err != nil {
-			if suffix == "" {
-				t.Fatalf("stat %s: %v", p, err)
+			if suffix == "-wal" && errors.Is(err, fs.ErrNotExist) {
+				continue
 			}
-			continue // sidecar may not exist on some sqlite modes
+			t.Fatalf("stat %s: %v", p, err)
 		}
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode %o, want 0600", p, info.Mode().Perm())

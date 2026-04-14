@@ -2,6 +2,7 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -81,7 +82,9 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("%w: chmod parent dir: %w", ErrAuditOpen, err)
 	}
 
-	dsn := "file:" + dbPath + "?_journal_mode=wal&_synchronous=normal"
+	// modernc.org/sqlite does not honour _journal_mode= / _synchronous= DSN
+	// parameters; use _pragma= encoding instead.
+	dsn := "file:" + dbPath + "?_pragma=journal_mode%3DWAL&_pragma=synchronous%3DNORMAL"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("%w: sql.Open: %w", ErrAuditOpen, err)
@@ -92,16 +95,37 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("%w: ddl: %w", ErrAuditOpen, err)
 	}
 
-	// Force WAL sidecar materialization so chmod below covers them.
-	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w: wal_checkpoint: %w", ErrAuditOpen, err)
+	// Force WAL + SHM sidecar materialization by taking a write lock.
+	// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
+	// which forces SQLite to create the -wal/-shm files before the transaction
+	// body runs.
+	{
+		tx, txErr := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+		if txErr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("%w: materialize wal begin: %w", ErrAuditOpen, txErr)
+		}
+		if _, txErr = tx.Exec(`UPDATE schema_version SET v = v`); txErr != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("%w: materialize wal exec: %w", ErrAuditOpen, txErr)
+		}
+		if txErr = tx.Commit(); txErr != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("%w: materialize wal commit: %w", ErrAuditOpen, txErr)
+		}
 	}
 
-	// Chmod 0600 on db and sidecars. Missing sidecars are tolerated.
+	// Chmod 0600 on db and sidecars. `-wal` may have been auto-checkpointed
+	// away on some configurations; tolerate its absence. The main db and
+	// `-shm` must exist after a successful write transaction.
+	mustExist := map[string]bool{"": true, "-shm": true, "-wal": false}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		p := dbPath + suffix
-		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Chmod(p, 0o600); err != nil {
+			if errors.Is(err, os.ErrNotExist) && !mustExist[suffix] {
+				continue
+			}
 			_ = db.Close()
 			return nil, fmt.Errorf("%w: chmod %s: %w", ErrAuditOpen, p, err)
 		}
