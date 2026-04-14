@@ -7,40 +7,51 @@ import (
 
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/runner"
+	"github.com/8enji/veil/internal/skiphost"
 	"github.com/spf13/cobra"
 )
 
 func runCmd() *cobra.Command {
+	var ephemeralSkip []string
 	cmd := &cobra.Command{
 		Use:   "run [flags] -- <command> [args...]",
 		Short: "Run a command with secrets injected via proxy",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun(cmd, args)
+			return runRun(cmd, args, ephemeralSkip)
 		},
 	}
 	cmd.Flags().SetInterspersed(false)
+	cmd.Flags().StringArrayVar(&ephemeralSkip, "skip", nil, "host to pass through without proxying (non-persistent, repeatable)")
 	return cmd
 }
 
-func runRun(cmd *cobra.Command, args []string) error {
+func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
 	}
 
-	// Check .veil/ exists.
 	stateDir := config.ProjectStateDir(root)
 	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
 		return cliError("project not initialized", "Run veil init to get started")
 	}
+
+	// Load persistent skip hosts.
+	skipHosts, err := skiphost.Load(config.SkipHostsFile(root))
+	if err != nil {
+		return cliError(fmt.Sprintf("reading skip hosts: %v", err), "")
+	}
+
+	// Merge ephemeral --skip flags.
+	skipHosts = append(skipHosts, ephemeralSkip...)
 
 	result, err := runner.Run(cmd.Context(), runner.Config{
 		Root:      root,
 		Command:   args[0],
 		Args:      args[1:],
 		Verbose:   flagVerbose,
-		SkipHosts: nil,
+		SkipHosts: skipHosts,
 	})
 	if err != nil {
 		return cliError(mapRunError(err), "")
@@ -64,4 +75,3 @@ func mapRunError(err error) string {
 		return fmt.Sprintf("run failed: %v", err)
 	}
 }
-
