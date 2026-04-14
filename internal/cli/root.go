@@ -37,7 +37,7 @@ func NewRoot(version string) *cobra.Command {
 		Use:   "veil",
 		Short: "Secure AI coding agents by intercepting secrets at the network layer",
 		Long: fmt.Sprintf(`%s
-protect your secrets from AI agents
+Protect your secrets from AI agents
 
 %s
   veil init          Scan project, vault secrets, write placeholders
