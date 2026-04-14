@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,8 +125,8 @@ func TestAddDuplicateName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on duplicate name")
 	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrDuplicateCredential) {
+		t.Fatalf("expected ErrDuplicateCredential, got: %v", err)
 	}
 }
 

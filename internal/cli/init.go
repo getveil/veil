@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -298,7 +299,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 				CreatedAt:    time.Now(),
 			}
 			if err := v.Add(cred); err != nil {
-				if strings.Contains(err.Error(), "already exists") {
+				if errors.Is(err, vault.ErrDuplicateCredential) {
 					ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", s.key)
 					continue
 				}
@@ -528,7 +529,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 			CreatedAt:    time.Now(),
 		}
 		if err := v.Add(cred); err != nil {
-			if strings.Contains(err.Error(), "already exists") {
+			if errors.Is(err, vault.ErrDuplicateCredential) {
 				ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", credName)
 				continue
 			}
