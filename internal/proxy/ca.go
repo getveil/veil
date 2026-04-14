@@ -6,7 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // SHA-1 for SKID per RFC 5280 s4.2.1.2
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -113,12 +113,14 @@ func GenerateCA() (*CA, error) {
 		hostname = "unknown"
 	}
 
-	// Compute SubjectKeyIdentifier as SHA-1 of the marshalled public key.
+	// Compute SubjectKeyIdentifier as SHA-256 of the marshalled public key.
+	// RFC 5280 s4.2.1.2 recommends SHA-1 but permits any method; we prefer
+	// SHA-256 to avoid shipping a SHA-1 digest in freshly-minted roots.
 	pubBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("%w: marshal public key: %w", ErrCAGenerate, err)
 	}
-	skid := sha1.Sum(pubBytes) //nolint:gosec // SHA-1 for SKID per RFC 5280 s4.2.1.2
+	skid := sha256.Sum256(pubBytes)
 
 	now := time.Now()
 	template := &x509.Certificate{

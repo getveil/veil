@@ -4,12 +4,23 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/x509"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestGenerateCAUsesSHA256SKID(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(ca.Cert.SubjectKeyId) != sha256.Size {
+		t.Fatalf("SKID length %d, want %d (SHA-256)", len(ca.Cert.SubjectKeyId), sha256.Size)
+	}
+}
 
 func TestGenerateCA(t *testing.T) {
 	ca, err := GenerateCA()
