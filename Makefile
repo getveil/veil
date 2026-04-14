@@ -7,10 +7,10 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/veil ./cmd/veil
 
 test:
-	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test ./... -timeout 120s
+	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test -tags testkeystore ./... -timeout 120s
 
 test-race:
-	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test ./... -race -timeout 180s
+	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test -tags testkeystore ./... -race -timeout 180s
 
 lint:
 	golangci-lint run
