@@ -73,3 +73,7 @@ func keystoreFallback(goos, home, xdgState string) (string, error) {
 func PidFile(root string) string {
 	return filepath.Join(ProjectStateDir(root), "proxy.pid")
 }
+
+func SkipHostsFile(root string) string {
+	return filepath.Join(ProjectStateDir(root), "skip_hosts")
+}
