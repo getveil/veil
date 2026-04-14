@@ -1,0 +1,66 @@
+package audit_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/8enji/veil/internal/audit"
+)
+
+func TestOpenSetsRestrictivePerms(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sub", "audit.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	s, err := audit.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		p := dbPath + suffix
+		info, err := os.Stat(p)
+		if err != nil {
+			if suffix == "" {
+				t.Fatalf("stat %s: %v", p, err)
+			}
+			continue // sidecar may not exist on some sqlite modes
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode %o, want 0600", p, info.Mode().Perm())
+		}
+	}
+	parent := filepath.Dir(dbPath)
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat parent: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("parent %s mode %o, want 0700", parent, info.Mode().Perm())
+	}
+}
+
+func TestOpenCorrectsExistingPerms(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "audit.db")
+	// Pre-create the file with open perms.
+	if err := os.WriteFile(dbPath, nil, 0o644); err != nil {
+		t.Fatalf("pre-create: %v", err)
+	}
+	s, err := audit.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o, want 0600", info.Mode().Perm())
+	}
+}

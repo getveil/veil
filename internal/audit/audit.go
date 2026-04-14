@@ -3,7 +3,10 @@ package audit
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -65,17 +68,43 @@ const insertSQL = `INSERT INTO injections (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Open opens (or creates) the SQLite database at dbPath and starts the
-// background flush goroutine.
+// background flush goroutine. It enforces 0600 permissions on the database
+// files and 0700 on the parent directory (idempotent: corrects existing
+// installs).
 func Open(dbPath string) (*Store, error) {
+	// Ensure parent dir is 0700 before creating the DB.
+	parent := filepath.Dir(dbPath)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: create parent dir: %w", ErrAuditOpen, err)
+	}
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: chmod parent dir: %w", ErrAuditOpen, err)
+	}
+
 	dsn := "file:" + dbPath + "?_journal_mode=wal&_synchronous=normal"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open db: %w", ErrAuditOpen, err)
+		return nil, fmt.Errorf("%w: sql.Open: %w", ErrAuditOpen, err)
 	}
 
 	if _, err := db.Exec(schemaDDL); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("%w: apply schema: %w", ErrAuditOpen, err)
+		return nil, fmt.Errorf("%w: ddl: %w", ErrAuditOpen, err)
+	}
+
+	// Force WAL sidecar materialization so chmod below covers them.
+	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: wal_checkpoint: %w", ErrAuditOpen, err)
+	}
+
+	// Chmod 0600 on db and sidecars. Missing sidecars are tolerated.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		p := dbPath + suffix
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = db.Close()
+			return nil, fmt.Errorf("%w: chmod %s: %w", ErrAuditOpen, p, err)
+		}
 	}
 
 	s := &Store{
