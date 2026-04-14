@@ -380,6 +380,58 @@ func TestMalformedDoubleQuote(t *testing.T) {
 	}
 }
 
+func TestParseFileSingleQuote(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		key     string
+		value   string
+		wantErr bool // true if parser should flag this line (demote to comment)
+	}{
+		{"simple", `KEY='simple'`, "KEY", "simple", false},
+		{"shell escaped quote", `KEY='it'\''s'`, "KEY", "it's", false},
+		{"has equals", `KEY='has=equals'`, "KEY", "has=equals", false},
+		{"literal backslash", `KEY='has\nliteral'`, "KEY", `has\nliteral`, false},
+		{"empty", `KEY=''`, "KEY", "", false},
+		{"unclosed", `KEY='unclosed`, "KEY", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, ".env")
+			if err := os.WriteFile(p, []byte(tc.input+"\n"), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			f, err := ParseFile(p)
+			if err != nil {
+				t.Fatalf("parse file: %v", err)
+			}
+			var got string
+			var foundKV bool
+			for _, l := range f.Lines {
+				if l.Kind == KVLine && l.Key == tc.key {
+					got = l.Value
+					foundKV = true
+					break
+				}
+			}
+			if tc.wantErr {
+				if foundKV {
+					t.Fatalf("expected line demoted to comment, but got KV with value=%q", got)
+				}
+				return
+			}
+			if !foundKV {
+				t.Fatalf("expected KV line for key=%q; lines were: %+v", tc.key, f.Lines)
+			}
+			if got != tc.value {
+				t.Fatalf("value: got %q, want %q", got, tc.value)
+			}
+		})
+	}
+}
+
 func TestSetValue(t *testing.T) {
 	path := fixturePath(t)
 	f, err := ParseFile(path)

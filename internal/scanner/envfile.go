@@ -123,7 +123,10 @@ func parseKV(raw string) (Line, bool) {
 
 	valRaw := kvPart[eqIdx+1:]
 
-	value, quoted := parseValue(valRaw)
+	value, quoted, ok := parseValue(valRaw)
+	if !ok {
+		return Line{}, false
+	}
 
 	return Line{
 		Raw:    raw,
@@ -136,15 +139,20 @@ func parseKV(raw string) (Line, bool) {
 }
 
 // parseValue parses the value portion after the = sign.
-func parseValue(raw string) (string, QuoteStyle) {
-	// Check for single-quoted value
+// Returns the decoded value, quote style, and ok=true on success.
+// Returns ("", 0, false) when the value has an unclosed quote that cannot be
+// recovered (e.g. an unclosed single-quote), signalling parseKV to demote the
+// line to a CommentLine.
+func parseValue(raw string) (string, QuoteStyle, bool) {
+	// Check for single-quoted value.
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "'") {
-		end := strings.IndexByte(trimmed[1:], '\'')
-		if end >= 0 {
-			// Literal content between quotes — no escape processing
-			return trimmed[1 : end+1], SingleQuote
+		content, ok := extractSingleQuoted(trimmed[1:])
+		if ok {
+			return content, SingleQuote, true
 		}
+		// Unclosed single-quote: signal failure so the caller demotes to CommentLine.
+		return "", 0, false
 	}
 
 	// Check for double-quoted value
@@ -152,7 +160,7 @@ func parseValue(raw string) (string, QuoteStyle) {
 		// Find the matching closing quote, respecting escapes
 		content, ok := extractDoubleQuoted(trimmed[1:])
 		if ok {
-			return unescapeDoubleQuoted(content), DoubleQuote
+			return unescapeDoubleQuoted(content), DoubleQuote, true
 		}
 		// Malformed double-quote — strip the opening quote and fall through
 		raw = strings.TrimPrefix(raw, "\"")
@@ -161,7 +169,35 @@ func parseValue(raw string) (string, QuoteStyle) {
 	// Unquoted: trim whitespace, strip inline comments
 	val := strings.TrimSpace(raw)
 	val = stripInlineComment(val)
-	return val, Unquoted
+	return val, Unquoted, true
+}
+
+// extractSingleQuoted extracts content from inside single quotes, honouring
+// the shell idiom '\'' (close quote, literal quote, open quote) which lets
+// users embed a literal single quote inside a single-quoted string.
+//
+// Input starts after the opening quote. Returns the literal content and
+// true on success; "" and false if the quote is unclosed.
+func extractSingleQuoted(s string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\'' {
+			// Check for the '\'' idiom: we're at a closing quote, next is
+			// backslash+quote+quote meaning "literal quote, reopen".
+			if i+3 < len(s) && s[i+1] == '\\' && s[i+2] == '\'' && s[i+3] == '\'' {
+				b.WriteByte('\'')
+				i += 4 // advance past: ' \ ' '
+				continue
+			}
+			// Plain closing quote.
+			return b.String(), true
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return "", false
 }
 
 // extractDoubleQuoted extracts content from inside double quotes.
