@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -49,14 +48,14 @@ func LoadOrCreateCA() (*CA, error) {
 	case !certExists && !keyExists:
 		ca, err := GenerateCA()
 		if err != nil {
-			return nil, fmt.Errorf("generate ca: %w", err)
+			return nil, fmt.Errorf("%w: generate ca: %w", ErrCAGenerate, err)
 		}
 		if err := SaveCA(ca, certPath, keyPath); err != nil {
-			return nil, fmt.Errorf("save ca: %w", err)
+			return nil, fmt.Errorf("%w: save ca: %w", ErrCAGenerate, err)
 		}
 		return ca, nil
 	default:
-		return nil, errors.New("inconsistent CA state: one of cert/key exists without the other")
+		return nil, fmt.Errorf("%w: inconsistent CA state: one of cert/key exists without the other", ErrCALoad)
 	}
 }
 
@@ -64,29 +63,29 @@ func LoadOrCreateCA() (*CA, error) {
 func LoadCA(certPath, keyPath string) (*CA, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return nil, fmt.Errorf("read ca cert: %w", err)
+		return nil, fmt.Errorf("%w: read ca cert: %w", ErrCALoad, err)
 	}
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("read ca key: %w", err)
+		return nil, fmt.Errorf("%w: read ca key: %w", ErrCALoad, err)
 	}
 
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
-		return nil, errors.New("failed to decode CA certificate PEM")
+		return nil, fmt.Errorf("%w: failed to decode CA certificate PEM", ErrCALoad)
 	}
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse ca cert: %w", err)
+		return nil, fmt.Errorf("%w: parse ca cert: %w", ErrCALoad, err)
 	}
 
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
-		return nil, errors.New("failed to decode CA key PEM")
+		return nil, fmt.Errorf("%w: failed to decode CA key PEM", ErrCALoad)
 	}
 	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse ca key: %w", err)
+		return nil, fmt.Errorf("%w: parse ca key: %w", ErrCALoad, err)
 	}
 
 	return &CA{
@@ -101,12 +100,12 @@ func LoadCA(certPath, keyPath string) (*CA, error) {
 func GenerateCA() (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generate ecdsa key: %w", err)
+		return nil, fmt.Errorf("%w: generate ecdsa key: %w", ErrCAGenerate, err)
 	}
 
 	serialNumber, err := randomSerial()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrCAGenerate, err)
 	}
 
 	hostname, err := os.Hostname()
@@ -117,7 +116,7 @@ func GenerateCA() (*CA, error) {
 	// Compute SubjectKeyIdentifier as SHA-1 of the marshalled public key.
 	pubBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("marshal public key: %w", err)
+		return nil, fmt.Errorf("%w: marshal public key: %w", ErrCAGenerate, err)
 	}
 	skid := sha1.Sum(pubBytes) //nolint:gosec // SHA-1 for SKID per RFC 5280 s4.2.1.2
 
@@ -141,19 +140,19 @@ func GenerateCA() (*CA, error) {
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
-		return nil, fmt.Errorf("create certificate: %w", err)
+		return nil, fmt.Errorf("%w: create certificate: %w", ErrCAGenerate, err)
 	}
 
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		return nil, fmt.Errorf("parse generated cert: %w", err)
+		return nil, fmt.Errorf("%w: parse generated cert: %w", ErrCAGenerate, err)
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("marshal ec private key: %w", err)
+		return nil, fmt.Errorf("%w: marshal ec private key: %w", ErrCAGenerate, err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 

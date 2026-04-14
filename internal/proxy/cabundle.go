@@ -30,15 +30,15 @@ func BuildCABundle(veilCAPEM []byte) (string, error) {
 
 	bundlePath, err := bundleFilePath()
 	if err != nil {
-		return "", fmt.Errorf("bundle file path: %w", err)
+		return "", fmt.Errorf("%w: bundle file path: %w", ErrCABundle, err)
 	}
 
 	if err := config.EnsureDir(filepath.Dir(bundlePath), 0700); err != nil {
-		return "", fmt.Errorf("ensure bundle dir: %w", err)
+		return "", fmt.Errorf("%w: ensure bundle dir: %w", ErrCABundle, err)
 	}
 
 	if err := atomicWrite(bundlePath, combined, 0644); err != nil {
-		return "", fmt.Errorf("write ca bundle: %w", err)
+		return "", fmt.Errorf("%w: write ca bundle: %w", ErrCABundle, err)
 	}
 
 	return bundlePath, nil

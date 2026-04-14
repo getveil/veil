@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -142,7 +143,7 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrListen, err)
 	}
 	s.listener = ln
 	s.addr = ln.Addr().String()
