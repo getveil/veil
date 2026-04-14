@@ -299,7 +299,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 			}
 			if err := v.Add(cred); err != nil {
 				if strings.Contains(err.Error(), "already exists") {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", s.key)
+					ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", s.key)
 					continue
 				}
 				return cliError(fmt.Sprintf("vaulting %s: %v", s.key, err), "")
@@ -423,7 +423,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	// Check for existing backup (indicates already migrated).
 	backupPath := configPath + ".veil-backup"
 	if _, err := os.Stat(backupPath); err == nil && !force {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s already has a backup (use --force to re-migrate)\n", configPath)
+		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-migrate)", configPath)
 		return 0, 0, nil
 	}
 
@@ -454,6 +454,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	}
 
 	if len(allSecrets) == 0 {
+		_, _ = fmt.Fprintf(w, "\n%s\n", ui.Muted.Sprint("No secrets found in MCP config."))
 		return 0, 0, nil
 	}
 
@@ -528,7 +529,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 		}
 		if err := v.Add(cred); err != nil {
 			if strings.Contains(err.Error(), "already exists") {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: duplicate key %q, skipping\n", credName)
+				ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", credName)
 				continue
 			}
 			return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")

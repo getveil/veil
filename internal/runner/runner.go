@@ -90,7 +90,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	pidPath := config.PidFile(cfg.Root, os.Getpid())
 	if err := WritePidFile(pidPath, os.Getpid()); err != nil {
 		// Non-fatal — status won't detect proxy, but run still works.
-		fmt.Fprintf(os.Stderr, "%s\n", ui.Muted.Sprintf("warning: could not write pid file: %v", err))
+		ui.Warnf(os.Stderr, "could not write pid file: %v", err)
 	}
 	defer RemovePidFile(pidPath)
 
@@ -127,8 +127,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// process group if veil dies unexpectedly.
 	watcher, werr := startParentWatch(child.Process.Pid)
 	if werr != nil {
-		fmt.Fprintf(os.Stderr, "%s\n",
-			ui.Muted.Sprintf("warning: could not start parent watcher: %v", werr))
+		ui.Warnf(os.Stderr, "could not start parent watcher: %v", werr)
 	}
 	defer watcher.Close()
 
