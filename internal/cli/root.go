@@ -63,11 +63,13 @@ credentials at the proxy layer — so the agent never sees them.`,
 	root.Version = version
 
 	// Styled version line: bold "veil vX.Y.Z", muted "(goos/goarch)".
-	// Uses the bold/muted template functions so color state is evaluated at
-	// render time, matching the usage template pattern.
+	// Uses .Version (a Cobra template variable resolved at render time) instead
+	// of interpolating the version string into the template source, so special
+	// characters in the version string can't break template parsing. GOOS/GOARCH
+	// are Go runtime constants, safe to interpolate.
 	root.SetVersionTemplate(fmt.Sprintf(
-		`{{bold "veil v%s"}} {{muted "(%s/%s)"}}`+"\n",
-		version, runtime.GOOS, runtime.GOARCH))
+		`{{bold (printf "veil v%%s" .Version)}} {{muted "(%s/%s)"}}`+"\n",
+		runtime.GOOS, runtime.GOARCH))
 
 	// Styled usage template. Based on Cobra's defaultUsageTemplate (v1.10.2),
 	// with `bold` applied to section headers, `muted` applied to command
