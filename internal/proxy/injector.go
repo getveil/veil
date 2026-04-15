@@ -187,7 +187,7 @@ func (inj *Injector) ProcessRequest(
 	if !anyNonBlocked(injections) {
 		credList := dedupCredentials(creds)
 		parsedURL, _ := url.Parse(rawURL)
-		if sig, _, fired := detectMismatch(host, parsedURL, newHeader, nonBlockedCount(injections), credList); fired {
+		if sig, _, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
 			injections = append(injections, audit.Injection{
 				Timestamp:   now,
 				RequestID:   requestID,
@@ -276,17 +276,6 @@ func anyNonBlocked(injections []audit.Injection) bool {
 		}
 	}
 	return false
-}
-
-// nonBlockedCount returns the number of injections that performed an actual swap.
-func nonBlockedCount(injections []audit.Injection) int {
-	n := 0
-	for _, i := range injections {
-		if i.Location != "blocked" && !i.SuspectFlag {
-			n++
-		}
-	}
-	return n
 }
 
 // dedupCredentials collapses the placeholder map into a unique slice. Basic
