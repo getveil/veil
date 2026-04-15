@@ -17,6 +17,7 @@ This document describes what Veil protects against, what it does *not* protect a
 - **Non-HTTP exfiltration.** Veil only mediates `HTTP_PROXY` / `HTTPS_PROXY` traffic. An agent that opens a raw TCP connection, sends DNS queries with data embedded in names, or uses any other channel is out of scope.
 - **Agent direct vault reads.** If the agent runs tools (shell, file read) it may open `.veil/vault.bin` directly. The vault is encrypted, but the master key is obtainable via the OS keyring by any process running as the same user.
 - **System CA trust store compromise.** Veil installs its root CA into the user's trust store. Any process (not just the agent) running as that user will trust certificates signed by Veil's CA.
+- **Secrets consumed by keyed cryptography.** Credentials that an agent combines with request bytes via HMAC, asymmetric signing, or a similar keyed transform (AWS SigV4, GitHub App JWTs, webhook HMAC signatures) never appear in the outgoing request in a form Veil can match. The placeholder reaches Veil unchanged; the request fails upstream with 401/403. Veil's transform-mismatch detector emits a diagnostic WARN when this happens on a credentialed host, but it is a signal, not enforcement — the real secret still exists wherever the agent read it from, and a malicious agent could exfiltrate it before signing.
 
 ## Deployment notes for hardened setups
 
