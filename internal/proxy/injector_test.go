@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
@@ -416,6 +417,68 @@ func TestHostScoping_WildcardMatch(t *testing.T) {
 // Verify the audit package is importable and the Injection type is used
 // correctly. This is a compile-time check more than a runtime one.
 var _ audit.Injection
+
+func TestProcessRequestBasicAuthEndToEnd(t *testing.T) {
+	cred := &vault.Credential{
+		ID: "c1", Name: "gh-basic",
+		Real:                "ghp_real",
+		Placeholder:         "VEIL_SECRET_ZZZ",
+		Username:            "johndoe",
+		UsernamePlaceholder: "VEIL_USER_ZZZ",
+		AllowedHosts:        []string{"api.github.com"},
+	}
+	pmap := map[string]*vault.Credential{
+		cred.Placeholder:         cred,
+		cred.UsernamePlaceholder: cred,
+	}
+	inj := NewInjector(pmap, nil, 1, "agent")
+
+	hdr := http.Header{}
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("VEIL_USER_ZZZ:VEIL_SECRET_ZZZ"))
+	hdr.Set("Authorization", basic)
+
+	_, newHeader, _, injections := inj.ProcessRequest(
+		"req-basic-1", "GET", "https://api.github.com/user", hdr, nil)
+
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("johndoe:ghp_real"))
+	if got := newHeader.Get("Authorization"); got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	if len(injections) != 1 {
+		t.Fatalf("expected 1 injection, got %d", len(injections))
+	}
+	if injections[0].CredentialName != "gh-basic" {
+		t.Errorf("CredentialName = %q", injections[0].CredentialName)
+	}
+	if injections[0].Location != "header" {
+		t.Errorf("Location = %q", injections[0].Location)
+	}
+}
+
+func TestProcessRequestBasicDoesNotInterfereWithBearer(t *testing.T) {
+	bearer := makeCred("bearer-tok", "VEIL_BEARER_XXXX", "Bearer real-token", "api.example.com")
+	basic := &vault.Credential{
+		ID: "c2", Name: "basic-cred",
+		Real:                "secret",
+		Placeholder:         "VEIL_SECRET_YYYY",
+		Username:            "user",
+		UsernamePlaceholder: "VEIL_USER_YYYY",
+		AllowedHosts:        []string{"api.example.com"},
+	}
+	inj := NewInjector(placeholderMap(bearer, basic), nil, 1, "agent")
+
+	hdr := http.Header{}
+	hdr.Set("X-Custom", "VEIL_BEARER_XXXX")
+	_, newHeader, _, injections := inj.ProcessRequest(
+		"req-mixed", "GET", "https://api.example.com/v1", hdr, nil)
+
+	if got := newHeader.Get("X-Custom"); got != "Bearer real-token" {
+		t.Errorf("Bearer placeholder not replaced in non-Basic header: %q", got)
+	}
+	if len(injections) != 1 {
+		t.Fatalf("expected 1 injection, got %d", len(injections))
+	}
+}
 
 func TestProcessRequestInjectsQueryString(t *testing.T) {
 	cred := makeCred("API_KEY", "sk_fake_ABCDEFGHIJ", "sk_real_1234567890", "api.example.com")

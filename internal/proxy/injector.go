@@ -126,6 +126,22 @@ func (inj *Injector) ProcessRequest(
 
 	// --- Header scanning ---
 	newHeader = header.Clone()
+
+	// --- Basic auth pre-pass ---
+	// Decode Authorization / Proxy-Authorization Basic headers and rewrite them
+	// with real user:secret pairs before the literal Aho-Corasick scan sees the
+	// (already-rewritten) bytes. Swaps produced here participate in the same
+	// audit-injection stream as literal matches.
+	basicSwaps := decodeAndSwapBasic(newHeader, creds, host)
+	for _, s := range basicSwaps {
+		s.RequestID = requestID
+		s.Method = method
+		s.URLPath = urlPath
+		s.AgentPID = inj.agentPID
+		s.AgentCmd = inj.agentCmd
+		injections = append(injections, s)
+	}
+
 	if matcher != nil {
 		for name, values := range newHeader {
 			for i, v := range values {
