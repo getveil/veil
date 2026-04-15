@@ -2,7 +2,7 @@
 
 ## What Veil Is
 
-A CLI that secures AI coding agents. It sits between the agent and the network — a local HTTPS proxy that injects real credentials at request time so agents never see actual secrets. Ships as a single binary, zero cloud dependency.
+A CLI that secures AI coding agents. It sits between the agent and the network via HTTP proxy environment variables — a local HTTPS MITM proxy that injects real credentials at request time so agents never see actual secrets. Ships as a single binary, zero cloud dependency.
 
 ## Features
 
@@ -44,6 +44,14 @@ Every credential injection is logged locally: timestamp, credential name, destin
 - Team credential sharing
 - Cloud dashboard or GUI
 - Agent-specific integrations
+
+## Known Limitations
+
+- **Advisory enforcement.** The proxy relies on `HTTP_PROXY`/`HTTPS_PROXY` environment variables. An agent or subprocess that clears these variables bypasses the proxy entirely. Kernel-level enforcement (NetworkExtension on macOS, network namespaces on Linux) is planned for a future release.
+- **HTTP/HTTPS only.** The proxy does not intercept HTTP/2 (gRPC), QUIC/UDP, raw TCP, or any non-HTTP protocol. Database wire protocols (Postgres, MySQL, MongoDB), SSH, and mTLS are out of scope.
+- **No credential injection for non-HTTP auth schemes.** Credentials that are transformed before hitting the wire — such as HTTP Basic auth (Base64-encoded), AWS SigV4 (HMAC-signed), or JWT-signed requests — are not injected. The proxy performs literal placeholder matching only. See [Transformed Credential Problem](docs/superpowers/findings/2026-04-13-transformed-credential-problem.md) for details.
+- **Compressed bodies pass through.** Requests with a `Content-Encoding` header are forwarded without placeholder injection.
+- **Large bodies pass through.** Request bodies larger than 10 MiB are forwarded without placeholder injection.
 
 ## Success Criteria
 

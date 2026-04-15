@@ -2,7 +2,7 @@
 
 **.gitignore protected your secrets from git. Veil protects them from AI.**
 
-Veil is a local CLI that sits between your AI coding agents and the network. It replaces real secrets with format-aware placeholders, then injects the real credentials at the proxy layer so the agent never sees them.
+Veil is a local CLI that sits between your AI coding agents and the network via a local HTTPS proxy. It replaces real secrets with format-aware placeholders, then injects the real credentials at the proxy layer — so the agent never sees them. Works with any agent or tool that respects `HTTP_PROXY`/`HTTPS_PROXY` environment variables, including Claude Code, Cursor, curl, and most HTTP clients.
 
 ## How it works
 

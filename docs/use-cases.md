@@ -8,6 +8,19 @@ The `veil run` proxy is **in-process** — it starts when `veil run` starts,
 lives inside the same OS process, and shuts down when the agent exits. It
 is not a background daemon.
 
+## Scope
+
+**MVP (shipped today):** All cases below rely on the HTTPS MITM proxy
+started by `veil run`, with enforcement via `HTTP_PROXY`/`HTTPS_PROXY`
+environment variables. This covers any agent or tool that respects standard
+proxy env vars — including Claude Code, Cursor, curl, the GitHub CLI, npm,
+pip, and most HTTP clients.
+
+**Post-MVP (planned):** Kernel-level enforcement via
+`NETransparentProxyProvider` (macOS) and network namespaces + iptables
+(Linux) will make interception non-bypassable and extend to all protocols.
+See [Architecture](ARCHITECTURE.md) for details.
+
 ## Reading credential files
 
 | # | Case | Status |
@@ -64,6 +77,20 @@ through the same proxy.
 |---|---|---|
 | 26 | Agent concatenates `ghp_` + variable at runtime. Proxy sees only the final string; swap happens iff that string matches a placeholder. | Out of scope |
 | 27 | Placeholder hardcoded into source — inert by design; no scanner, no leak. | Supported (inert) |
-| 28 | Base64-encoded placeholder in Basic auth / transformed payloads. | See [specs/2026-04-13-transformed-credential-problem.md](./superpowers/specs/2026-04-13-transformed-credential-problem.md) |
+| 28 | Base64-encoded placeholder in Basic auth / transformed payloads. | Out of scope (MVP) — see [Transformed Credential Problem](./superpowers/findings/2026-04-13-transformed-credential-problem.md) |
 | 29 | Request without any credential — passthrough. | Supported |
 | 30 | Localhost / internal services — `NO_PROXY` covers `localhost`, `127.0.0.1`, `::1`; `--skip-hosts` extends it. | Supported |
+
+## What requires kernel-level enforcement (post-MVP)
+
+The following scenarios are **not covered** by the MVP proxy model and
+require the planned kernel-level enforcement layer:
+
+| # | Case | Why |
+|---|---|---|
+| F1 | Agent clears or ignores `HTTP_PROXY`/`HTTPS_PROXY` env vars. | Proxy depends on cooperative env-var adoption. Kernel enforcement intercepts at the network layer regardless of env vars. |
+| F2 | gRPC / HTTP/2 traffic. | The MITM proxy handles HTTP/1.1 CONNECT tunnels. Native HTTP/2 multiplexed streams require transparent proxy interception. |
+| F3 | Raw TCP database connections (Postgres, MySQL, MongoDB native wire protocol). | Non-HTTP protocols bypass the HTTP proxy entirely. |
+| F4 | SSH connections (git over SSH, remote server access). | SSH does not use HTTP proxy env vars. |
+| F5 | QUIC / UDP traffic. | UDP-based protocols bypass the TCP proxy. |
+| F6 | mTLS / client certificate authentication. | Client certs are used in the TLS handshake, below the HTTP layer. Unfixable under the HTTP-proxy-only constraint. |

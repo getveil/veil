@@ -23,6 +23,7 @@ This document describes what Veil protects against, what it does *not* protect a
 - **Separate UID.** Running Veil under a user different from the agent eliminates same-UID tampering and direct vault reads. This requires a setuid helper or systemd/launchd user service configuration; not supported out-of-the-box in MVP.
 - **Short-lived sessions.** Keep `veil run` sessions as short as possible to minimize the in-memory credential window.
 - **Network-level egress rules.** Pair Veil with outbound firewall rules so the agent cannot reach hosts outside the expected provider set.
+- **Kernel-level enforcement (planned).** Post-MVP, Veil will support `NETransparentProxyProvider` (macOS) and network namespaces + iptables (Linux) for non-bypassable, per-process traffic interception across all protocols. This eliminates the env-var bypass vector and extends coverage beyond HTTP/HTTPS. See [Architecture](ARCHITECTURE.md) for the planned path.
 
 ## Known limitations called out in the code
 

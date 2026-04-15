@@ -1,3 +1,5 @@
+> **Status: PARKED** — This design describes kernel-level enforcement (NetworkExtension on macOS, network namespaces + iptables on Linux) which is deferred to post-YC/post-funding. The MVP ships with env-var-based HTTPS proxy enforcement. See [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) for the current architecture.
+
 # Veil Egress Enforcement
 
 **Date:** 2026-04-14
