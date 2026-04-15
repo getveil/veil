@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -467,5 +468,63 @@ func TestAddPersistsOnReopen(t *testing.T) {
 	}
 	if got.ID != cred.ID {
 		t.Fatalf("ID = %q, want %q", got.ID, cred.ID)
+	}
+}
+
+func TestCredentialBasicFields(t *testing.T) {
+	c := &Credential{
+		ID:                  "abc",
+		Name:                "github-pat",
+		Real:                "ghp_realvalue",
+		Placeholder:         "VEIL_PH_SECRET",
+		Username:            "johndoe",
+		UsernamePlaceholder: "VEIL_PH_USER",
+	}
+
+	c.Zero()
+
+	if c.Username != "" {
+		t.Errorf("Zero() did not clear Username: %q", c.Username)
+	}
+	if c.UsernamePlaceholder != "" {
+		t.Errorf("Zero() did not clear UsernamePlaceholder: %q", c.UsernamePlaceholder)
+	}
+	if c.Real != "" || c.Placeholder != "" {
+		t.Error("Zero() should still clear Real and Placeholder")
+	}
+}
+
+func TestCredentialJSONRoundTripBasic(t *testing.T) {
+	original := &Credential{
+		ID:                  "id1",
+		Name:                "github-pat",
+		Real:                "ghp_realvalue",
+		Placeholder:         "VEIL_PH_SECRET",
+		Username:            "johndoe",
+		UsernamePlaceholder: "VEIL_PH_USER",
+		CreatedAt:           time.Unix(1712000000, 0).UTC(),
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Credential
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Username != "johndoe" || got.UsernamePlaceholder != "VEIL_PH_USER" {
+		t.Errorf("round-trip lost basic fields: %+v", got)
+	}
+}
+
+func TestCredentialJSONBackwardCompat(t *testing.T) {
+	// Old on-disk format had no Username / UsernamePlaceholder fields.
+	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`
+	var got Credential
+	if err := json.Unmarshal([]byte(oldJSON), &got); err != nil {
+		t.Fatalf("unmarshal old format: %v", err)
+	}
+	if got.Username != "" || got.UsernamePlaceholder != "" {
+		t.Errorf("expected empty basic fields on old record, got %+v", got)
 	}
 }

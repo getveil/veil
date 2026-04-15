@@ -10,13 +10,15 @@ import (
 
 // Credential holds a single secret and its proxy placeholder.
 type Credential struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Real         string    `json:"real"`
-	Placeholder  string    `json:"placeholder"`
-	Source       string    `json:"source"`
-	AllowedHosts []string  `json:"allowed_hosts,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                  string    `json:"id"`
+	Name                string    `json:"name"`
+	Real                string    `json:"real"`
+	Placeholder         string    `json:"placeholder"`
+	Source              string    `json:"source"`
+	AllowedHosts        []string  `json:"allowed_hosts,omitempty"`
+	Username            string    `json:"username,omitempty"`
+	UsernamePlaceholder string    `json:"username_placeholder,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // String returns a redacted representation that never leaks secret material.
@@ -29,6 +31,8 @@ func (c *Credential) String() string {
 func (c *Credential) Zero() {
 	c.Real = ""
 	c.Placeholder = ""
+	c.Username = ""
+	c.UsernamePlaceholder = ""
 }
 
 // NewID generates a ULID suitable for use as a credential identifier.
