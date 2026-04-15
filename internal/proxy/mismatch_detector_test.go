@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/8enji/veil/internal/vault"
@@ -124,5 +127,39 @@ func TestDetector_HostWithPortMatches(t *testing.T) {
 	_, _, fired := detectMismatch("api.github.com:443", u, hdr, 0, creds)
 	if !fired {
 		t.Error("detector should match host:port against AllowedHosts")
+	}
+}
+
+func TestDetectorLogLine(t *testing.T) {
+	var buf bytes.Buffer
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	})
+
+	logMismatch("api.github.com", "/user", "GET", authSignalAuthorizationHeader, []string{"gh"})
+
+	out := buf.String()
+	if !strings.Contains(out, "event=transform_mismatch_suspected") {
+		t.Errorf("missing event= field: %q", out)
+	}
+	if !strings.Contains(out, "host=api.github.com") {
+		t.Errorf("missing host field: %q", out)
+	}
+	if !strings.Contains(out, "auth_signal=authorization_header") {
+		t.Errorf("missing auth_signal: %q", out)
+	}
+	if !strings.Contains(out, "credentials=gh") {
+		t.Errorf("missing credentials list: %q", out)
+	}
+	if strings.Contains(strings.ToLower(out), "veil_") {
+		t.Error("log line leaked a VEIL_ placeholder token")
+	}
+	if strings.Contains(strings.ToLower(out), "bearer") {
+		t.Error("log line leaked header value")
 	}
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -72,4 +73,12 @@ func detectMismatch(host string, u *url.URL, hdr http.Header, injectionCount int
 		}
 	}
 	return "", nil, false
+}
+
+// logMismatch emits a structured WARN-level log line. It never includes
+// header values, secrets, or placeholder strings — only coarse-grained
+// routing signals.
+func logMismatch(host, urlPath, method, authSignal string, credentialNames []string) {
+	log.Printf("WARN event=transform_mismatch_suspected host=%s method=%s path=%s auth_signal=%s credentials=%s",
+		host, method, urlPath, authSignal, strings.Join(credentialNames, ","))
 }

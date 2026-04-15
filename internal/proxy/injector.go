@@ -187,7 +187,8 @@ func (inj *Injector) ProcessRequest(
 	if !anyNonBlocked(injections) {
 		credList := dedupCredentials(creds)
 		parsedURL, _ := url.Parse(rawURL)
-		if sig, _, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
+		if sig, names, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
+			logMismatch(host, urlPath, method, sig, names)
 			injections = append(injections, audit.Injection{
 				Timestamp:   now,
 				RequestID:   requestID,
