@@ -431,14 +431,22 @@ func TestProcessRequestBasicAuthEndToEnd(t *testing.T) {
 		cred.Placeholder:         cred,
 		cred.UsernamePlaceholder: cred,
 	}
-	inj := NewInjector(pmap, nil, 1, "agent")
+	const (
+		wantPID  = 1
+		wantCmd  = "agent"
+		wantReq  = "req-basic-1"
+		wantMtd  = "GET"
+		wantURL  = "https://api.github.com/user"
+		wantPath = "/user"
+	)
+	inj := NewInjector(pmap, nil, wantPID, wantCmd)
 
 	hdr := http.Header{}
 	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("VEIL_USER_ZZZ:VEIL_SECRET_ZZZ"))
 	hdr.Set("Authorization", basic)
 
 	_, newHeader, _, injections := inj.ProcessRequest(
-		"req-basic-1", "GET", "https://api.github.com/user", hdr, nil)
+		wantReq, wantMtd, wantURL, hdr, nil)
 
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("johndoe:ghp_real"))
 	if got := newHeader.Get("Authorization"); got != want {
@@ -453,30 +461,65 @@ func TestProcessRequestBasicAuthEndToEnd(t *testing.T) {
 	if injections[0].Location != "header" {
 		t.Errorf("Location = %q", injections[0].Location)
 	}
+	if injections[0].RequestID != wantReq {
+		t.Errorf("RequestID = %q, want %q", injections[0].RequestID, wantReq)
+	}
+	if injections[0].Method != wantMtd {
+		t.Errorf("Method = %q, want %q", injections[0].Method, wantMtd)
+	}
+	if injections[0].URLPath != wantPath {
+		t.Errorf("URLPath = %q, want %q", injections[0].URLPath, wantPath)
+	}
+	if injections[0].AgentPID != wantPID {
+		t.Errorf("AgentPID = %d, want %d", injections[0].AgentPID, wantPID)
+	}
+	if injections[0].AgentCmd != wantCmd {
+		t.Errorf("AgentCmd = %q, want %q", injections[0].AgentCmd, wantCmd)
+	}
 }
 
 func TestProcessRequestBasicDoesNotInterfereWithBearer(t *testing.T) {
-	bearer := makeCred("bearer-tok", "VEIL_BEARER_XXXX", "Bearer real-token", "api.example.com")
-	basic := &vault.Credential{
-		ID: "c2", Name: "basic-cred",
-		Real:                "secret",
-		Placeholder:         "VEIL_SECRET_YYYY",
-		Username:            "user",
-		UsernamePlaceholder: "VEIL_USER_YYYY",
-		AllowedHosts:        []string{"api.example.com"},
-	}
-	inj := NewInjector(placeholderMap(bearer, basic), nil, 1, "agent")
+	bearer := makeCred("bearer-tok", "VEIL_BEARER_XXXX", "real-token", "api.example.com")
+	basic := basicCred("basic-cred", "real_user", "VEIL_USER_YYYY", "real_secret", "VEIL_SECRET_YYYY", "api.example.com")
+	pmap := placeholderMap(bearer, basic)
+	// Register the username placeholder too (placeholderMap only maps by Placeholder).
+	pmap[basic.UsernamePlaceholder] = basic
+	inj := NewInjector(pmap, nil, 1, "agent")
 
 	hdr := http.Header{}
-	hdr.Set("X-Custom", "VEIL_BEARER_XXXX")
+	hdr.Set("Authorization", basicHeader("VEIL_USER_YYYY", "VEIL_SECRET_YYYY"))
+	hdr.Set("X-Custom", "Bearer VEIL_BEARER_XXXX")
 	_, newHeader, _, injections := inj.ProcessRequest(
 		"req-mixed", "GET", "https://api.example.com/v1", hdr, nil)
 
+	if got, want := newHeader.Get("Authorization"), basicHeader("real_user", "real_secret"); got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
 	if got := newHeader.Get("X-Custom"); got != "Bearer real-token" {
 		t.Errorf("Bearer placeholder not replaced in non-Basic header: %q", got)
 	}
-	if len(injections) != 1 {
-		t.Fatalf("expected 1 injection, got %d", len(injections))
+	if len(injections) != 2 {
+		t.Fatalf("expected 2 injections, got %d", len(injections))
+	}
+	var basicCount, bearerCount int
+	for _, inj := range injections {
+		if inj.Location != "header" {
+			t.Errorf("injection Location = %q, want %q", inj.Location, "header")
+		}
+		switch inj.CredentialName {
+		case "basic-cred":
+			basicCount++
+		case "bearer-tok":
+			bearerCount++
+		default:
+			t.Errorf("unexpected CredentialName %q", inj.CredentialName)
+		}
+	}
+	if basicCount != 1 {
+		t.Errorf("expected 1 basic-cred injection, got %d", basicCount)
+	}
+	if bearerCount != 1 {
+		t.Errorf("expected 1 bearer-tok injection, got %d", bearerCount)
 	}
 }
 
