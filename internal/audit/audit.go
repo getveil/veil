@@ -27,16 +27,20 @@ type Injection struct {
 	AgentCmd       string
 	BytesBefore    int
 	BytesAfter     int
-	Location       string // "header", "body", or "url"
+	Location       string // "header", "body", "url", "blocked", or "mismatch_suspected"
+	SuspectFlag    bool
+	AuthSignal     string
 }
 
 // Store persists injection events to a SQLite database with batched writes.
 type Store struct {
-	db      *sql.DB
-	mu      sync.Mutex
-	pending []Injection
-	done    chan struct{}
-	flush   chan struct{} // signal immediate flush
+	db        *sql.DB
+	mu        sync.Mutex
+	pending   []Injection
+	done      chan struct{}
+	flush     chan struct{} // signal immediate flush
+	closeOnce sync.Once
+	closeErr  error
 }
 
 const schemaDDL = `
@@ -67,8 +71,8 @@ INSERT OR IGNORE INTO schema_version VALUES (1);
 const insertSQL = `INSERT INTO injections (
   ts, request_id, host, method, url_path,
   credential_id, credential_name, agent_pid, agent_cmd,
-  bytes_before, bytes_after, location
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  bytes_before, bytes_after, location, suspect_flag, auth_signal
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Open opens (or creates) the SQLite database at dbPath and starts the
 // background flush goroutine. It enforces 0600 permissions on the database
@@ -165,11 +169,15 @@ func (s *Store) Record(inj Injection) {
 }
 
 // Close stops the background flusher, flushes remaining rows, and closes
-// the database.
+// the database. Close is idempotent; subsequent calls return the original
+// result without side effects.
 func (s *Store) Close() error {
-	close(s.done)
-	s.flushPending()
-	return s.db.Close()
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.flushPending()
+		s.closeErr = s.db.Close()
+	})
+	return s.closeErr
 }
 
 // flusher runs in a goroutine, periodically writing pending rows.
@@ -220,6 +228,10 @@ func (s *Store) flushPending() {
 	}
 
 	for _, inj := range batch {
+		suspect := 0
+		if inj.SuspectFlag {
+			suspect = 1
+		}
 		_, err := stmt.Exec(
 			inj.Timestamp.UnixMilli(),
 			inj.RequestID,
@@ -233,6 +245,8 @@ func (s *Store) flushPending() {
 			inj.BytesBefore,
 			inj.BytesAfter,
 			inj.Location,
+			suspect,
+			inj.AuthSignal,
 		)
 		if err != nil {
 			_ = stmt.Close()

@@ -425,6 +425,73 @@ INSERT INTO schema_version VALUES (1);
 	}
 }
 
+func TestRecordAndQuerySuspectFields(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	db.Record(Injection{
+		Timestamp:   now,
+		RequestID:   "req-suspect-1",
+		Host:        "api.example.com",
+		Method:      "GET",
+		URLPath:     "/v1/thing",
+		Location:    "mismatch_suspected",
+		SuspectFlag: true,
+		AuthSignal:  "authorization_header",
+	})
+	db.Record(Injection{
+		Timestamp:      now,
+		RequestID:      "req-inj-1",
+		Host:           "api.example.com",
+		Method:         "GET",
+		URLPath:        "/v1/thing",
+		CredentialID:   "c1",
+		CredentialName: "gh",
+		Location:       "header",
+		BytesBefore:    10, BytesAfter: 20,
+	})
+	// Force flush.
+	_ = db.Close()
+
+	// Reopen and query.
+	db2, err := Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	rows, err := db2.Query(Filter{Since: now.Add(-time.Hour), IncludeBlocked: true, IncludeSuspect: true})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	var suspect, normal *Row
+	for i := range rows {
+		if rows[i].SuspectFlag {
+			suspect = &rows[i]
+		} else {
+			normal = &rows[i]
+		}
+	}
+	if suspect == nil {
+		t.Fatal("no suspect row returned")
+	}
+	if suspect.AuthSignal != "authorization_header" {
+		t.Errorf("AuthSignal = %q", suspect.AuthSignal)
+	}
+	if normal == nil || normal.SuspectFlag {
+		t.Error("normal injection row incorrectly marked suspect")
+	}
+}
+
 func TestQueryCombinedFilters(t *testing.T) {
 	s := openTestStore(t)
 

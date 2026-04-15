@@ -13,6 +13,8 @@ type Filter struct {
 	CredentialName string    // empty = any
 	Limit          int       // 0 = default 100
 	IncludeBlocked bool      // false = exclude blocked events
+	IncludeSuspect bool      // false = exclude suspect rows
+	SuspectOnly    bool      // true = return only suspect rows (overrides other include flags)
 }
 
 // Row represents a single injection record returned by a query.
@@ -30,6 +32,8 @@ type Row struct {
 	BytesBefore    int
 	BytesAfter     int
 	Location       string
+	SuspectFlag    bool
+	AuthSignal     string
 }
 
 // Query returns injection rows matching the given filter, ordered by
@@ -52,8 +56,17 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 		clauses = append(clauses, "credential_name = ?")
 		args = append(args, f.CredentialName)
 	}
-	if !f.IncludeBlocked {
-		clauses = append(clauses, "location != 'blocked'")
+
+	switch {
+	case f.SuspectOnly:
+		clauses = append(clauses, "suspect_flag = 1")
+	default:
+		if !f.IncludeBlocked {
+			clauses = append(clauses, "location != 'blocked'")
+		}
+		if !f.IncludeSuspect {
+			clauses = append(clauses, "suspect_flag = 0")
+		}
 	}
 
 	limit := f.Limit
@@ -74,21 +87,23 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 	for rows.Next() {
 		var r Row
 		var tsMillis int64
+		var suspectInt int
 		if err := rows.Scan(
 			&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,
 			&r.URLPath, &r.CredentialID, &r.CredentialName,
 			&r.AgentPID, &r.AgentCmd, &r.BytesBefore, &r.BytesAfter,
-			&r.Location,
+			&r.Location, &suspectInt, &r.AuthSignal,
 		); err != nil {
 			return nil, err
 		}
 		r.Timestamp = time.UnixMilli(tsMillis).UTC()
+		r.SuspectFlag = suspectInt != 0
 		result = append(result, r)
 	}
 	return result, rows.Err()
 }
 
-const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections"
+const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal FROM injections"
 
 // buildSelectQuery constructs the full SELECT statement from static clause fragments.
 // All clause strings are hardcoded column comparisons (e.g. "ts >= ?"), never user input.
