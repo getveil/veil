@@ -77,9 +77,11 @@ through the same proxy.
 |---|---|---|
 | 26 | Agent concatenates `ghp_` + variable at runtime. Proxy sees only the final string; swap happens iff that string matches a placeholder. | Out of scope |
 | 27 | Placeholder hardcoded into source — inert by design; no scanner, no leak. | Supported (inert) |
-| 28 | Base64-encoded placeholder in Basic auth / transformed payloads. | Out of scope (MVP) — see [Transformed Credential Problem](./superpowers/findings/2026-04-13-transformed-credential-problem.md) |
-| 29 | Request without any credential — passthrough. | Supported |
-| 30 | Localhost / internal services — `NO_PROXY` covers `localhost`, `127.0.0.1`, `::1`; `--skip-hosts` extends it. | Supported |
+| 28 | Base64-encoded placeholder in HTTP Basic (`Authorization` / `Proxy-Authorization`). | Supported — pre-pass decodes Basic, matches both halves, rewrites with real values. |
+| 29 | Other transformed payloads — keyed crypto (SigV4, GitHub App JWT, HMAC), mTLS handshake. | Out of scope (MVP); flagged by transform-mismatch detector — see [Transformed Credential Problem](./superpowers/findings/2026-04-13-transformed-credential-problem.md) |
+| 30 | Request without any credential — passthrough. | Supported |
+| 31 | Localhost / internal services — `NO_PROXY` covers `localhost`, `127.0.0.1`, `::1`; `--skip <host>` (ephemeral) and `veil skip <host>` (persistent) extend it. | Supported |
+| 32 | Auth-shaped request to a credentialed host with no injection fired — Veil emits structured WARN and flags the audit row (`veil log --suspect`). | Supported (signal, not enforcement) |
 
 ## What requires kernel-level enforcement (post-MVP)
 
