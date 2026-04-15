@@ -61,12 +61,18 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 	}
 
 	// Collect plain-text row data for column width calculation.
+	// nameStyled mirrors name but may carry ANSI styling (e.g., the "(basic)"
+	// tag is dimmed). Width math uses the plain name to keep alignment correct.
 	type row struct {
-		name, hosts, value, placeholder, source, last string
+		name, nameStyled, hosts, value, placeholder, source, last string
 	}
 	rows := make([]row, len(creds))
 	for i, c := range creds {
-		r := row{name: c.Name, source: c.Source, last: "never"}
+		r := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
+		if c.Username != "" {
+			r.name = c.Name + " (basic)"
+			r.nameStyled = c.Name + " " + ui.Muted.Sprint("(basic)")
+		}
 		if t, ok := lastInjected[c.Name]; ok {
 			r.last = ui.RelativeTime(t)
 		}
@@ -104,6 +110,15 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 	// so escape codes don't break column alignment.
 	out := cmd.OutOrStdout()
 	gap := "    "
+	// emitName returns the styled name padded to nameW using the plain
+	// name's length for the math (so ANSI escapes don't skew alignment).
+	emitName := func(r row) string {
+		pad := nameW - len(r.name)
+		if pad < 0 {
+			pad = 0
+		}
+		return r.nameStyled + strings.Repeat(" ", pad)
+	}
 	if reveal {
 		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
@@ -114,7 +129,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
 			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-				padRight(r.name, nameW), gap,
+				emitName(r), gap,
 				hosts, gap,
 				padRight(r.value, valueW), gap,
 				padRight(r.source, sourceW), gap,
@@ -130,7 +145,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
 			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-				padRight(r.name, nameW), gap,
+				emitName(r), gap,
 				hosts, gap,
 				padRight(r.placeholder, phW), gap,
 				padRight(r.source, sourceW), gap,
@@ -145,7 +160,7 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
 			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
-				padRight(r.name, nameW), gap,
+				emitName(r), gap,
 				hosts, gap,
 				padRight(r.source, sourceW), gap,
 				r.last)

@@ -1314,3 +1314,57 @@ func TestAddRejectsUserWithColon(t *testing.T) {
 		t.Error("expected error for colon in --user")
 	}
 }
+
+func TestListShowsBasicTag(t *testing.T) {
+	root := initProject(t)
+
+	// Add a Basic credential.
+	addBasic := NewRoot("test")
+	addBasic.SetOut(new(bytes.Buffer))
+	addBasic.SetErr(new(bytes.Buffer))
+	addBasic.SetArgs([]string{
+		"add", "--path", root, "gh-basic",
+		"--user", "johndoe", "--host", "github.com", "--value", "ghp_real",
+	})
+	if err := addBasic.Execute(); err != nil {
+		t.Fatalf("add basic: %v", err)
+	}
+
+	// Add a bearer credential.
+	addBearer := NewRoot("test")
+	addBearer.SetOut(new(bytes.Buffer))
+	addBearer.SetErr(new(bytes.Buffer))
+	addBearer.SetArgs([]string{
+		"add", "--path", root, "oa-bearer",
+		"--host", "api.openai.com", "--value", "sk-abc",
+	})
+	if err := addBearer.Execute(); err != nil {
+		t.Fatalf("add bearer: %v", err)
+	}
+
+	listCmd := NewRoot("test")
+	listOut := new(bytes.Buffer)
+	listCmd.SetOut(listOut)
+	listCmd.SetErr(new(bytes.Buffer))
+	listCmd.SetArgs([]string{"list", "--path", root})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("list: %v\n%s", err, listOut.String())
+	}
+
+	out := listOut.String()
+	var basicLine, bearerLine string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "gh-basic") {
+			basicLine = ln
+		}
+		if strings.Contains(ln, "oa-bearer") {
+			bearerLine = ln
+		}
+	}
+	if !strings.Contains(basicLine, "(basic)") {
+		t.Errorf("basic row missing (basic) tag: %q", basicLine)
+	}
+	if strings.Contains(bearerLine, "(basic)") {
+		t.Errorf("bearer row incorrectly shows (basic): %q", bearerLine)
+	}
+}
