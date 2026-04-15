@@ -186,22 +186,31 @@ func (v *Vault) Credentials() []*Credential {
 	return v.List()
 }
 
-// PlaceholderSet returns the set of currently-used placeholder strings,
-// suitable for passing to placeholder.Generate to prevent collisions.
+// PlaceholderSet returns the set of currently-used placeholder strings
+// (both secret and username placeholders), suitable for passing to
+// placeholder.Generate to prevent collisions.
 func (v *Vault) PlaceholderSet() placeholder.Set {
-	out := make(placeholder.Set, len(v.credentials))
+	out := make(placeholder.Set, len(v.credentials)*2)
 	for _, c := range v.credentials {
 		out[c.Placeholder] = struct{}{}
+		if c.UsernamePlaceholder != "" {
+			out[c.UsernamePlaceholder] = struct{}{}
+		}
 	}
 	return out
 }
 
-// PlaceholderMap returns a map from placeholder value to credential,
-// used by the injector to swap placeholders back to real secrets.
+// PlaceholderMap returns a map from placeholder value to credential, used by
+// the injector to swap placeholders back to real secrets. For Basic credentials
+// both the secret placeholder and the username placeholder map to the same
+// credential record.
 func (v *Vault) PlaceholderMap() map[string]*Credential {
-	m := make(map[string]*Credential, len(v.credentials))
+	m := make(map[string]*Credential, len(v.credentials)*2)
 	for _, c := range v.credentials {
 		m[c.Placeholder] = c
+		if c.UsernamePlaceholder != "" {
+			m[c.UsernamePlaceholder] = c
+		}
 	}
 	return m
 }

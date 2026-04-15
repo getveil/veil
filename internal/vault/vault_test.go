@@ -554,6 +554,59 @@ func TestAddRejectsUsernamePlaceholderCollision(t *testing.T) {
 	}
 }
 
+func TestPlaceholderMapIncludesUsernamePlaceholder(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	cred := &Credential{
+		ID: "a", Name: "github-pat",
+		Real:                "ghp_real",
+		Placeholder:         "VEIL_PH_SECRET",
+		Username:            "johndoe",
+		UsernamePlaceholder: "VEIL_PH_USER",
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	m := v.PlaceholderMap()
+	if got := m["VEIL_PH_SECRET"]; got == nil || got.Name != "github-pat" {
+		t.Errorf("PlaceholderMap missing secret placeholder entry")
+	}
+	if got := m["VEIL_PH_USER"]; got == nil || got.Name != "github-pat" {
+		t.Errorf("PlaceholderMap missing username placeholder entry")
+	}
+}
+
+func TestPlaceholderSetIncludesUsernamePlaceholder(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	cred := &Credential{
+		ID: "a", Name: "gh",
+		Real:                "r",
+		Placeholder:         "VEIL_PH_SECRET",
+		Username:            "u",
+		UsernamePlaceholder: "VEIL_PH_USER",
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	s := v.PlaceholderSet()
+	if _, ok := s["VEIL_PH_SECRET"]; !ok {
+		t.Error("set missing secret placeholder")
+	}
+	if _, ok := s["VEIL_PH_USER"]; !ok {
+		t.Error("set missing username placeholder")
+	}
+}
+
 func TestCredentialJSONBackwardCompat(t *testing.T) {
 	// Old on-disk format had no Username / UsernamePlaceholder fields.
 	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`
