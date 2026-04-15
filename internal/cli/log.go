@@ -21,13 +21,14 @@ func logCmd() *cobra.Command {
 		limit      int
 		jsonOutput bool
 		blocked    bool
+		suspect    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show audit log of secret injections",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked)
+			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked, suspect)
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "24h", "show entries since duration (e.g. 24h, 7d) or RFC3339 timestamp")
@@ -36,10 +37,11 @@ func logCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 100, "max rows to return")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON Lines")
 	cmd.Flags().BoolVar(&blocked, "blocked", false, "include blocked credential events")
+	cmd.Flags().BoolVar(&suspect, "suspect", false, "show only transform-mismatch suspect rows")
 	return cmd
 }
 
-func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked bool) error {
+func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked, suspect bool) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
@@ -63,6 +65,8 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		CredentialName: credential,
 		Limit:          limit,
 		IncludeBlocked: blocked,
+		IncludeSuspect: true,
+		SuspectOnly:    suspect,
 	})
 	if err != nil {
 		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
@@ -80,6 +84,8 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 				Path:       r.URLPath,
 				Credential: r.CredentialName,
 				Location:   r.Location,
+				Suspect:    r.SuspectFlag,
+				AuthSignal: r.AuthSignal,
 			})
 		}
 		return nil
@@ -94,6 +100,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	// Collect plain-text row data for column width calculation.
 	type logRow struct {
 		timestamp, host, method, credential, location string
+		suspect                                       bool
 	}
 	logRows := make([]logRow, len(rows))
 	for i, r := range rows {
@@ -103,6 +110,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 			method:     r.Method,
 			credential: r.CredentialName,
 			location:   r.Location,
+			suspect:    r.SuspectFlag,
 		}
 	}
 
@@ -121,14 +129,19 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	// Print header and rows. Pad plain text first, then apply ANSI styling
 	// so escape codes don't break column alignment.
 	gap := "    "
-	_, _ = fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "     %s%s%s%s%s%s%s%s%s\n",
 		ui.Muted.Sprint(padRight("TIMESTAMP", tsW)), gap,
 		ui.Muted.Sprint(padRight("HOST", hostW)), gap,
 		ui.Muted.Sprint(padRight("METHOD", methodW)), gap,
 		ui.Muted.Sprint(padRight("CREDENTIAL", credW)), gap,
 		ui.Muted.Sprint("LOCATION"))
 	for _, r := range logRows {
-		_, _ = fmt.Fprintf(w, "%s%s%s%s%s%s%s%s%s\n",
+		marker := "   "
+		if r.suspect {
+			marker = "[!]"
+		}
+		_, _ = fmt.Fprintf(w, "%s  %s%s%s%s%s%s%s%s%s\n",
+			marker,
 			padRight(r.timestamp, tsW), gap,
 			padRight(r.host, hostW), gap,
 			padRight(r.method, methodW), gap,
@@ -147,6 +160,8 @@ type logEntry struct {
 	Path       string `json:"path"`
 	Credential string `json:"credential"`
 	Location   string `json:"location"`
+	Suspect    bool   `json:"suspect"`
+	AuthSignal string `json:"auth_signal,omitempty"`
 }
 
 // parseSince parses a --since value as either a Go duration (with 'd' suffix

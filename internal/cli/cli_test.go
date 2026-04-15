@@ -1368,3 +1368,65 @@ func TestListShowsBasicTag(t *testing.T) {
 		t.Errorf("bearer row incorrectly shows (basic): %q", bearerLine)
 	}
 }
+
+func TestLogShowsSuspectMarker(t *testing.T) {
+	root := initProject(t)
+
+	// Insert a suspect row directly into the audit DB.
+	dbPath := config.AuditDBFile(root)
+	store, err := audit.Open(dbPath)
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:   time.Now(),
+		RequestID:   "req-susp-1",
+		Host:        "api.example.com",
+		Method:      "GET",
+		URLPath:     "/x",
+		Location:    "mismatch_suspected",
+		SuspectFlag: true,
+		AuthSignal:  "authorization_header",
+	})
+	_ = store.Close()
+
+	// Default output should include the suspect row tagged with [!].
+	logCmd := NewRoot("test")
+	logOut := new(bytes.Buffer)
+	logCmd.SetOut(logOut)
+	logCmd.SetErr(new(bytes.Buffer))
+	logCmd.SetArgs([]string{"log", "--path", root})
+	if err := logCmd.Execute(); err != nil {
+		t.Fatalf("log: %v\n%s", err, logOut.String())
+	}
+	if !strings.Contains(logOut.String(), "[!]") {
+		t.Errorf("log output missing [!] marker:\n%s", logOut.String())
+	}
+
+	// --suspect filter returns only suspect rows.
+	suspectCmd := NewRoot("test")
+	susOut := new(bytes.Buffer)
+	suspectCmd.SetOut(susOut)
+	suspectCmd.SetErr(new(bytes.Buffer))
+	suspectCmd.SetArgs([]string{"log", "--path", root, "--suspect"})
+	if err := suspectCmd.Execute(); err != nil {
+		t.Fatalf("log --suspect: %v\n%s", err, susOut.String())
+	}
+	susText := susOut.String()
+	if !strings.Contains(susText, "api.example.com") {
+		t.Errorf("--suspect output missing host:\n%s", susText)
+	}
+
+	// --json output includes `"suspect":true`.
+	jsonCmd := NewRoot("test")
+	jsonOut := new(bytes.Buffer)
+	jsonCmd.SetOut(jsonOut)
+	jsonCmd.SetErr(new(bytes.Buffer))
+	jsonCmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := jsonCmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v\n%s", err, jsonOut.String())
+	}
+	if !strings.Contains(jsonOut.String(), `"suspect":true`) {
+		t.Errorf("--json output missing suspect flag:\n%s", jsonOut.String())
+	}
+}
