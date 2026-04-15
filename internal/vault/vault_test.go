@@ -517,6 +517,43 @@ func TestCredentialJSONRoundTripBasic(t *testing.T) {
 	}
 }
 
+func TestAddRejectsUsernamePlaceholderCollision(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	first := &Credential{
+		ID: "a", Name: "first",
+		Real: "r1", Placeholder: "VEIL_PH_SECRET_AAAA",
+		Username: "alice", UsernamePlaceholder: "VEIL_PH_USER_SHARED",
+	}
+	if err := v.Add(first); err != nil {
+		t.Fatalf("Add first: %v", err)
+	}
+
+	// Second credential whose Placeholder collides with first's UsernamePlaceholder.
+	second := &Credential{
+		ID: "b", Name: "second",
+		Real: "r2", Placeholder: "VEIL_PH_USER_SHARED",
+	}
+	if err := v.Add(second); err == nil {
+		t.Fatal("Add should have rejected placeholder colliding with existing UsernamePlaceholder")
+	}
+
+	// Third credential whose UsernamePlaceholder collides with first's Placeholder.
+	third := &Credential{
+		ID: "c", Name: "third",
+		Real: "r3", Placeholder: "VEIL_PH_SECRET_BBBB",
+		Username: "carol", UsernamePlaceholder: "VEIL_PH_SECRET_AAAA",
+	}
+	if err := v.Add(third); err == nil {
+		t.Fatal("Add should have rejected UsernamePlaceholder colliding with existing Placeholder")
+	}
+}
+
 func TestCredentialJSONBackwardCompat(t *testing.T) {
 	// Old on-disk format had no Username / UsernamePlaceholder fields.
 	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`

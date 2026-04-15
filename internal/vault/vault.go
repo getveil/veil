@@ -129,12 +129,24 @@ func (v *Vault) Add(cred *Credential) error {
 		if c.Name == cred.Name {
 			return fmt.Errorf("%w: %q", ErrDuplicateCredential, cred.Name)
 		}
-		if c.Placeholder == cred.Placeholder {
+		if collidesWithAny(cred.Placeholder, c) {
 			return fmt.Errorf("%w: generated placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, c.Name)
+		}
+		if cred.UsernamePlaceholder != "" && collidesWithAny(cred.UsernamePlaceholder, c) {
+			return fmt.Errorf("%w: generated username placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, c.Name)
 		}
 	}
 	v.credentials = append(v.credentials, cred)
 	return v.Save()
+}
+
+// collidesWithAny reports whether candidate matches either the secret
+// placeholder or the username placeholder of c.
+func collidesWithAny(candidate string, c *Credential) bool {
+	if candidate == "" {
+		return false
+	}
+	return candidate == c.Placeholder || (c.UsernamePlaceholder != "" && candidate == c.UsernamePlaceholder)
 }
 
 // Get finds a credential by name.
