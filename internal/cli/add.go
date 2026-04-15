@@ -18,21 +18,23 @@ func addCmd() *cobra.Command {
 	var force bool
 	var hosts []string
 	var value string
+	var username string
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a secret to the vault",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdd(cmd, args[0], force, hosts, value)
+			return runAdd(cmd, args[0], force, hosts, value, username)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing credential")
 	cmd.Flags().StringArrayVar(&hosts, "host", nil, "allowed destination host (repeatable)")
 	cmd.Flags().StringVar(&value, "value", "", "secret value (alternative to stdin prompt)")
+	cmd.Flags().StringVar(&username, "user", "", "username for HTTP Basic credentials")
 	return cmd
 }
 
-func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagValue string) error {
+func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagValue, username string) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
@@ -42,6 +44,16 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 	if err != nil {
 		return cliError(fmt.Sprintf("opening vault: %v", err), "")
 	}
+
+	// Validate --user flag.
+	userFlagSet := cmd.Flags().Changed("user")
+	if userFlagSet && username == "" {
+		return cliError("--user cannot be empty", "")
+	}
+	if username != "" && strings.Contains(username, ":") {
+		return cliError("username cannot contain ':' (RFC 7617)", "")
+	}
+	isBasic := username != ""
 
 	var value string
 	if flagValue != "" {
@@ -64,10 +76,21 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		return cliError("no value provided", "")
 	}
 
-	// Generate placeholder.
+	// Generate secret placeholder.
 	ph, err := placeholder.Generate(name, value, v.PlaceholderSet())
 	if err != nil {
 		return cliError(fmt.Sprintf("generating placeholder: %v", err), "")
+	}
+
+	// Generate username placeholder if HTTP Basic.
+	var userPh string
+	if isBasic {
+		existing := v.PlaceholderSet()
+		existing[ph] = struct{}{}
+		userPh, err = placeholder.Generate(name+"_USER", username, existing)
+		if err != nil {
+			return cliError(fmt.Sprintf("generating username placeholder: %v", err), "")
+		}
 	}
 
 	// Resolve allowed hosts: --host flags if provided, otherwise auto-detect.
@@ -76,11 +99,12 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		allowedHosts = placeholder.HostsForCredential(name, value)
 	}
 
-	// Handle --force: delete existing credential, capture old placeholder for .env sync.
-	var oldPlaceholder string
+	// Handle --force: delete existing credential, capture old placeholders for .env sync.
+	var oldPlaceholder, oldUsernamePlaceholder string
 	if force {
 		if existing, found := v.Get(name); found {
 			oldPlaceholder = existing.Placeholder
+			oldUsernamePlaceholder = existing.UsernamePlaceholder
 		}
 		_, _ = v.Delete(name)
 	}
@@ -94,6 +118,10 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 		AllowedHosts: allowedHosts,
 		CreatedAt:    time.Now(),
 	}
+	if isBasic {
+		cred.Username = username
+		cred.UsernamePlaceholder = userPh
+	}
 	if err := v.Add(cred); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
@@ -103,16 +131,28 @@ func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagVal
 
 	w := cmd.OutOrStdout()
 
-	// If --force replaced a credential, update .env files with the new placeholder.
+	// If --force replaced a credential, update .env files with the new placeholder(s).
 	if oldPlaceholder != "" && oldPlaceholder != cred.Placeholder {
 		updated := syncPlaceholderInEnvFiles(root, oldPlaceholder, cred.Placeholder)
 		if updated > 0 {
 			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
 		}
 	}
+	if oldUsernamePlaceholder != "" && oldUsernamePlaceholder != cred.UsernamePlaceholder {
+		updated := syncPlaceholderInEnvFiles(root, oldUsernamePlaceholder, cred.UsernamePlaceholder)
+		if updated > 0 {
+			ui.Step(w, fmt.Sprintf("Updated user placeholder in %d .env %s", updated, plural(updated, "file", "files")))
+		}
+	}
 
-	ui.Step(w, fmt.Sprintf("Added %s to vault", name))
-	_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
+	if isBasic {
+		ui.Step(w, fmt.Sprintf("Added %s to vault (basic auth)", name))
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("User placeholder:"), cred.UsernamePlaceholder)
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Secret placeholder:"), cred.Placeholder)
+	} else {
+		ui.Step(w, fmt.Sprintf("Added %s to vault", name))
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Placeholder:"), cred.Placeholder)
+	}
 	if len(allowedHosts) > 0 {
 		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
 	} else {

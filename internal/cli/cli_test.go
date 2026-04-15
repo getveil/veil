@@ -1245,3 +1245,72 @@ func TestSkipRemoveNotFound(t *testing.T) {
 		t.Error("expected error for removing nonexistent host")
 	}
 }
+
+func TestAddWithUserFlag(t *testing.T) {
+	root := initProject(t)
+
+	addCmd := NewRoot("test")
+	addOut := new(bytes.Buffer)
+	addCmd.SetOut(addOut)
+	addCmd.SetErr(new(bytes.Buffer))
+	addCmd.SetArgs([]string{
+		"add", "--path", root, "github-pat",
+		"--user", "johndoe",
+		"--host", "github.com",
+		"--value", "ghp_realtoken",
+	})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("add: %v\n%s", err, addOut.String())
+	}
+	out := addOut.String()
+	if !strings.Contains(out, "User placeholder:") {
+		t.Errorf("output missing user placeholder line:\n%s", out)
+	}
+	if !strings.Contains(out, "Secret placeholder:") {
+		t.Errorf("output missing secret placeholder line:\n%s", out)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	c, ok := v.Get("github-pat")
+	if !ok {
+		t.Fatal("credential not stored")
+	}
+	if c.Username != "johndoe" {
+		t.Errorf("Username = %q", c.Username)
+	}
+	if c.UsernamePlaceholder == "" {
+		t.Error("UsernamePlaceholder not set")
+	}
+	if c.UsernamePlaceholder == c.Placeholder {
+		t.Error("UsernamePlaceholder collided with Placeholder")
+	}
+}
+
+func TestAddRejectsEmptyUser(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "x",
+		"--user", "", "--host", "x.test", "--value", "v"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for empty --user")
+	}
+}
+
+func TestAddRejectsUserWithColon(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"add", "--path", root, "x",
+		"--user", "bad:user", "--host", "x.test", "--value", "v"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error for colon in --user")
+	}
+}
