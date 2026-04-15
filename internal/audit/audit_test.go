@@ -376,6 +376,9 @@ func TestSchemaMigratesFromV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
+	// Frozen snapshot of the v1 production schema. Do not edit to match
+	// current schemaDDL — the point of this fixture is to exercise migration
+	// from what shipped as v1.
 	const v1DDL = `
 CREATE TABLE injections (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
