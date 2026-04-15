@@ -183,6 +183,26 @@ func (inj *Injector) ProcessRequest(
 		}
 	}
 
+	// --- Mismatch detector (post-pass) ---
+	if !anyNonBlocked(injections) {
+		credList := dedupCredentials(creds)
+		parsedURL, _ := url.Parse(rawURL)
+		if sig, _, fired := detectMismatch(host, parsedURL, newHeader, nonBlockedCount(injections), credList); fired {
+			injections = append(injections, audit.Injection{
+				Timestamp:   now,
+				RequestID:   requestID,
+				Host:        host,
+				Method:      method,
+				URLPath:     urlPath,
+				AgentPID:    inj.agentPID,
+				AgentCmd:    inj.agentCmd,
+				Location:    "mismatch_suspected",
+				SuspectFlag: true,
+				AuthSignal:  sig,
+			})
+		}
+	}
+
 	// Record injections to the audit store if configured.
 	if inj.audit != nil {
 		for _, injection := range injections {
@@ -245,6 +265,44 @@ func matchedPatterns(matcher *ahocorasick.Matcher, input []byte, patterns []stri
 		}
 	}
 	return result
+}
+
+// anyNonBlocked reports whether at least one injection is a real swap (not a
+// blocked entry emitted when host scoping denied the swap, and not a suspect row).
+func anyNonBlocked(injections []audit.Injection) bool {
+	for _, i := range injections {
+		if i.Location != "blocked" && !i.SuspectFlag {
+			return true
+		}
+	}
+	return false
+}
+
+// nonBlockedCount returns the number of injections that performed an actual swap.
+func nonBlockedCount(injections []audit.Injection) int {
+	n := 0
+	for _, i := range injections {
+		if i.Location != "blocked" && !i.SuspectFlag {
+			n++
+		}
+	}
+	return n
+}
+
+// dedupCredentials collapses the placeholder map into a unique slice. Basic
+// credentials appear twice in the map (under secret and username placeholders);
+// this collapses them to one entry per credential pointer.
+func dedupCredentials(pmap map[string]*vault.Credential) []*vault.Credential {
+	seen := make(map[*vault.Credential]struct{}, len(pmap))
+	out := make([]*vault.Credential, 0, len(pmap))
+	for _, c := range pmap {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
 }
 
 // parseRequestURL extracts host, path, and raw query from a URL. On parse
