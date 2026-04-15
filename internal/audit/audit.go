@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS injections (
   agent_cmd       TEXT NOT NULL,
   bytes_before    INTEGER NOT NULL,
   bytes_after     INTEGER NOT NULL,
-  location        TEXT NOT NULL
+  location        TEXT NOT NULL,
+  suspect_flag    INTEGER NOT NULL DEFAULT 0,
+  auth_signal     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_inj_ts   ON injections(ts);
 CREATE INDEX IF NOT EXISTS idx_inj_host ON injections(host);
@@ -93,6 +95,11 @@ func Open(dbPath string) (*Store, error) {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w: ddl: %w", ErrAuditOpen, err)
+	}
+
+	if err := migrateToV2(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: migrate v2: %w", ErrAuditOpen, err)
 	}
 
 	// Force WAL + SHM sidecar materialization by taking a write lock.
@@ -242,4 +249,55 @@ func (s *Store) flushPending() {
 		s.pending = append(batch, s.pending...)
 		s.mu.Unlock()
 	}
+}
+
+// migrateToV2 adds the suspect_flag and auth_signal columns to pre-existing
+// v1 schemas. It is idempotent and safe to call on already-migrated databases.
+func migrateToV2(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
+		return fmt.Errorf("read version: %w", err)
+	}
+	if v >= 2 {
+		return nil
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(injections)`)
+	if err != nil {
+		return fmt.Errorf("table_info: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		have[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close table_info: %w", err)
+	}
+
+	if !have["suspect_flag"] {
+		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN suspect_flag INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add suspect_flag: %w", err)
+		}
+	}
+	if !have["auth_signal"] {
+		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN auth_signal TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add auth_signal: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_inj_suspect ON injections(suspect_flag)`); err != nil {
+		return fmt.Errorf("create suspect index: %w", err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO schema_version (v) VALUES (2)`); err != nil {
+		return fmt.Errorf("mark v2: %w", err)
+	}
+	return nil
 }

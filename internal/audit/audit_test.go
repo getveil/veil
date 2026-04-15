@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -331,6 +332,93 @@ func TestQueryBlockedFilter(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Errorf("with IncludeBlocked: got %d rows, want 2", len(rows))
+	}
+}
+
+func TestSchemaHasSuspectColumns(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.db.Query(`PRAGMA table_info(injections)`)
+	if err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		found[name] = true
+	}
+	for _, col := range []string{"suspect_flag", "auth_signal"} {
+		if !found[col] {
+			t.Errorf("missing column %q", col)
+		}
+	}
+}
+
+func TestSchemaMigratesFromV1(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "audit.db")
+
+	dsn := "file:" + dbPath + "?_pragma=journal_mode%3DWAL&_pragma=synchronous%3DNORMAL"
+	raw, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	const v1DDL = `
+CREATE TABLE injections (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              INTEGER NOT NULL,
+  request_id      TEXT NOT NULL,
+  host            TEXT NOT NULL,
+  method          TEXT NOT NULL,
+  url_path        TEXT NOT NULL,
+  credential_id   TEXT NOT NULL,
+  credential_name TEXT NOT NULL,
+  agent_pid       INTEGER NOT NULL,
+  agent_cmd       TEXT NOT NULL,
+  bytes_before    INTEGER NOT NULL,
+  bytes_after     INTEGER NOT NULL,
+  location        TEXT NOT NULL
+);
+CREATE TABLE schema_version (v INTEGER PRIMARY KEY);
+INSERT INTO schema_version VALUES (1);
+`
+	if _, err := raw.Exec(v1DDL); err != nil {
+		t.Fatalf("v1 ddl: %v", err)
+	}
+	_ = raw.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open on v1 db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var v int
+	if err := db.db.QueryRow(`SELECT MAX(v) FROM schema_version`).Scan(&v); err != nil {
+		t.Fatalf("scan version: %v", err)
+	}
+	if v < 2 {
+		t.Errorf("schema_version = %d, want >= 2", v)
+	}
+
+	if _, err := db.db.Exec(`INSERT INTO injections
+		(ts, request_id, host, method, url_path, credential_id, credential_name,
+		 agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal)
+		VALUES (0, '', '', '', '', '', '', 0, '', 0, 0, 'mismatch_suspected', 1, 'authorization_header')`); err != nil {
+		t.Errorf("insert with new columns: %v", err)
 	}
 }
 
