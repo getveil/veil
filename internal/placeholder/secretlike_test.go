@@ -60,8 +60,8 @@ func TestIsSecretLike_HostnameLongLowEntropy(t *testing.T) {
 	// Long but low entropy (repetitive characters).
 	value := "aaabbbcccdddeeefffggg"
 	e := shannonEntropy(value)
-	if e >= 3.0 {
-		t.Skipf("test value entropy %.2f is >= 3.0, need a lower entropy value", e)
+	if e >= secretMinEntropy {
+		t.Skipf("test value entropy %.2f is >= %.2f, need a lower entropy value", e, secretMinEntropy)
 	}
 	if IsSecretLike("HOSTNAME", value) {
 		t.Fatalf("expected false for long low-entropy string (entropy=%.2f)", e)

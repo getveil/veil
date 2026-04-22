@@ -80,7 +80,10 @@ func shannonEntropy(s string) float64 {
 	return entropy
 }
 
-// distinctBytes returns the number of distinct byte values in s.
+// distinctBytes returns the number of distinct byte values in s. This is
+// byte-based (not rune-based) to stay consistent with shannonEntropy, which
+// also operates on byte frequencies — so a UTF-8 multi-byte sequence counts
+// each underlying byte separately.
 func distinctBytes(s string) int {
 	var seen [256]bool
 	n := 0
