@@ -70,13 +70,30 @@ var environDenylist = map[string]struct{}{
 	"SSH_AUTH_SOCK": {}, "SSH_AGENT_PID": {},
 }
 
+// IsObviouslyNotSecret reports whether name is on the denylist of POSIX /
+// shell / system env-var names that can never plausibly be credentials.
+// Both the init-time scan (scanner.ScanEnviron) and the runtime scan
+// (runner.scanUnvaultedSecretLikes) use it as a pre-filter before the
+// IsSecretLike heuristic, so users don't get warnings about PATH or PWD
+// "looking like a secret."
+//
+// This is NOT a security boundary: absence from the denylist does not
+// mean the name is a secret, only that IsSecretLike will get a chance
+// to evaluate the value. Adding a name here silently exempts it from
+// the heuristic everywhere, so additions should be limited to POSIX /
+// shell / system names with no plausible credential role.
+func IsObviouslyNotSecret(name string) bool {
+	_, ok := environDenylist[name]
+	return ok
+}
+
 // ScanEnviron returns the shell-exported env vars that look secret-like.
-// Names on environDenylist are skipped up-front as obvious non-secrets to
-// avoid prompt noise. Remaining entries are evaluated by
-// placeholder.IsSecretLike. If the same name appears more than once in
-// environ, only the last occurrence is returned (matching the shell's
-// "last assignment wins" semantics; os.Environ() normally yields unique
-// names but we handle dupes defensively).
+// Names for which IsObviouslyNotSecret returns true are skipped up-front
+// as obvious non-secrets to avoid prompt noise. Remaining entries are
+// evaluated by placeholder.IsSecretLike. If the same name appears more
+// than once in environ, only the last occurrence is returned (matching
+// the shell's "last assignment wins" semantics; os.Environ() normally
+// yields unique names but we handle dupes defensively).
 func ScanEnviron(environ []string) []EnvironCandidate {
 	byName := make(map[string]string, len(environ))
 	order := make([]string, 0, len(environ))
@@ -85,7 +102,7 @@ func ScanEnviron(environ []string) []EnvironCandidate {
 		if !ok || key == "" {
 			continue
 		}
-		if _, deny := environDenylist[key]; deny {
+		if IsObviouslyNotSecret(key) {
 			continue
 		}
 		if _, seen := byName[key]; !seen {

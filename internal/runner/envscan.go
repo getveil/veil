@@ -6,13 +6,21 @@ import (
 	"strings"
 
 	"github.com/8enji/veil/internal/placeholder"
+	"github.com/8enji/veil/internal/scanner"
 	"github.com/8enji/veil/internal/ui"
 )
 
 // scanUnvaultedSecretLikes returns the names of env vars in environ that look
-// secret-like (per placeholder.IsSecretLike) but are not in the vault and
-// not on the user-provided allow set. Name matching against both vaultNames
-// and allow is case-insensitive (to match the child-env stripping semantics).
+// secret-like but are not in the vault and not on the user-provided allow
+// set. Name matching against both vaultNames and allow is case-insensitive
+// (to match the child-env stripping semantics).
+//
+// Two-stage filter:
+//  1. scanner.IsObviouslyNotSecret skips POSIX / shell / system names
+//     (PATH, PWD, OLDPWD, SSH_AUTH_SOCK, TMPDIR, _, etc.) that can never
+//     plausibly be credentials. This keeps a normal ambient shell from
+//     tripping the fail-closed check on things like PATH.
+//  2. placeholder.IsSecretLike evaluates the remaining name/value pairs.
 //
 // Runs against os.Environ() at veil-run startup as a belt-and-suspenders
 // check: init should have captured these already, but a user may have
@@ -38,6 +46,9 @@ func scanUnvaultedSecretLikes(environ, vaultNames []string, allow map[string]str
 	for _, kv := range environ {
 		key, value, ok := strings.Cut(kv, "=")
 		if !ok || key == "" {
+			continue
+		}
+		if scanner.IsObviouslyNotSecret(key) {
 			continue
 		}
 		if _, v := vaulted[strings.ToUpper(key)]; v {

@@ -79,6 +79,31 @@ func TestScanUnvaultedSecretLikes_CaseInsensitiveAllowMatch(t *testing.T) {
 	}
 }
 
+// TestScanUnvaultedSecretLikes_IgnoresPOSIXNames verifies the runtime scan
+// shares the scanner's denylist: POSIX / shell / system names that happen to
+// have high-entropy values (PATH with many dirs, long session IDs, etc.)
+// must not trip the check, because a user running `veil run env` in a normal
+// terminal should not see warnings about PATH "looking like a secret."
+func TestScanUnvaultedSecretLikes_IgnoresPOSIXNames(t *testing.T) {
+	environ := []string{
+		"PATH=/usr/local/opt/rust/bin:/Users/x/.cargo/bin:/Users/x/.rbenv/shims:/usr/bin:/bin",
+		"PWD=/Users/x/work/some/deep/path",
+		"OLDPWD=/Users/x/work/previous/path",
+		"SSH_AUTH_SOCK=/private/tmp/com.apple.launchd.abc123def456/Listeners",
+		"TMPDIR=/var/folders/ab/cdefg1234567hijklmnop/T/",
+		"_=/usr/local/bin/veil",
+		"SHLVL=2",
+	}
+	vaultNames := []string{}
+	allow := map[string]struct{}{}
+
+	got := scanUnvaultedSecretLikes(environ, vaultNames, allow)
+
+	if len(got) != 0 {
+		t.Fatalf("got %d names, want 0 (POSIX-standard names must be denylisted): %v", len(got), got)
+	}
+}
+
 func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 	var buf bytes.Buffer
 	printUnvaultedWarning(&buf, []string{"FOO_TOKEN", "BAR_SECRET"})
