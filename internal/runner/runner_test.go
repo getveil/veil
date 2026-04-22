@@ -193,8 +193,10 @@ func TestRunStripsVaultEnvAndAnnounces(t *testing.T) {
 	if strings.Contains(string(data), "real-secret-value-from-shell") {
 		t.Fatalf("child still saw real secret: %q — SEC-1 regression", data)
 	}
-	if strings.TrimSpace(string(data)) != "" {
-		t.Fatalf("child TEST_SECRET should be empty after strip, got %q", data)
+	// After strip, the child must see the placeholder under the same name,
+	// not the real value and not an empty string.
+	if got := strings.TrimSpace(string(data)); got != "VEIL_PH_test_secret" {
+		t.Fatalf("child TEST_SECRET = %q, want placeholder %q", got, "VEIL_PH_test_secret")
 	}
 
 	var buf bytes.Buffer
@@ -478,13 +480,12 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY", "AWS_ACCESS_KEY_ID"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+		{Name: "AWS_ACCESS_KEY_ID", Placeholder: "VEIL_AWS_BBB"},
+	})
 
 	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		if k == "OPENAI_API_KEY" || k == "AWS_ACCESS_KEY_ID" {
-			t.Fatalf("vault-named var leaked to child env: %s", kv)
-		}
 		if strings.Contains(kv, "sk-real-live-secret") || strings.Contains(kv, "AKIAREAL") {
 			t.Fatalf("real secret value leaked to child env: %s", kv)
 		}
@@ -499,6 +500,20 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 			t.Errorf("unexpected stripped name %q", n)
 		}
 	}
+
+	// New assertion: each stripped name must be re-injected with its placeholder.
+	for _, want := range []string{"OPENAI_API_KEY=VEIL_OPENAI_KEY_AAA", "AWS_ACCESS_KEY_ID=VEIL_AWS_BBB"} {
+		found := false
+		for _, kv := range env {
+			if kv == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("env missing placeholder re-injection %q", want)
+		}
+	}
 }
 
 // TestBuildChildEnv_PassesThroughNonMatchingVar verifies that env vars whose
@@ -510,7 +525,9 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+	})
 
 	if len(stripped) != 0 {
 		t.Fatalf("stripped should be empty when no matches, got %v", stripped)
@@ -527,15 +544,55 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 	}
 }
 
+// TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar verifies that when a
+// shell-exported env var's name matches a vault credential, the real value
+// is stripped AND the credential's placeholder is re-injected under the same
+// name so the child still has a value (the placeholder) to send upstream.
+func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
+	base := []string{
+		"HOME=/home/user",
+		"OPENAI_API_KEY=sk-real-secret-value-1234567890",
+	}
+	vaultEntries := []VaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_API_KEY_XYZ"},
+	}
+
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, vaultEntries)
+
+	if len(stripped) != 1 || stripped[0] != "OPENAI_API_KEY" {
+		t.Fatalf("stripped = %v, want [OPENAI_API_KEY]", stripped)
+	}
+	// Real value must NOT appear.
+	for _, kv := range env {
+		if strings.Contains(kv, "sk-real-secret-value-1234567890") {
+			t.Fatalf("real secret leaked into env: %q", kv)
+		}
+	}
+	// Placeholder MUST appear, keyed by the original var name.
+	want := "OPENAI_API_KEY=VEIL_OPENAI_API_KEY_XYZ"
+	found := false
+	for _, kv := range env {
+		if kv == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("env missing re-injected placeholder %q; env=%v", want, env)
+	}
+}
+
 // TestBuildChildEnv_StripVaultNameCaseInsensitive verifies that matching is
 // case-insensitive so that a credential named "openai_api_key" still strips
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"openai_api_key"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+		{Name: "openai_api_key", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+	})
 
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "OPENAI_API_KEY=") {
+		if kv == "OPENAI_API_KEY=shell-value" {
 			t.Fatalf("case-insensitive match should have stripped: %s", kv)
 		}
 	}
