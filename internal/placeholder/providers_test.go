@@ -348,6 +348,7 @@ func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
 
 func TestRegisterFormat_BasicMatch(t *testing.T) {
 	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	registerFormat(Format{
 		Name:     "testprovider",
 		Prefixes: []string{"tp_"},
@@ -356,7 +357,7 @@ func TestRegisterFormat_BasicMatch(t *testing.T) {
 		Charset:  "alphanumeric",
 		Hosts:    []string{"api.testprovider.com"},
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	var prov ProviderPattern
 	for _, p := range registry[before:] {
@@ -398,6 +399,7 @@ func TestRegisterFormat_BasicMatch(t *testing.T) {
 
 func TestRegisterFormat_HexCharset(t *testing.T) {
 	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	registerFormat(Format{
 		Name:     "testhex",
 		Prefixes: nil,
@@ -406,7 +408,7 @@ func TestRegisterFormat_HexCharset(t *testing.T) {
 		Charset:  "hex",
 		Hosts:    []string{"api.testhex.com"},
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	var prov ProviderPattern
 	for _, p := range registry[before:] {
@@ -437,6 +439,7 @@ func TestRegisterFormat_HexCharset(t *testing.T) {
 
 func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	registerFormat(Format{
 		Name:     "testflex",
 		Prefixes: []string{"flex_"},
@@ -445,7 +448,7 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 		Charset:  "alphanumeric",
 		Hosts:    nil,
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	var prov ProviderPattern
 	for _, p := range registry[before:] {
@@ -472,6 +475,7 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 // to a Format entry.
 func TestRegisterFormat_LongerPrefixWins(t *testing.T) {
 	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	registerFormat(Format{
 		Name:     "testprefixorder",
 		Prefixes: []string{"sk-", "sk-ant-api", "sk-ant-"}, // shortest first; intentionally unordered
@@ -479,7 +483,7 @@ func TestRegisterFormat_LongerPrefixWins(t *testing.T) {
 		Length:   40,
 		Charset:  "alphanumeric",
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	var prov ProviderPattern
 	for _, p := range registry[before:] {
@@ -561,7 +565,7 @@ func TestDefaultRegistryMatchesPackageRegistry(t *testing.T) {
 // (PriorityHandwritten) is matched before a Format provider (PriorityFormat)
 // when both would match the same input, regardless of init-order / filename.
 func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
-	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	// Register the Format FIRST, then the hand-written. Without Priority
 	// sorting, first-registered wins. With Priority sorting, the
 	// hand-written entry must still be picked because its Priority is higher.
@@ -577,7 +581,7 @@ func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
 		Match:    func(name, value string) bool { return strings.HasPrefix(value, "foo_") },
 		Generate: func(value string) string { return "HANDWRITTEN-WON" },
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	r := DefaultRegistry()
 	p := r.Match("ANY", "foo_abcdefghij1234567890")
@@ -592,7 +596,7 @@ func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
 // TestPriority_StableWithinTier asserts that providers registered within the
 // same Priority tier are matched in registration order (stable sort).
 func TestPriority_StableWithinTier(t *testing.T) {
-	before := len(registry)
+	saved := append([]ProviderPattern(nil), registry...)
 	register(ProviderPattern{
 		Name:     "tier1a",
 		Priority: PriorityFormat,
@@ -605,7 +609,7 @@ func TestPriority_StableWithinTier(t *testing.T) {
 		Match:    func(name, value string) bool { return value == "shared" },
 		Generate: func(value string) string { return "b" },
 	})
-	defer func() { registry = registry[:before] }()
+	defer func() { registry = saved }()
 
 	r := DefaultRegistry()
 	p := r.Match("ANY", "shared")
