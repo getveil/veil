@@ -92,40 +92,51 @@ func Open(dbPath string) (*Store, error) {
 	// modernc.org/sqlite does not honour _journal_mode= / _synchronous= DSN
 	// parameters; use _pragma= encoding instead.
 	dsn := "file:" + dbPath + "?_pragma=journal_mode%3DWAL&_pragma=synchronous%3DNORMAL"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("%w: sql.Open: %w", ErrAuditOpen, err)
-	}
-
-	if _, err := db.Exec(schemaDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w: ddl: %w", ErrAuditOpen, err)
-	}
-
-	if err := migrateToV2(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w: migrate v2: %w", ErrAuditOpen, err)
-	}
-
-	// Force WAL + SHM sidecar materialization by taking a write lock.
-	// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
-	// which forces SQLite to create the -wal/-shm files before the transaction
-	// body runs.
-	{
+	var db *sql.DB
+	// Wrap all file-creating operations in a tightened umask. SQLite creates
+	// the main DB at sql.Open time and the -wal/-shm sidecars when the first
+	// write transaction runs. Without this guard the sidecars briefly exist
+	// at 0644 before the subsequent Chmod tightens them.
+	if err := withRestrictiveUmask(func() error {
+		var openErr error
+		db, openErr = sql.Open("sqlite", dsn)
+		if openErr != nil {
+			return fmt.Errorf("sql.Open: %w", openErr)
+		}
+		if _, execErr := db.Exec(schemaDDL); execErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("ddl: %w", execErr)
+		}
+		if mErr := migrateToV2(db); mErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("migrate v2: %w", mErr)
+		}
+		// Force WAL + SHM sidecar materialization by taking a write lock.
+		// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
+		// which forces SQLite to create the -wal/-shm files before the
+		// transaction body runs.
 		tx, txErr := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if txErr != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal begin: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal begin: %w", txErr)
 		}
 		if _, txErr = tx.Exec(`UPDATE schema_version SET v = v`); txErr != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal exec: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal exec: %w", txErr)
 		}
 		if txErr = tx.Commit(); txErr != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal commit: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal commit: %w", txErr)
 		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrAuditOpen, err)
 	}
 
 	// Chmod 0600 on db and sidecars. `-wal` may have been auto-checkpointed
