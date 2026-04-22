@@ -106,8 +106,16 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return wrapErr("discovering MCP config", err)
 	}
-	if len(envPaths) == 0 && mcpConfigPath == "" {
-		_, _ = fmt.Fprintf(w, "no .env files or MCP configs found in %s\n", root)
+	// Precompute shell-env candidates so the early-exit gate considers all three
+	// sources (SEC-1 covers shell-only projects that have no .env or MCP config).
+	// Empty-valued candidates (name-match only, no actual secret to capture) are
+	// discarded here because processShellEnv would drop them anyway, and they
+	// would otherwise wrongly bypass the early-exit gate for projects with no
+	// real sources.
+	shellCandidates := scanner.ScanEnviron(os.Environ())
+	shellCandidates = nonEmptyShellCandidates(shellCandidates)
+	if len(envPaths) == 0 && mcpConfigPath == "" && len(shellCandidates) == 0 {
+		_, _ = fmt.Fprintf(w, "no .env files, MCP configs, or shell-exported secrets found in %s\n", root)
 		return nil
 	}
 
@@ -162,8 +170,9 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	// processShellEnv re-filters candidates against the vault (to skip names
 	// already captured by an earlier phase) and drops empty values, so the
 	// raw candidate count from ScanEnviron is only used as a fast-path check
-	// for "was there anything at all to look at."
-	if shellCandidates := scanner.ScanEnviron(os.Environ()); len(shellCandidates) > 0 {
+	// for "was there anything at all to look at." Candidates were precomputed
+	// above so the early-exit gate could see them.
+	if len(shellCandidates) > 0 {
 		ui.Phase(w, "Scanning shell environment...")
 		n, s, err := processShellEnv(w, in, v, shellCandidates, dryRun, interactive)
 		if err != nil {

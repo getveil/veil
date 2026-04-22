@@ -116,6 +116,7 @@ func TestProcessShellEnv_SkipsNamesAlreadyInVault(t *testing.T) {
 
 func TestInit_CapturesShellEnvSecrets(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
 	// Simulate a user with OPENAI_API_KEY exported in their shell but no .env.
 	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
 
@@ -150,5 +151,48 @@ func TestInit_CapturesShellEnvSecrets(t *testing.T) {
 	}
 	if c.Real != "sk-proj-shell-1234567890abcdef" {
 		t.Errorf("vaulted value = %q, want sk-proj-shell-1234567890abcdef", c.Real)
+	}
+}
+
+// TestInit_ShellOnlyProject verifies that `veil init` still runs the shell-env
+// capture phase when a project has NO .env files and NO MCP config. The prior
+// early-exit gate returned before reaching that phase, silently defeating SEC-1
+// coverage for users whose credentials live exclusively in their shell.
+func TestInit_ShellOnlyProject(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+	t.Setenv("TEST_SHELL_ONLY_API_KEY", "sk-abc-highentropy-1234567890")
+
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no .env files and no MCP config — this project has only
+	// the shell-exported secret.
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	ks, err := buildKeystore()
+	if err != nil {
+		t.Fatalf("buildKeystore: %v", err)
+	}
+	v, err := vault.Open(tmp, ks)
+	if err != nil {
+		t.Fatalf("vault.Open: %v", err)
+	}
+	c, ok := v.Get("TEST_SHELL_ONLY_API_KEY")
+	if !ok {
+		t.Fatalf("vault missing TEST_SHELL_ONLY_API_KEY; vault names = %v", v.Names())
+	}
+	if c.Real != "sk-abc-highentropy-1234567890" {
+		t.Errorf("vaulted value = %q, want sk-abc-highentropy-1234567890", c.Real)
 	}
 }

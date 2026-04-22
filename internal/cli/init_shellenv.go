@@ -12,6 +12,22 @@ import (
 	"github.com/8enji/veil/internal/vault"
 )
 
+// nonEmptyShellCandidates returns candidates whose Value is not empty.
+// Empty-valued candidates can arise when a variable matches a secret-like
+// name pattern but is exported with an empty value (e.g., `export API_KEY=""`),
+// and they carry no secret material worth vaulting. Used by the init early-exit
+// gate so it matches the behavior of processShellEnv's internal filter.
+func nonEmptyShellCandidates(candidates []scanner.EnvironCandidate) []scanner.EnvironCandidate {
+	out := candidates[:0:0]
+	for _, c := range candidates {
+		if c.Value == "" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // processShellEnv presents shell-exported secret-like candidates, prompts the
 // user (interactive) or accepts-all (non-interactive), and vaults the
 // selected entries. Candidates whose name already exists in the vault are
@@ -113,7 +129,10 @@ func selectShellEnvKeys(in io.Reader, w io.Writer, candidates []scanner.EnvironC
 			selected[c.Name] = true
 		}
 	case choiceNo:
-		return nil
+		// Return the already-allocated empty map (not nil) for consistency
+		// with sibling selectors; callers only check len() either way but
+		// returning nil is a foot-gun.
+		return selected
 	case choiceSelect:
 		for _, name := range promptMultiSelect(in, w, names) {
 			selected[name] = true

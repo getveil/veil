@@ -180,6 +180,9 @@ func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	// Ensure no MCP config is discovered either.
 	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	// Strip CI/dev-shell secret-like exports so the shell-env scan also finds
+	// nothing, ensuring the early-exit gate fires for the "no sources" case.
+	clearShellEnvTestNoise(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -197,7 +200,7 @@ func TestInitNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "no .env files or MCP configs found") {
+	if !strings.Contains(outStr, "no .env files, MCP configs, or shell-exported secrets found") {
 		t.Errorf("expected no-sources message, got: %s", outStr)
 	}
 }
