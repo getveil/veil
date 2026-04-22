@@ -6,16 +6,7 @@ import (
 )
 
 func TestProviderSendGrid(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "sendgrid" {
-			prov = p
-			break
-		}
-	}
-	if prov.Name == "" {
-		t.Fatal("sendgrid provider not registered")
-	}
+	prov := mustProvider(t, "sendgrid")
 
 	t.Run("match_prefix", func(t *testing.T) {
 		if !prov.Match("", "SG.abc123def456ghijklmnopqr.abcdefghijklmnopqrstuvwxyz01234567890ABCDEFG") {

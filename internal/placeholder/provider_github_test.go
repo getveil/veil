@@ -6,16 +6,7 @@ import (
 )
 
 func TestProviderGitHub(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "github" {
-			prov = p
-			break
-		}
-	}
-	if prov.Name == "" {
-		t.Fatal("github provider not registered")
-	}
+	prov := mustProvider(t, "github")
 
 	for _, prefix := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"} {
 		t.Run("match_"+prefix, func(t *testing.T) {
@@ -47,13 +38,7 @@ func TestProviderGitHub(t *testing.T) {
 }
 
 func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "github" {
-			prov = p
-			break
-		}
-	}
+	prov := mustProvider(t, "github")
 
 	value := "github_pat_11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXa"
 

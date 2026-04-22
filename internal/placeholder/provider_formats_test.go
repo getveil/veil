@@ -208,16 +208,7 @@ func TestFormatProviders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var prov ProviderPattern
-			for _, p := range registry {
-				if p.Name == tt.name {
-					prov = p
-					break
-				}
-			}
-			if prov.Name == "" {
-				t.Fatalf("%s provider not registered", tt.name)
-			}
+			prov := mustProvider(t, tt.name)
 
 			t.Run("match_key", func(t *testing.T) {
 				if !prov.Match(tt.matchKey, "anything") {

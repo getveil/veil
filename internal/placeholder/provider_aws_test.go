@@ -6,16 +6,7 @@ import (
 )
 
 func TestProviderAWS(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "aws" {
-			prov = p
-			break
-		}
-	}
-	if prov.Name == "" {
-		t.Fatal("aws provider not registered")
-	}
+	prov := mustProvider(t, "aws")
 
 	t.Run("match_AKIA", func(t *testing.T) {
 		if !prov.Match("", "AKIAIOSFODNN7EXAMPLE") {

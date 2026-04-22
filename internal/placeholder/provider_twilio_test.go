@@ -6,16 +6,7 @@ import (
 )
 
 func TestProviderTwilio(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "twilio" {
-			prov = p
-			break
-		}
-	}
-	if prov.Name == "" {
-		t.Fatal("twilio provider not registered")
-	}
+	prov := mustProvider(t, "twilio")
 
 	t.Run("match_SK_prefix", func(t *testing.T) {
 		if !prov.Match("", "SKabcdef1234567890abcdef1234567890") {
