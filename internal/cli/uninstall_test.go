@@ -534,3 +534,175 @@ func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 		t.Errorf("expected .veil/ to be removed, stat err: %v", err)
 	}
 }
+
+func TestUninstallRoundTripFidelity(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	original := []byte("# header\nTOKEN=ghp_real1234567890abcdef1234567890abcdef\nLOG=debug\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Init.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Uninstall.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	// .env must be bit-identical to the original.
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Errorf(".env after uninstall does not match original\ngot:  %q\nwant: %q", got, original)
+	}
+
+	// .veil/ must be gone.
+	if _, err := os.Stat(config.ProjectStateDir(root)); !os.IsNotExist(err) {
+		t.Error(".veil/ should be removed after uninstall")
+	}
+
+	// Backup must be gone (renamed onto original).
+	if _, err := os.Stat(envPath + ".veil-backup"); !os.IsNotExist(err) {
+		t.Error(".veil-backup should be renamed away after uninstall")
+	}
+}
+
+func TestUninstallMultiFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	envOrig := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	localOrig := []byte("API_KEY=sk-live-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), envOrig, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env.local"), localOrig, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(root, ".env"))
+	if !bytes.Equal(got, envOrig) {
+		t.Errorf(".env mismatch\ngot:  %q\nwant: %q", got, envOrig)
+	}
+	got, _ = os.ReadFile(filepath.Join(root, ".env.local"))
+	if !bytes.Equal(got, localOrig) {
+		t.Errorf(".env.local mismatch\ngot:  %q\nwant: %q", got, localOrig)
+	}
+}
+
+func TestUninstallNoOpAfterPriorUninstall(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// init then uninstall.
+	for _, args := range [][]string{
+		{"init", "--path", root, "--yes"},
+		{"uninstall", "--path", root, "--yes"},
+	} {
+		cmd := NewRoot("test")
+		cmd.SetOut(new(bytes.Buffer))
+		cmd.SetErr(new(bytes.Buffer))
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("%v failed: %v", args, err)
+		}
+	}
+
+	// Second uninstall — should say "already uninstalled" and exit 0.
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("second uninstall failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "already uninstalled") {
+		t.Errorf("expected 'already uninstalled' in output, got: %s", out.String())
+	}
+}
+
+func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	original := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// User adds a new line post-init.
+	current, _ := os.ReadFile(envPath)
+	edited := append(current, []byte("LOG_LEVEL=debug\n")...)
+	if err := os.WriteFile(envPath, edited, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uninstall with --yes should proceed and restore to backup (loses the edit).
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	got, _ := os.ReadFile(envPath)
+	if !bytes.Equal(got, original) {
+		t.Errorf(".env after uninstall should equal original (edit lost)\ngot:  %q\nwant: %q", got, original)
+	}
+}
