@@ -211,8 +211,7 @@ func plural(n int, singular, pluralForm string) string {
 // and the number auto-scoped to hosts.
 func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPath string, force, dryRun, interactive bool) (int, int, error) {
 	// Check for existing backup (indicates already migrated).
-	backupPath := configPath + ".veil-backup"
-	if _, err := os.Stat(backupPath); err == nil && !force {
+	if backupExists(configPath) && !force {
 		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-migrate)", configPath)
 		return 0, 0, nil
 	}
@@ -341,13 +340,8 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	}
 
 	if !dryRun && configChanged {
-		// Create backup of original.
-		originalData, err := os.ReadFile(configPath) // #nosec G304
-		if err != nil {
-			return 0, 0, cliError(fmt.Sprintf("reading MCP config for backup: %v", err), "")
-		}
-		if err := os.WriteFile(backupPath, originalData, 0600); err != nil { // #nosec G304 G703 -- backupPath is derived from configPath
-			return 0, 0, cliError(fmt.Sprintf("writing MCP config backup: %v", err), "")
+		if err := writeBackup(configPath); err != nil {
+			return 0, 0, cliErrorf("writing MCP config backup: %v", err)
 		}
 
 		// Write updated config.
