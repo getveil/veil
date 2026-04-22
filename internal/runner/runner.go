@@ -80,6 +80,15 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
 
+	bundlePEM, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return nil, fmt.Errorf("read ca bundle: %w", err)
+	}
+	javaTruststorePath, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
+	if err != nil {
+		return nil, fmt.Errorf("build java truststore: %w", err)
+	}
+
 	// 4. Resolve the child command to a realpath before touching the proxy
 	// or spawning anything — this is the forensic anchor for audit rows and
 	// the banner. A shadow binary in a writable PATH dir is a real threat for
@@ -124,7 +133,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// intervened on — this is the single most important guarantee in the
 	// product ("the agent never sees real tokens").
 	proxyURL := "http://" + server.Addr()
-	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, "", cfg.SkipHosts, vlt.Names())
+	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, cfg.SkipHosts, vlt.Names())
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}

@@ -546,6 +546,50 @@ func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestRunChildJavaTruststore verifies that Run() builds a per-session PKCS12
+// truststore and exposes its path via JAVA_TOOL_OPTIONS. The child sh reads
+// back JAVA_TOOL_OPTIONS and we assert the path points to a file with the
+// expected suffix inside a tempdir that exists while the child runs.
+func TestRunChildJavaTruststore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	root, ks := testutil.SetupVaultProject(t)
+	outFile := filepath.Join(t.TempDir(), "java-opts.txt")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := Run(ctx, Config{
+		Root:     root,
+		Command:  "sh",
+		Args:     []string{"-c", "printenv JAVA_TOOL_OPTIONS > " + outFile},
+		Keystore: ks,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read env output: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if !strings.Contains(got, "-Djavax.net.ssl.trustStore=") {
+		t.Fatalf("JAVA_TOOL_OPTIONS missing trustStore flag: %q", got)
+	}
+	if !strings.Contains(got, "java-truststore.p12") {
+		t.Fatalf("JAVA_TOOL_OPTIONS does not reference java-truststore.p12: %q", got)
+	}
+	if !strings.Contains(got, "-Djavax.net.ssl.trustStoreType=PKCS12") {
+		t.Fatalf("JAVA_TOOL_OPTIONS missing trustStoreType=PKCS12: %q", got)
+	}
+}
+
 // TestBuildChildEnv_InjectsJavaToolOptions verifies that buildChildEnv emits
 // JAVA_TOOL_OPTIONS pointing at the per-session PKCS12 truststore when no
 // pre-existing value is set. Veil's flags include the truststore path, type,
