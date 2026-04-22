@@ -124,9 +124,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// intervened on — this is the single most important guarantee in the
 	// product ("the agent never sees real tokens").
 	proxyURL := "http://" + server.Addr()
-	entries := make([]VaultEntry, 0, len(vlt.List()))
-	for _, c := range vlt.List() {
-		entries = append(entries, VaultEntry{Name: c.Name, Placeholder: c.Placeholder})
+	creds := vlt.List()
+	entries := make([]vaultEntry, 0, len(creds))
+	for _, c := range creds {
+		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
 	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
@@ -204,11 +205,11 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	return &Result{ExitCode: 0}, nil
 }
 
-// VaultEntry is the minimum subset of a vault credential that buildChildEnv
+// vaultEntry is the minimum subset of a vault credential that buildChildEnv
 // needs: the env var name that may be shell-exported, and the placeholder to
 // substitute in its place so the child still has a value (the placeholder)
 // associated with that name.
-type VaultEntry struct {
+type vaultEntry struct {
 	Name        string
 	Placeholder string
 }
@@ -223,7 +224,7 @@ type VaultEntry struct {
 // shell. The names of env vars actually stripped because of the vault match
 // are returned (using the original casing from the environment), so the
 // caller can surface a startup warning.
-func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []VaultEntry) ([]string, []string) {
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -270,6 +271,10 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
 	)
+	// Append re-injected placeholders last for readability. The proxy/CA
+	// filter above skips any name matching isProxyEnvKey/isCAEnvKey before
+	// reaching the vault branch, so there is no collision with the proxy/CA
+	// vars we just appended.
 	env = append(env, reinject...)
 	return env, strippedVault
 }

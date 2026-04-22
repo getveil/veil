@@ -480,7 +480,7 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 		{Name: "AWS_ACCESS_KEY_ID", Placeholder: "VEIL_AWS_BBB"},
 	})
@@ -525,7 +525,7 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
@@ -553,7 +553,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 		"HOME=/home/user",
 		"OPENAI_API_KEY=sk-real-secret-value-1234567890",
 	}
-	vaultEntries := []VaultEntry{
+	vaultEntries := []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_API_KEY_XYZ"},
 	}
 
@@ -587,7 +587,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []VaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
 		{Name: "openai_api_key", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
