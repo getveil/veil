@@ -20,6 +20,15 @@ func init() {
 	})
 
 	registerFormat(Format{
+		Name:     "stripe",
+		Prefixes: []string{"sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_"},
+		KeyHints: []string{"STRIPE"},
+		Length:   0,
+		Charset:  "alphanumeric",
+		Hosts:    []string{"api.stripe.com", "files.stripe.com"},
+	})
+
+	registerFormat(Format{
 		Name:     "google",
 		Prefixes: []string{"AIza"},
 		KeyHints: []string{"GOOGLE_API", "FIREBASE_API"},
