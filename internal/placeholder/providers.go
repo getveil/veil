@@ -1,6 +1,9 @@
 package placeholder
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // ProviderPattern describes a secret pattern that can be matched and replaced
 // with a structurally-valid placeholder.
@@ -77,11 +80,22 @@ type Format struct {
 // registerFormat constructs a ProviderPattern from a Format and appends it
 // to the registry.
 func registerFormat(f Format) {
+	// Sort prefixes by length descending so that Match and Generate always
+	// pick the longest matching prefix. Without this, callers who register
+	// ["sk-", "sk-ant-"] see Generate produce "sk-..." losing the "ant-"
+	// segment — a silent correctness bug that blocked migrating anthropic
+	// to a Format entry.
+	prefixes := make([]string, len(f.Prefixes))
+	copy(prefixes, f.Prefixes)
+	sort.SliceStable(prefixes, func(i, j int) bool {
+		return len(prefixes[i]) > len(prefixes[j])
+	})
+
 	p := ProviderPattern{
 		Name:  f.Name,
 		Hosts: f.Hosts,
 		Match: func(name, value string) bool {
-			for _, pfx := range f.Prefixes {
+			for _, pfx := range prefixes {
 				if strings.HasPrefix(value, pfx) {
 					return true
 				}
@@ -96,7 +110,7 @@ func registerFormat(f Format) {
 		},
 		Generate: func(value string) string {
 			prefix := ""
-			for _, pfx := range f.Prefixes {
+			for _, pfx := range prefixes {
 				if strings.HasPrefix(value, pfx) {
 					prefix = pfx
 					break

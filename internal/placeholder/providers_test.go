@@ -464,6 +464,66 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 	}
 }
 
+// TestRegisterFormat_LongerPrefixWins asserts that when a Format is registered
+// with overlapping prefixes, the LONGER prefix is the one extracted by
+// Generate regardless of caller-provided order. This is the correctness
+// invariant required to migrate anthropic (prefixes "sk-ant-api", "sk-ant-")
+// to a Format entry.
+func TestRegisterFormat_LongerPrefixWins(t *testing.T) {
+	before := len(registry)
+	registerFormat(Format{
+		Name:     "testprefixorder",
+		Prefixes: []string{"sk-", "sk-ant-api", "sk-ant-"}, // shortest first; intentionally unordered
+		KeyHints: nil,
+		Length:   40,
+		Charset:  "alphanumeric",
+	})
+	defer func() { registry = registry[:before] }()
+
+	var prov ProviderPattern
+	for _, p := range registry[before:] {
+		if p.Name == "testprefixorder" {
+			prov = p
+			break
+		}
+	}
+	if prov.Name == "" {
+		t.Fatal("testprefixorder not registered")
+	}
+
+	// Value has the longest prefix. Generate must emit output starting with
+	// that full longer prefix, not the shorter "sk-" substring.
+	result := prov.Generate("sk-ant-api-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	if !strings.HasPrefix(result, "sk-ant-api") {
+		t.Fatalf("expected longest prefix sk-ant-api to win, got: %s", result)
+	}
+
+	// Value has the medium prefix. Output must start with "sk-ant-", not
+	// "sk-".
+	result = prov.Generate("sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	if !strings.HasPrefix(result, "sk-ant-") {
+		t.Fatalf("expected medium prefix sk-ant- to win, got: %s", result)
+	}
+
+	// Value has only the short prefix.
+	result = prov.Generate("sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	if !strings.HasPrefix(result, "sk-") {
+		t.Fatalf("expected short prefix sk- to match, got: %s", result)
+	}
+
+	// Match must return true for all three prefix tiers (it iterates the
+	// same sorted prefixes slice that Generate closes over).
+	if !prov.Match("", "sk-ant-api-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") {
+		t.Fatal("expected Match true on longest prefix")
+	}
+	if !prov.Match("", "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") {
+		t.Fatal("expected Match true on medium prefix")
+	}
+	if !prov.Match("", "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") {
+		t.Fatal("expected Match true on short prefix")
+	}
+}
+
 func TestRegistryIsolation(t *testing.T) {
 	r := NewRegistry()
 	r.Register(ProviderPattern{
