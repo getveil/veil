@@ -383,7 +383,6 @@ func atomicWriteFile(path string, data []byte) error {
 	return os.Rename(tmpName, path)
 }
 
-// appendGitignore adds /.veil/ to the project .gitignore if not already present.
 // appendGitignore adds /.veil/ and *.veil-backup to the project .gitignore
 // if not already present. No-op when .gitignore doesn't exist.
 func appendGitignore(root string) {
