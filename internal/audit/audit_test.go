@@ -143,8 +143,9 @@ func TestRecordBatching(t *testing.T) {
 		s.Record(makeInjection("batch.example.com", "batch-key", base.Add(time.Duration(i)*time.Millisecond)))
 	}
 
-	// Wait for the flusher to process (100ms tick + some margin).
-	time.Sleep(300 * time.Millisecond)
+	// Stop the background flusher and synchronously drain. Deterministic —
+	// no time.Sleep needed to wait for the ticker.
+	s.DrainForTest()
 
 	rows, err := s.Query(Filter{Limit: 100})
 	if err != nil {
@@ -286,10 +287,9 @@ func TestConcurrentRecords(t *testing.T) {
 		<-done
 	}
 
-	// Wait for the background flusher to process all pending records.
-	// Records accumulate past the 50-row threshold which triggers the flush
-	// signal, plus the 100ms ticker ensures everything gets flushed.
-	time.Sleep(500 * time.Millisecond)
+	// Stop the background flusher and synchronously drain — deterministic
+	// replacement for the old time.Sleep(500ms) wait.
+	s.DrainForTest()
 
 	rows, err := s.Query(Filter{Limit: 300})
 	if err != nil {

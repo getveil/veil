@@ -34,13 +34,15 @@ type Injection struct {
 
 // Store persists injection events to a SQLite database with batched writes.
 type Store struct {
-	db        *sql.DB
-	mu        sync.Mutex
-	pending   []Injection
-	done      chan struct{}
-	flush     chan struct{} // signal immediate flush
-	closeOnce sync.Once
-	closeErr  error
+	db            *sql.DB
+	mu            sync.Mutex
+	pending       []Injection
+	done          chan struct{}
+	flush         chan struct{} // signal immediate flush
+	flusherExited chan struct{} // closed when the flusher goroutine returns
+	closeOnce     sync.Once
+	stopOnce      sync.Once
+	closeErr      error
 }
 
 const schemaDDL = `
@@ -143,12 +145,30 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{
-		db:    db,
-		done:  make(chan struct{}),
-		flush: make(chan struct{}, 1),
+		db:            db,
+		done:          make(chan struct{}),
+		flush:         make(chan struct{}, 1),
+		flusherExited: make(chan struct{}),
 	}
 	go s.flusher()
 	return s, nil
+}
+
+// stopFlusher signals the flusher goroutine to exit. It is idempotent and
+// safe to call from both Close() and DrainForTest().
+func (s *Store) stopFlusher() {
+	s.stopOnce.Do(func() { close(s.done) })
+}
+
+// DrainForTest stops the background flusher, waits for it to exit, and
+// synchronously flushes any pending rows. This is a test-only helper: it
+// lets tests deterministically wait for all Record() calls to land in the
+// DB without a time.Sleep. Safe to call before Close(); Close() will not
+// re-stop the flusher.
+func (s *Store) DrainForTest() {
+	s.stopFlusher()
+	<-s.flusherExited
+	s.flushPending()
 }
 
 // Record appends an injection event to the pending buffer. It is safe for
@@ -173,7 +193,8 @@ func (s *Store) Record(inj Injection) {
 // result without side effects.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.done)
+		s.stopFlusher()
+		<-s.flusherExited
 		s.flushPending()
 		s.closeErr = s.db.Close()
 	})
@@ -182,6 +203,7 @@ func (s *Store) Close() error {
 
 // flusher runs in a goroutine, periodically writing pending rows.
 func (s *Store) flusher() {
+	defer close(s.flusherExited)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
