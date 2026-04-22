@@ -135,7 +135,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	secretsVaulted, secretsScoped := 0, 0
 	seen := make(placeholder.Set)
 	for _, envPath := range envPaths {
-		n, s, err := processEnvFile(cmd, in, v, seen, root, envPath, dryRun, interactive)
+		n, s, err := processEnvFile(cmd, in, v, seen, root, envPath, force, dryRun, interactive)
 		if err != nil {
 			return err
 		}
