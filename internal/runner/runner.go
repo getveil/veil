@@ -255,6 +255,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 		"CURL_CA_BUNDLE="+bundlePath,
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
+		"CARGO_HTTP_CAINFO="+bundlePath,
 	)
 	return env, strippedVault
 }

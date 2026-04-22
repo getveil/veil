@@ -366,6 +366,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"SSL_CERT_FILE=/old/ca.pem",
 		"CURL_CA_BUNDLE=/old/curl-ca.pem",
 		"REQUESTS_CA_BUNDLE=/old/requests-ca.pem",
+		"CARGO_HTTP_CAINFO=/old/cargo-ca.pem",
 	}
 
 	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
@@ -409,6 +410,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"CURL_CA_BUNDLE",
 		"REQUESTS_CA_BUNDLE",
 		"HTTPLIB2_CA_CERTS",
+		"CARGO_HTTP_CAINFO",
 	}
 	for _, key := range caVars {
 		if env[key] != "/tmp/fake-bundle.pem" {
