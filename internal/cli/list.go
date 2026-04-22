@@ -2,34 +2,54 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/ui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
+// stdoutIsTerminal is a test seam: tests replace it to simulate a
+// pipe/redirect without closing os.Stdout.
+var stdoutIsTerminal = func() bool {
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
 func listCmd() *cobra.Command {
-	var reveal, showPlaceholder bool
+	var reveal, showPlaceholder, assumeYes bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all credentials in the vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd, reveal, showPlaceholder)
+			return runList(cmd, reveal, showPlaceholder, assumeYes)
 		},
 	}
-	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only)")
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only; printed with audit log)")
 	cmd.Flags().BoolVar(&showPlaceholder, "placeholder", false, "show placeholder values")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "bypass TTY safety check for --reveal (scripted use)")
 	cmd.MarkFlagsMutuallyExclusive("reveal", "placeholder")
 	return cmd
 }
 
-func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
+func runList(cmd *cobra.Command, reveal, showPlaceholder, assumeYes bool) error {
 	root, err := resolveRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
+	}
+
+	if reveal {
+		if !stdoutIsTerminal() && !assumeYes {
+			return cliError(
+				"refusing to print real secrets to a non-TTY stdout",
+				"Pipe or redirect detected. Re-run with --yes to override.")
+		}
+		ui.FormatWarning(cmd.ErrOrStderr(),
+			"--reveal prints plaintext secrets",
+			"This action is recorded in the audit log.")
 	}
 
 	v, err := openVault(root)
@@ -57,6 +77,19 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder bool) error {
 			if qErr == nil && len(rows) > 0 {
 				lastInjected[c.Name] = rows[0].Timestamp
 			}
+		}
+		// Record a single "reveal" row per invocation so `veil log` shows
+		// the action. One row is sufficient — no per-credential detail is
+		// persisted here by design (that would double-store secret metadata).
+		if reveal {
+			store.Record(audit.Injection{
+				Timestamp:      time.Now(),
+				RequestID:      "reveal-" + time.Now().UTC().Format("20060102T150405.000"),
+				AgentPID:       os.Getpid(),
+				AgentCmd:       "veil list --reveal",
+				CredentialName: fmt.Sprintf("(%d credentials)", len(creds)),
+				Location:       "reveal",
+			})
 		}
 	}
 

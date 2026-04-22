@@ -36,7 +36,7 @@ func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
 
 	stateDir := config.ProjectStateDir(root)
 	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return cliError("project not initialized", "Run veil init to get started")
+		return cliErrorWith(ErrNotInitialized, "project not initialized", "Run veil init to get started")
 	}
 
 	// Load persistent skip hosts.

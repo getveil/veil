@@ -4,6 +4,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -95,6 +96,17 @@ func RelativeTime(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
+}
+
+// RedactPath replaces $HOME prefixes inside s with "~" so user-facing error
+// messages don't leak the user's home-directory layout. Non-home paths pass
+// through unchanged. An empty or unresolvable $HOME disables redaction.
+func RedactPath(s string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, home, "~")
 }
 
 // FormatError prints a red "error: msg" line with an optional dimmed hint to w.

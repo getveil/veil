@@ -116,7 +116,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	stateDir := config.ProjectStateDir(root)
 	if info, err := os.Stat(stateDir); err == nil && info.IsDir() {
 		if !force {
-			return cliError("project already initialized", "Use --force to reinitialize")
+			return cliErrorWith(ErrAlreadyInitialized, "project already initialized", "Use --force to reinitialize")
 		}
 		// --force: confirm destructive reset.
 		if interactive {

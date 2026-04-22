@@ -36,7 +36,7 @@ func runRemove(cmd *cobra.Command, name string, force bool) error {
 	// Check the credential exists before prompting.
 	cred, found := v.Get(name)
 	if !found {
-		return cliError(fmt.Sprintf("credential %q not found", name), "Run veil list to see available credentials")
+		return cliErrorWith(ErrNotFound, fmt.Sprintf("credential %q not found", name), "Run veil list to see available credentials")
 	}
 
 	// Confirm unless --force.
