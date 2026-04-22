@@ -13,6 +13,7 @@ import (
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/mcpconfig"
 	"github.com/8enji/veil/internal/scanner"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -359,8 +360,149 @@ Flags:
 	return cmd
 }
 
-// runUninstall is filled in by subsequent tasks. For now it returns a
-// not-implemented error so the command wires through the root registration.
 func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
-	return cliError("veil uninstall is not yet implemented", "")
+	root, err := resolveRoot()
+	if err != nil {
+		return cliError(err.Error(), "")
+	}
+
+	w := cmd.OutOrStdout()
+	ew := cmd.ErrOrStderr()
+
+	// Active-proxy guard.
+	live, err := activeProxyPIDs(root)
+	if err != nil {
+		return wrapErr("checking active proxies", err)
+	}
+	if len(live) > 0 && !force {
+		return formatCLIError(ew,
+			fmt.Sprintf("active proxy processes found (PIDs: %s); stop them or pass --force", formatPIDList(live)),
+			"Run `veil status` to identify, then `kill <pid>`.",
+		)
+	}
+
+	// Discover backup pairs.
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		return wrapErr("discovering backups", err)
+	}
+
+	stateDir := config.ProjectStateDir(root)
+	_, stateErr := os.Stat(stateDir)
+	stateExists := stateErr == nil
+
+	if len(pairs) == 0 && !stateExists {
+		_, _ = fmt.Fprintln(w, "already uninstalled")
+		return nil
+	}
+	if len(pairs) == 0 && !force {
+		return formatCLIError(ew,
+			"no .veil-backup files found, but .veil/ exists",
+			"Use --force to wipe state without restoring any files, or run `veil list` to inspect the vault manually.",
+		)
+	}
+
+	// Build placeholder resolver from the vault (best-effort).
+	var resolver placeholderResolver
+	if stateExists {
+		if v, err := openVault(root); err == nil {
+			resolver = resolverFromVault(v)
+		} else {
+			ui.Warnf(ew, "could not open vault for placeholder resolution: %v", err)
+		}
+	}
+
+	// Classify each pair.
+	type planned struct {
+		pair   backupPair
+		status classification
+		diff   string
+	}
+	plan := make([]planned, 0, len(pairs))
+	for _, p := range pairs {
+		var (
+			status classification
+			diff   string
+			cerr   error
+		)
+		if p.kind == backupKindMCP {
+			status, diff, cerr = classifyMCPPair(p.original, p.backup, resolver)
+		} else {
+			status, diff, cerr = classifyEnvPair(p.original, p.backup, resolver)
+		}
+		if cerr != nil {
+			return wrapErr(fmt.Sprintf("classifying %s", p.original), cerr)
+		}
+		plan = append(plan, planned{pair: p, status: status, diff: diff})
+	}
+
+	// Print plan.
+	_, _ = fmt.Fprintln(w, "Uninstall plan:")
+	for _, pl := range plan {
+		label := classLabel(pl.status)
+		_, _ = fmt.Fprintf(w, "  [%s] %s\n", label, pl.pair.original)
+		if pl.status == classModified && pl.diff != "" {
+			_, _ = fmt.Fprintln(w, pl.diff)
+		}
+	}
+	if stateExists {
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", stateDir)
+	}
+
+	if dryRun {
+		return nil
+	}
+
+	if !yes && !promptYN(newLineReader(cmd.InOrStdin()), w, "Proceed with uninstall?", false) {
+		_, _ = fmt.Fprintln(w, "Aborted.")
+		return nil
+	}
+
+	// Execute restoration.
+	restored := 0
+	for _, pl := range plan {
+		if err := os.Rename(pl.pair.backup, pl.pair.original); err != nil {
+			return wrapErr(fmt.Sprintf("restoring %s", pl.pair.original), err)
+		}
+		restored++
+	}
+
+	// Purge keystore entry (best-effort).
+	if stateExists {
+		if pid, err := vault.ReadProjectID(root); err == nil {
+			if ks, err := buildKeystore(); err == nil {
+				if delErr := ks.Delete(pid); delErr != nil {
+					ui.Warnf(ew, "could not purge keystore entry: %v", delErr)
+				}
+			} else {
+				ui.Warnf(ew, "could not select keystore for purge: %v", err)
+			}
+		} else {
+			ui.Warnf(ew, "could not read project ID: %v", err)
+		}
+
+		if err := os.RemoveAll(stateDir); err != nil {
+			return wrapErr(fmt.Sprintf("removing %s", stateDir), err)
+		}
+	}
+
+	_, _ = fmt.Fprintf(w, "\nRestored %d %s.\n", restored, plural(restored, "file", "files"))
+	if stateExists {
+		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
+	}
+	return nil
+}
+
+// classLabel returns a short label for display in the plan table.
+func classLabel(c classification) string {
+	switch c {
+	case classUnmodified:
+		return "restore "
+	case classModified:
+		return "modified"
+	case classOriginalMissing:
+		return "restore*"
+	default:
+		return "?       "
+	}
 }

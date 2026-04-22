@@ -389,3 +389,119 @@ func TestResolverFromVault(t *testing.T) {
 		t.Errorf("resolver missing expected placeholder→real mapping; got: %v", resolver)
 	}
 }
+
+func TestUninstallDryRunNoChanges(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	original := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	postInitEnv, _ := os.ReadFile(envPath)
+
+	cmd = NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+
+	got, _ := os.ReadFile(envPath)
+	if string(got) != string(postInitEnv) {
+		t.Error(".env was modified during --dry-run")
+	}
+	if _, err := os.Stat(envPath + ".veil-backup"); err != nil {
+		t.Error("backup was removed during --dry-run")
+	}
+	if _, err := os.Stat(config.ProjectStateDir(root)); err != nil {
+		t.Error(".veil/ was removed during --dry-run")
+	}
+	if !strings.Contains(out.String(), ".env") {
+		t.Errorf("expected .env in plan output, got: %s", out.String())
+	}
+}
+
+func TestUninstallBlocksOnActiveProxy(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	pidFile := filepath.Join(config.ProjectStateDir(root), fmt.Sprintf("proxy-%d.pid", os.Getpid()))
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected uninstall to fail with active proxy")
+	}
+	if !strings.Contains(stderr.String(), "active proxy") {
+		t.Errorf("expected 'active proxy' in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestUninstallForceBypassesProxyGuard(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	pidFile := filepath.Join(config.ProjectStateDir(root), fmt.Sprintf("proxy-%d.pid", os.Getpid()))
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes", "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --force failed: %v", err)
+	}
+}
