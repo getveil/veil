@@ -30,7 +30,7 @@ var providerSamples = map[string]sample{
 	"twilio":    {"TWILIO_AUTH_TOKEN", "SK" + strings.Repeat("a", 32)},
 	"supabase":  {"SUPABASE_KEY", "sbp_" + strings.Repeat("a", 36)},
 	"sendgrid":  {"SENDGRID_API_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},
-	// Format providers (declarative — registered in provider_zzz_formats.go).
+	// Format providers (declarative — registered in provider_formats.go).
 	"google":      {"GOOGLE_API_KEY", "AIza" + strings.Repeat("a", 35)},
 	"replicate":   {"REPLICATE_API_TOKEN", "r8_" + strings.Repeat("a", 37)},
 	"huggingface": {"HF_TOKEN", "hf_" + strings.Repeat("a", 34)},

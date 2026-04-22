@@ -1,3 +1,9 @@
+// provider_formats.go registers all declarative Format-based providers.
+// Resolution order against hand-written providers is governed by Priority
+// (see priority.go and providers.go); previously this file was named
+// provider_zzz_formats.go to force it to init() last via filename
+// alphabetization, which is no longer load-bearing.
+
 package placeholder
 
 func init() {
