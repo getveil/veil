@@ -138,3 +138,51 @@ func TestHostsForCredential_NameMatchGitHub(t *testing.T) {
 		t.Errorf("expected api.github.com in hosts, got %v", hosts)
 	}
 }
+
+// TestExtractURLHost_RejectsUnknownScheme asserts that schemes outside the
+// allowlist yield empty host regardless of URL syntax validity. This closes
+// SEC-8 from the 2026-04-22 audit: a crafted env var value like
+// "javascript://evil.com" must not widen the proxy's allow-host set.
+func TestExtractURLHost_RejectsUnknownScheme(t *testing.T) {
+	cases := []string{
+		"javascript://evil.com",
+		"javascript://evil.com/foo",
+		"file:///etc/passwd",
+		"data://base64,abc",
+		"vscode://sourcegraph/auth?token=abc",
+		"ftp://ftp.example.com/file",
+		"ldap://ldap.example.com",
+	}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			host := ExtractURLHost(value)
+			if host != "" {
+				t.Fatalf("scheme-disallowed URL %q yielded host %q; expected empty", value, host)
+			}
+		})
+	}
+}
+
+// TestExtractURLHost_AcceptsAllowedSchemes asserts existing scheme handling
+// is preserved for the allowlisted schemes.
+func TestExtractURLHost_AcceptsAllowedSchemes(t *testing.T) {
+	cases := []struct {
+		value    string
+		wantHost string
+	}{
+		{"http://example.com/x", "example.com"},
+		{"https://api.example.com:443/", "api.example.com"},
+		{"postgres://user:pw@db.internal:5432/mydb", "db.internal"},
+		{"mysql://root:pw@mysql.internal/db", "mysql.internal"},
+		{"redis://:pw@redis.internal:6379/0", "redis.internal"},
+		{"mongodb+srv://user:pw@cluster.mongo.internal/db", "cluster.mongo.internal"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			got := ExtractURLHost(tc.value)
+			if got != tc.wantHost {
+				t.Fatalf("ExtractURLHost(%q) = %q, want %q", tc.value, got, tc.wantHost)
+			}
+		})
+	}
+}

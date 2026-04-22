@@ -99,10 +99,8 @@ func generateOnce(name, value string) (string, error) {
 	if ph, ok := tryURL(value); ok {
 		return ph, nil
 	}
-	for _, p := range registry {
-		if p.Match(name, value) {
-			return p.Generate(value), nil
-		}
+	if p := DefaultRegistry().Match(name, value); p != nil {
+		return p.Generate(value), nil
 	}
 	return sentinelize(charClassFake(value), 0), nil
 }

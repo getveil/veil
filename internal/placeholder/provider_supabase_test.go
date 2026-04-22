@@ -8,16 +8,7 @@ import (
 )
 
 func TestProviderSupabase(t *testing.T) {
-	var prov ProviderPattern
-	for _, p := range registry {
-		if p.Name == "supabase" {
-			prov = p
-			break
-		}
-	}
-	if prov.Name == "" {
-		t.Fatal("supabase provider not registered")
-	}
+	prov := mustProvider(t, "supabase")
 
 	// A real-looking Supabase anon key (JWT).
 	anonKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByb2plY3RpZCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNjg2MDAwMDAwLCJleHAiOjE4NDM2ODAwMDB9.abc123def456ghijklmnopqrstuvwxyz01234567890AB"

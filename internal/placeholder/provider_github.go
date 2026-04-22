@@ -6,7 +6,8 @@ var githubPrefixes = []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "gh
 
 func init() {
 	register(ProviderPattern{
-		Name: "github",
+		Name:     "github",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			for _, p := range githubPrefixes {
 				if strings.HasPrefix(value, p) {
