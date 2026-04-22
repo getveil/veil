@@ -961,3 +961,56 @@ func TestInitEnvCreatesBackupBeforeRewrite(t *testing.T) {
 		t.Error("real token leaked into .env after init")
 	}
 }
+
+func TestAppendGitignoreAddsVeilBackupPattern(t *testing.T) {
+	dir := t.TempDir()
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	appendGitignore(dir)
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "/.veil/") {
+		t.Errorf(".gitignore should contain /.veil/, got: %q", content)
+	}
+	if !strings.Contains(content, "*.veil-backup") {
+		t.Errorf(".gitignore should contain *.veil-backup, got: %q", content)
+	}
+	if !strings.Contains(content, "node_modules/") {
+		t.Error(".gitignore lost original content")
+	}
+}
+
+func TestAppendGitignoreIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	initial := "node_modules/\n/.veil/\n*.veil-backup\n"
+	if err := os.WriteFile(gitignorePath, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	appendGitignore(dir)
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != initial {
+		t.Errorf("expected .gitignore unchanged, got: %q", data)
+	}
+}
+
+func TestAppendGitignoreNoOpWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	// No .gitignore present.
+	appendGitignore(dir)
+	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
+		t.Error("appendGitignore should not create .gitignore when absent")
+	}
+}

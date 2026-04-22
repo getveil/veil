@@ -384,6 +384,8 @@ func atomicWriteFile(path string, data []byte) error {
 }
 
 // appendGitignore adds /.veil/ to the project .gitignore if not already present.
+// appendGitignore adds /.veil/ and *.veil-backup to the project .gitignore
+// if not already present. No-op when .gitignore doesn't exist.
 func appendGitignore(root string) {
 	gitignorePath := filepath.Join(root, ".gitignore")
 	data, err := os.ReadFile(gitignorePath)
@@ -393,15 +395,20 @@ func appendGitignore(root string) {
 	}
 
 	content := string(data)
-	if strings.Contains(content, "/.veil/") {
+	changed := false
+	for _, line := range []string{"/.veil/", "*.veil-backup"} {
+		if strings.Contains(content, line) {
+			continue
+		}
+		if len(content) > 0 && content[len(content)-1] != '\n' {
+			content += "\n"
+		}
+		content += line + "\n"
+		changed = true
+	}
+	if !changed {
 		return
 	}
-
-	// Ensure content ends with a newline before appending.
-	if len(content) > 0 && content[len(content)-1] != '\n' {
-		content += "\n"
-	}
-	content += "/.veil/\n"
 
 	_ = os.WriteFile(gitignorePath, []byte(content), 0600) //nolint:gosec // .gitignore is not sensitive
 }
