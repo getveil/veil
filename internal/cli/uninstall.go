@@ -198,11 +198,73 @@ func expectedOriginalEnv(current []byte, resolver placeholderResolver) []byte {
 	return envFile.Bytes()
 }
 
-// renderUnifiedDiff produces a minimal unified diff between a and b.
-// Task 4.5 replaces this stub with the full implementation.
+// renderUnifiedDiff produces a minimal unified-style diff between a and b.
+// The output begins with "--- backup" / "+++ current" headers. Each
+// differing line is prefixed with '-' (present in a, missing from b) or
+// '+' (present in b, missing from a). Context lines are prefixed with a
+// single space. Implementation uses a line-by-line LCS — fine for files
+// of typical .env/MCP size (tens to hundreds of lines).
 func renderUnifiedDiff(a, b []byte) string {
 	if bytes.Equal(a, b) {
 		return ""
 	}
-	return fmt.Sprintf("--- backup\n+++ current\n- %d bytes\n+ %d bytes\n", len(a), len(b))
+	aLines := strings.Split(string(a), "\n")
+	bLines := strings.Split(string(b), "\n")
+	// Trim trailing empty element caused by a terminal newline so we don't
+	// diff a phantom blank line.
+	if len(aLines) > 0 && aLines[len(aLines)-1] == "" {
+		aLines = aLines[:len(aLines)-1]
+	}
+	if len(bLines) > 0 && bLines[len(bLines)-1] == "" {
+		bLines = bLines[:len(bLines)-1]
+	}
+
+	lcs := lcsTable(aLines, bLines)
+	var sb strings.Builder
+	sb.WriteString("--- backup\n+++ current\n")
+	emitDiff(&sb, aLines, bLines, lcs, len(aLines), len(bLines))
+	return sb.String()
+}
+
+// lcsTable builds a longest-common-subsequence DP table for a and b.
+func lcsTable(a, b []string) [][]int {
+	n, m := len(a), len(b)
+	t := make([][]int, n+1)
+	for i := range t {
+		t[i] = make([]int, m+1)
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			if a[i-1] == b[j-1] {
+				t[i][j] = t[i-1][j-1] + 1
+			} else if t[i-1][j] >= t[i][j-1] {
+				t[i][j] = t[i-1][j]
+			} else {
+				t[i][j] = t[i][j-1]
+			}
+		}
+	}
+	return t
+}
+
+// emitDiff walks the LCS table from (i,j) down to (0,0) and emits diff
+// lines in forward order using a recursive preorder traversal.
+func emitDiff(sb *strings.Builder, a, b []string, t [][]int, i, j int) {
+	switch {
+	case i > 0 && j > 0 && a[i-1] == b[j-1]:
+		emitDiff(sb, a, b, t, i-1, j-1)
+		sb.WriteString(" ")
+		sb.WriteString(a[i-1])
+		sb.WriteString("\n")
+	case j > 0 && (i == 0 || t[i][j-1] >= t[i-1][j]):
+		emitDiff(sb, a, b, t, i, j-1)
+		sb.WriteString("+")
+		sb.WriteString(b[j-1])
+		sb.WriteString("\n")
+	case i > 0 && (j == 0 || t[i][j-1] < t[i-1][j]):
+		emitDiff(sb, a, b, t, i-1, j)
+		sb.WriteString("-")
+		sb.WriteString(a[i-1])
+		sb.WriteString("\n")
+	}
 }

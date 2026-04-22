@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/8enji/veil/internal/config"
@@ -212,12 +213,15 @@ func TestClassifyEnvPairModified(t *testing.T) {
 		"ghp_veil_abc123": "ghp_real1234567890abcdef1234567890abcdef",
 	}
 
-	status, _, err := classifyEnvPair(orig, backup, resolver)
+	status, diff, err := classifyEnvPair(orig, backup, resolver)
 	if err != nil {
 		t.Fatalf("classifyEnvPair: %v", err)
 	}
 	if status != classModified {
 		t.Errorf("status = %v, want classModified", status)
+	}
+	if !strings.Contains(diff, "LOG_LEVEL=debug") {
+		t.Errorf("diff should mention the added line; got:\n%s", diff)
 	}
 }
 
@@ -238,5 +242,38 @@ func TestClassifyEnvPairModifiedWhenResolverNil(t *testing.T) {
 	}
 	if status != classUnmodified {
 		t.Errorf("status = %v, want classUnmodified (byte-equal, no substitution needed)", status)
+	}
+}
+
+func TestRenderUnifiedDiffShowsAddedLines(t *testing.T) {
+	a := []byte("line1\nline2\n")
+	b := []byte("line1\nline2\nline3\n")
+	diff := renderUnifiedDiff(a, b)
+	if !strings.Contains(diff, "+line3") {
+		t.Errorf("expected +line3 in diff, got:\n%s", diff)
+	}
+}
+
+func TestRenderUnifiedDiffShowsRemovedLines(t *testing.T) {
+	a := []byte("keep\nremove\n")
+	b := []byte("keep\n")
+	diff := renderUnifiedDiff(a, b)
+	if !strings.Contains(diff, "-remove") {
+		t.Errorf("expected -remove in diff, got:\n%s", diff)
+	}
+}
+
+func TestRenderUnifiedDiffEmptyWhenEqual(t *testing.T) {
+	a := []byte("same\n")
+	diff := renderUnifiedDiff(a, a)
+	if diff != "" {
+		t.Errorf("expected empty diff, got: %q", diff)
+	}
+}
+
+func TestRenderUnifiedDiffHasHeaders(t *testing.T) {
+	diff := renderUnifiedDiff([]byte("a\n"), []byte("b\n"))
+	if !strings.HasPrefix(diff, "--- backup\n+++ current\n") {
+		t.Errorf("expected diff to start with '--- backup' / '+++ current', got:\n%s", diff)
 	}
 }
