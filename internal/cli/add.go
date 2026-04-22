@@ -52,16 +52,12 @@ func addCmd() *cobra.Command {
 }
 
 func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagValue string, valueStdin bool, username string) error {
-	root, err := resolveRoot()
-	if err != nil {
-		return cliError(err.Error(), "")
-	}
+	return withVault(cmd, func(root string, v *vault.Vault) error {
+		return runAddInVault(cmd, root, v, name, force, hosts, flagValue, valueStdin, username)
+	})
+}
 
-	v, err := openVault(root)
-	if err != nil {
-		return cliError(fmt.Sprintf("opening vault: %v", err), "")
-	}
-
+func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string, force bool, hosts []string, flagValue string, valueStdin bool, username string) error {
 	// Validate --user flag.
 	userFlagSet := cmd.Flags().Changed("user")
 	if userFlagSet && username == "" {

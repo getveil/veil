@@ -1,13 +1,14 @@
 package proxy
 
 import (
-	"log"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/8enji/veil/internal/placeholder"
+	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 )
 
@@ -75,10 +76,14 @@ func detectMismatch(host string, u *url.URL, hdr http.Header, injectionCount int
 	return "", nil, false
 }
 
-// logMismatch emits a structured WARN-level log line. It never includes
-// header values, secrets, or placeholder strings — only coarse-grained
-// routing signals.
-func logMismatch(host, urlPath, method, authSignal string, credentialNames []string) {
-	log.Printf("WARN event=transform_mismatch_suspected host=%s method=%s path=%s auth_signal=%s credentials=%s",
+// logMismatch emits a WARN-level line for transform-mismatch suspicion. It
+// never includes header values, secrets, or placeholder strings — only
+// coarse-grained routing signals. The structured fields are also persisted
+// in the audit DB (suspect_flag + auth_signal columns), so the human-facing
+// line here is for operator visibility while the DB is authoritative for
+// queries. The writer is parameterized to allow tests to capture output.
+func logMismatch(w io.Writer, host, urlPath, method, authSignal string, credentialNames []string) {
+	ui.Warnf(w,
+		"event=transform_mismatch_suspected host=%s method=%s path=%s auth_signal=%s credentials=%s",
 		host, method, urlPath, authSignal, strings.Join(credentialNames, ","))
 }

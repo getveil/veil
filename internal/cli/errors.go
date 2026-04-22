@@ -54,9 +54,9 @@ type exitError struct {
 	wrapped error
 }
 
-func (e *exitError) Error() string   { return e.msg }
-func (e *exitError) ExitCode() int   { return e.code }
-func (e *exitError) Unwrap() error   { return e.wrapped }
+func (e *exitError) Error() string { return e.msg }
+func (e *exitError) ExitCode() int { return e.code }
+func (e *exitError) Unwrap() error { return e.wrapped }
 
 // cliError prints a styled error to stderr with an optional hint and returns
 // an error for cobra's RunE to propagate. Paths under $HOME in msg/hint are
@@ -69,6 +69,27 @@ func cliError(msg string, hint string) error {
 // common `cliError(fmt.Sprintf("doing X: %v", err), "")` pattern.
 func cliErrorf(format string, args ...any) error {
 	return cliError(fmt.Sprintf(format, args...), "")
+}
+
+// wrapErr prints "error: prefix: <cause>" on stderr and returns an error that
+// wraps cause via %w — so callers can errors.Is against the underlying
+// sentinel and exit-code mapping sees the full chain. If cause is nil, it
+// falls back to cliError behavior. Use this instead of
+// `cliError(fmt.Sprintf("prefix: %v", err), "")` whenever the cause is a
+// classified error (vault/proxy/audit sentinel or CLI sentinel) so exit
+// codes stay accurate.
+func wrapErr(prefix string, cause error) error {
+	if cause == nil {
+		return cliError(prefix, "")
+	}
+	msg := fmt.Sprintf("%s: %s", prefix, cause.Error())
+	redacted := ui.RedactPath(msg)
+	_ = ui.FormatError(os.Stderr, redacted, "", cause)
+	return &exitError{
+		code:    exitCodeForSentinel(cause),
+		msg:     redacted,
+		wrapped: cause,
+	}
 }
 
 // cliErrorWith prints a styled error like cliError but also wraps the
@@ -151,7 +172,7 @@ func exitCodeForSentinel(err error) int {
 		return ExitCAError
 	case errors.Is(err, proxy.ErrListen):
 		return ExitProxyListen
-	case errors.Is(err, audit.ErrAuditOpen):
+	case errors.Is(err, audit.ErrOpen):
 		return ExitGeneric
 	default:
 		return ExitGeneric

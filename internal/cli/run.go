@@ -29,20 +29,15 @@ func runCmd() *cobra.Command {
 }
 
 func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
-	root, err := resolveRoot()
+	root, err := requireInitializedProject(cmd)
 	if err != nil {
-		return cliError(err.Error(), "")
-	}
-
-	stateDir := config.ProjectStateDir(root)
-	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return cliErrorWith(ErrNotInitialized, "project not initialized", "Run veil init to get started")
+		return err
 	}
 
 	// Load persistent skip hosts.
 	skipHosts, err := skiphost.Load(config.SkipHostsFile(root))
 	if err != nil {
-		return cliError(fmt.Sprintf("reading skip hosts: %v", err), "")
+		return wrapErr("reading skip hosts", err)
 	}
 
 	// Merge ephemeral --skip flags.

@@ -51,6 +51,34 @@ func Warnf(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "  %s %s\n", Warning.Sprint("!"), fmt.Sprintf(format, args...))
 }
 
+// Dim prints a single muted line followed by a newline. It replaces the
+// common `fmt.Fprintln(w, ui.Muted.Sprint(msg))` pattern seen across the
+// runner and signals packages.
+func Dim(w io.Writer, msg string) {
+	_, _ = fmt.Fprintln(w, Muted.Sprint(msg))
+}
+
+// Dimf is the Printf analog of Dim.
+func Dimf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintln(w, Muted.Sprint(fmt.Sprintf(format, args...)))
+}
+
+// Debugf prints a muted debug line with Printf-style formatting. The output
+// is identical to Dimf today; the separate verb documents intent ("this is
+// diagnostic") and leaves room for future gating behind a --verbose flag.
+func Debugf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintln(w, Muted.Sprint(fmt.Sprintf(format, args...)))
+}
+
+// Errorf prints a styled "error: <msg>\n" line to w with Printf-style
+// formatting. Use this for non-cobra-return error output (e.g. internal
+// package warnings that historically used log.Printf). For cobra RunE
+// returns that also render an error line, use FormatError, which returns a
+// sentinel error suitable for Cobra's error chain.
+func Errorf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, "%s %s\n", Err.Sprint("error:"), fmt.Sprintf(format, args...))
+}
+
 // Phase prints a muted phase header line: "msg\n"
 func Phase(w io.Writer, msg string) {
 	_, _ = fmt.Fprintln(w, Muted.Sprint(msg))
@@ -110,11 +138,17 @@ func RedactPath(s string) string {
 }
 
 // FormatError prints a red "error: msg" line with an optional dimmed hint to w.
-// Returns a sentinel error for use as a cobra RunE return value.
-func FormatError(w io.Writer, msg string, hint string) error {
+// Returns a sentinel error for use as a cobra RunE return value. When a cause
+// is supplied, the returned error wraps it via %w so callers can errors.Is
+// against the original. Only the first cause is honored; additional arguments
+// are ignored so callers cannot accidentally over-specify.
+func FormatError(w io.Writer, msg string, hint string, cause ...error) error {
 	_, _ = fmt.Fprintf(w, "%s %s\n", Err.Sprint("error:"), msg)
 	if hint != "" {
 		_, _ = fmt.Fprintf(w, "  %s\n", Muted.Sprint(hint))
+	}
+	if len(cause) > 0 && cause[0] != nil {
+		return fmt.Errorf("%s: %w", msg, cause[0])
 	}
 	return fmt.Errorf("%s", msg)
 }

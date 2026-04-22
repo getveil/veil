@@ -2,11 +2,11 @@ package proxy
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/ui"
 )
 
 // BuildCABundle creates a combined PEM file containing the system CA
@@ -15,7 +15,7 @@ import (
 func BuildCABundle(veilCAPEM []byte) (string, error) {
 	systemPEM, err := systemCAPEM()
 	if err != nil {
-		log.Printf("[veil] warning: could not extract system CAs: %v (bundle will contain only Veil CA)", err)
+		ui.Warnf(os.Stderr, "could not extract system CAs: %v (bundle will contain only Veil CA)", err)
 		systemPEM = nil
 	}
 
@@ -50,7 +50,7 @@ func BuildCABundle(veilCAPEM []byte) (string, error) {
 func BuildCABundleIn(sessionDir string, veilCAPEM []byte) (string, error) {
 	systemPEM, err := systemCAPEM()
 	if err != nil {
-		log.Printf("[veil] warning: could not extract system CAs: %v (bundle will contain only Veil CA)", err)
+		ui.Warnf(os.Stderr, "could not extract system CAs: %v (bundle will contain only Veil CA)", err)
 		systemPEM = nil
 	}
 

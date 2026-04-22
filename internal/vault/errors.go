@@ -28,4 +28,12 @@ var (
 	// ErrSave indicates the vault could not be persisted (marshal, encrypt,
 	// or atomic write failed).
 	ErrSave = errors.New("vault: save failed")
+
+	// ErrKeystoreUnavailable indicates the system keystore (keyring, file)
+	// could not be reached.
+	ErrKeystoreUnavailable = errors.New("keystore: unavailable")
+
+	// ErrKeystoreWrite indicates a write or chmod on the keystore backing
+	// store failed.
+	ErrKeystoreWrite = errors.New("keystore: write failed")
 )

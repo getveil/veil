@@ -13,12 +13,9 @@ import (
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/mcpconfig"
 	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/scanner"
-	"github.com/8enji/veil/internal/skiphost"
 	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -80,108 +77,42 @@ func initCmd() *cobra.Command {
 func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	w := cmd.OutOrStdout()
 	stdin := cmd.InOrStdin()
-
-	// Detect non-interactive: --yes flag or non-TTY stdin.
-	interactive := !yes
-	if interactive {
-		if f, ok := stdin.(*os.File); ok {
-			if !isatty.IsTerminal(f.Fd()) && !isatty.IsCygwinTerminal(f.Fd()) {
-				interactive = false
-				_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Non-interactive mode: vaulting all detected secrets"))
-			}
-		}
-	}
-
-	// Wrap stdin so each prompt reads exactly one line via bufio.Scanner,
-	// avoiding read-ahead that would consume input intended for later prompts.
+	interactive := detectInteractive(w, stdin, yes)
+	// Wrap stdin so each prompt reads exactly one line, avoiding read-ahead
+	// that would consume input intended for later prompts.
 	in := newLineReader(stdin)
 
-	// 1. Resolve project root.
-	root := flagPath
-	if root == "" {
-		r, err := config.FindProjectRoot(".")
-		if err != nil {
-			return cliError(err.Error(), "")
-		}
-		root = r
-	} else {
-		abs, err := filepath.Abs(root)
-		if err != nil {
-			return cliError(err.Error(), "")
-		}
-		root = abs
+	root, err := resolveInitRoot()
+	if err != nil {
+		return cliError(err.Error(), "")
 	}
 
-	// 2. Check existing .veil/ directory.
 	stateDir := config.ProjectStateDir(root)
-	if info, err := os.Stat(stateDir); err == nil && info.IsDir() {
-		if !force {
-			return cliErrorWith(ErrAlreadyInitialized, "project already initialized", "Use --force to reinitialize")
-		}
-		// --force: confirm destructive reset.
-		if interactive {
-			if !promptYN(in, w, "This will replace your existing vault. Continue?", false) {
-				_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Aborted."))
-				return nil
-			}
-		}
+	proceed, err := detectExistingProject(in, w, stateDir, force, interactive)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
 	}
 
-	// Phase: Scanning project.
 	ui.Phase(w, "Scanning project...")
 
-	// 3. Scan .env files.
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
-		return cliError(fmt.Sprintf("scanning .env files: %v", err), "")
+		return wrapErr("scanning .env files", err)
 	}
-
-	// 3b. Discover MCP config.
 	mcpConfigPath, err := mcpconfig.Discover()
 	if err != nil {
-		return cliError(fmt.Sprintf("discovering MCP config: %v", err), "")
+		return wrapErr("discovering MCP config", err)
 	}
-
-	// Early exit if nothing to process.
 	if len(envPaths) == 0 && mcpConfigPath == "" {
 		_, _ = fmt.Fprintf(w, "no .env files or MCP configs found in %s\n", root)
 		return nil
 	}
 
-	// 3c. Interactive file selection.
-	if interactive && len(envPaths) > 1 {
-		_, _ = fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
-		names := make([]string, len(envPaths))
-		for i, p := range envPaths {
-			rel, _ := filepath.Rel(root, p)
-			if rel == "" {
-				rel = filepath.Base(p)
-			}
-			names[i] = rel
-			_, _ = fmt.Fprintf(w, "  %s\n", rel)
-		}
-		_, _ = fmt.Fprintln(w)
-		choice := promptYNS(in, w, "Scan all?")
-		switch choice {
-		case choiceNo:
-			envPaths = nil
-		case choiceSelect:
-			selected := promptMultiSelect(in, w, names)
-			selectedSet := make(map[string]bool)
-			for _, s := range selected {
-				selectedSet[s] = true
-			}
-			var filtered []string
-			for i, p := range envPaths {
-				if selectedSet[names[i]] {
-					filtered = append(filtered, p)
-				}
-			}
-			envPaths = filtered
-		}
-	}
+	envPaths = filterEnvPaths(in, w, root, envPaths, interactive)
 
-	// Report what will be scanned.
 	if len(envPaths) > 0 {
 		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
 	}
@@ -190,146 +121,29 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	_, _ = fmt.Fprintln(w)
 
-	// 4. Generate project ID.
-	projectID := vault.NewID()
-
-	// 5. Determine keystore.
 	ks, err := buildKeystore()
 	if err != nil {
-		return cliError(fmt.Sprintf("keystore: %v", err), "")
+		return wrapErr("keystore", err)
 	}
-
-	// 6. Create vault.
-	v, err := vault.CreateVault(root, projectID, ks)
+	v, err := vault.CreateVault(root, vault.NewID(), ks)
 	if err != nil {
-		return cliError(fmt.Sprintf("creating vault: %v", err), "")
+		return wrapErr("creating vault", err)
 	}
 
-	// Phase: Vaulting secrets.
 	ui.Phase(w, "Vaulting secrets...")
 
-	// 7. Process each .env file.
-	var secretsVaulted int
-	var secretsScoped int
+	secretsVaulted, secretsScoped := 0, 0
 	seen := make(placeholder.Set)
 	for _, envPath := range envPaths {
-		envFile, err := scanner.ParseFile(envPath)
+		n, s, err := processEnvFile(cmd, in, v, seen, root, envPath, dryRun, interactive)
 		if err != nil {
-			return cliError(fmt.Sprintf("parsing %s: %v", envPath, err), "")
+			return err
 		}
-
-		// Collect secret-like lines.
-		type secretLine struct {
-			key   string
-			value string
-			index int // index into envFile.Lines
-		}
-		var secrets []secretLine
-		for i, line := range envFile.Lines {
-			if line.Kind != scanner.KVLine {
-				continue
-			}
-			if !placeholder.IsSecretLike(line.Key, line.Value) {
-				if flagVerbose {
-					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): %s", line.Key))
-				}
-				continue
-			}
-			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
-		}
-
-		if len(secrets) == 0 {
-			continue
-		}
-
-		// Interactive token selection.
-		selectedKeys := make(map[string]bool)
-		if interactive {
-			rel, _ := filepath.Rel(root, envPath)
-			if rel == "" {
-				rel = filepath.Base(envPath)
-			}
-			_, _ = fmt.Fprintf(w, "\nDetected %d %s in %s:\n", len(secrets), plural(len(secrets), "secret", "secrets"), rel)
-			names := make([]string, len(secrets))
-			for i, s := range secrets {
-				redacted := redactValue(s.value)
-				_, _ = fmt.Fprintf(w, "  %-24s %s\n", s.key, ui.Muted.Sprint(redacted))
-				names[i] = s.key
-			}
-			_, _ = fmt.Fprintln(w)
-			choice := promptYNS(in, w, "Vault all?")
-			switch choice {
-			case choiceYes:
-				for _, s := range secrets {
-					selectedKeys[s.key] = true
-				}
-			case choiceNo:
-				continue // skip entire file
-			case choiceSelect:
-				selected := promptMultiSelect(in, w, names)
-				for _, name := range selected {
-					selectedKeys[name] = true
-				}
-			}
-		} else {
-			for _, s := range secrets {
-				selectedKeys[s.key] = true
-			}
-		}
-
-		fileChanged := false
-		for _, s := range secrets {
-			if !selectedKeys[s.key] {
-				continue
-			}
-
-			ph, err := placeholder.Generate(s.key, s.value, seen)
-			if err != nil {
-				return cliError(fmt.Sprintf("generating placeholder for %s: %v", s.key, err), "")
-			}
-
-			credHosts := placeholder.HostsForCredential(s.key, s.value)
-
-			cred := &vault.Credential{
-				ID:           vault.NewID(),
-				Name:         s.key,
-				Real:         s.value,
-				Placeholder:  ph,
-				Source:       "init",
-				AllowedHosts: credHosts,
-				CreatedAt:    time.Now(),
-			}
-			if err := v.Add(cred); err != nil {
-				if errors.Is(err, vault.ErrDuplicateCredential) {
-					ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", s.key)
-					continue
-				}
-				return cliError(fmt.Sprintf("vaulting %s: %v", s.key, err), "")
-			}
-			seen[ph] = struct{}{}
-
-			secretsVaulted++
-			if len(credHosts) > 0 {
-				secretsScoped++
-			}
-
-			if dryRun {
-				_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", s.key, ph))
-			} else {
-				envFile.SetValue(s.key, ph)
-				fileChanged = true
-			}
-		}
-
-		if !dryRun && fileChanged {
-			if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
-				return cliError(fmt.Sprintf("writing %s: %v", envPath, err), "")
-			}
-		}
+		secretsVaulted += n
+		secretsScoped += s
 	}
 
-	// 8b. Process MCP config.
-	var mcpConfigsProcessed int
+	mcpConfigsProcessed := 0
 	if mcpConfigPath != "" {
 		n, s, err := processMCPConfig(cmd, in, v, mcpConfigPath, force, dryRun, interactive)
 		if err != nil {
@@ -342,7 +156,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		}
 	}
 
-	// Report vault results.
 	unscoped := secretsVaulted - secretsScoped
 	ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
 	if secretsScoped > 0 {
@@ -353,43 +166,17 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	_, _ = fmt.Fprintln(w)
 
-	// Phase: Skip hosts.
-	if interactive && !dryRun {
-		_, _ = fmt.Fprintln(w, "Skip hosts — any hosts the proxy should pass through untouched?")
-		_, _ = fmt.Fprintln(w, ui.Muted.Sprint("Common examples: api.anthropic.com, *.internal.company.com"))
-		_, _ = fmt.Fprintln(w, ui.Muted.Sprint("(You can manage these later with: veil skip)"))
-		_, _ = fmt.Fprintln(w)
-		hosts := promptCSV(in, w, "Hosts to skip (comma-separated, or Enter to skip):")
-		if len(hosts) > 0 {
-			skipPath := config.SkipHostsFile(root)
-			for _, h := range hosts {
-				if _, err := skiphost.Add(skipPath, h); err != nil {
-					ui.Warn(w, fmt.Sprintf("failed to add %s to skip list: %v", h, err))
-					continue
-				}
-				ui.Step(w, fmt.Sprintf("%s added to skip list", h))
-			}
-			_, _ = fmt.Fprintln(w)
-		}
-	}
+	promptSkipHostsPhase(in, w, root, interactive, dryRun)
 
-	// Phase: Setting up proxy.
 	ui.Phase(w, "Setting up proxy...")
-
-	ca, err := proxy.LoadOrCreateCA()
-	if err != nil {
-		return cliError(fmt.Sprintf("setting up CA: %v", err), "")
+	if err := setupProxyCA(w); err != nil {
+		return err
 	}
-	_ = ca
-	ui.Step(w, "CA certificate ready")
-	_, _ = fmt.Fprintln(w)
 
-	// 9. Append to project .gitignore.
 	if !dryRun {
 		appendGitignore(root)
 	}
 
-	// 10. Final summary.
 	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
 	_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
 	if mcpConfigsProcessed > 0 {

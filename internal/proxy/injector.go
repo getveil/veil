@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ func (inj *Injector) ProcessRequest(
 		credList := dedupCredentials(creds)
 		parsedURL, _ := url.Parse(rawURL)
 		if sig, names, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
-			logMismatch(host, urlPath, method, sig, names)
+			logMismatch(os.Stderr, host, urlPath, method, sig, names)
 			injections = append(injections, audit.Injection{
 				Timestamp:   now,
 				RequestID:   requestID,

@@ -18,7 +18,7 @@ import (
 // secret with B.Real, silently corrupting the outbound request.
 func TestRewriter_NoCrossContamination(t *testing.T) {
 	credA := makeCred("alpha",
-		"VEIL_PLACEHOLDER_A_1111",                // placeholder A
+		"VEIL_PLACEHOLDER_A_1111",                 // placeholder A
 		"real-alpha_VEIL_PLACEHOLDER_B_2222_tail", // real A *contains* placeholder B
 		"api.example.com",
 	)

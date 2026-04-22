@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/skiphost"
@@ -29,14 +28,9 @@ func skipCmd() *cobra.Command {
 func runSkip(cmd *cobra.Command, args []string, list bool, remove string) error {
 	w := cmd.OutOrStdout()
 
-	root, err := resolveRoot()
+	root, err := requireInitializedProject(cmd)
 	if err != nil {
-		return cliError(err.Error(), "")
-	}
-
-	stateDir := config.ProjectStateDir(root)
-	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return cliErrorWith(ErrNotInitialized, "project not initialized", "Run veil init to get started")
+		return err
 	}
 
 	path := config.SkipHostsFile(root)
