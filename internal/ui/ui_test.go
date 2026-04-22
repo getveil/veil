@@ -173,3 +173,31 @@ func TestFormatWarning(t *testing.T) {
 		t.Errorf("FormatWarning should contain message, got: %q", got)
 	}
 }
+
+func TestRedactPath_TildeAbbreviatesHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot resolve $HOME")
+	}
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{home + "/projects/app", "~/projects/app"},
+		{"prefix " + home + "/a.env suffix", "prefix ~/a.env suffix"},
+		{"opening vault: " + home + "/x: no such file", "opening vault: ~/x: no such file"},
+	}
+	for _, tt := range tests {
+		got := RedactPath(tt.in)
+		if got != tt.want {
+			t.Errorf("RedactPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestRedactPath_LeavesNonHomePaths(t *testing.T) {
+	got := RedactPath("/etc/passwd missing")
+	if got != "/etc/passwd missing" {
+		t.Errorf("expected unchanged, got %q", got)
+	}
+}

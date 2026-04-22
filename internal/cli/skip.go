@@ -36,7 +36,7 @@ func runSkip(cmd *cobra.Command, args []string, list bool, remove string) error 
 
 	stateDir := config.ProjectStateDir(root)
 	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return cliError("project not initialized", "Run veil init to get started")
+		return cliErrorWith(ErrNotInitialized, "project not initialized", "Run veil init to get started")
 	}
 
 	path := config.SkipHostsFile(root)

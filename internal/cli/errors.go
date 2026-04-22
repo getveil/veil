@@ -1,13 +1,159 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 
+	"github.com/8enji/veil/internal/audit"
+	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/ui"
+	"github.com/8enji/veil/internal/vault"
 )
 
+// Exit codes exposed to the shell. Stable across releases; scripts can rely
+// on these to branch (e.g. `veil init || [[ $? -eq 4 ]] && echo already init`).
+const (
+	ExitSuccess            = 0
+	ExitGeneric            = 1
+	ExitUsage              = 2
+	ExitNotInitialized     = 3
+	ExitAlreadyInitialized = 4
+	ExitVaultLocked        = 5
+	ExitNotFound           = 6
+	ExitCAError            = 7
+	ExitProxyListen        = 8
+	ExitCanceled           = 130 // SIGINT convention (128 + 2)
+)
+
+// Sentinel errors new to the CLI layer. They name CLI-level conditions so
+// exit-code mapping can distinguish them from generic errors. These are
+// NEW sentinels — they do not rename anything in audit/, vault/, or proxy/.
+var (
+	ErrNotInitialized     = errors.New("project not initialized")
+	ErrAlreadyInitialized = errors.New("project already initialized")
+	ErrNotFound           = errors.New("not found")
+	ErrUsage              = errors.New("invalid usage")
+	ErrCanceled           = errors.New("canceled")
+)
+
+// ExitCoder is optionally implemented by an error to carry a specific exit
+// code. Wrapped errors also satisfy exitCodeFor via errors.As.
+type ExitCoder interface {
+	error
+	ExitCode() int
+}
+
+// exitError is the internal carrier that pairs a message with an exit code
+// and (optionally) a wrapped sentinel. Returned by cliErrorWith so Cobra's
+// propagated err can be classified in main.go.
+type exitError struct {
+	code    int
+	msg     string
+	wrapped error
+}
+
+func (e *exitError) Error() string   { return e.msg }
+func (e *exitError) ExitCode() int   { return e.code }
+func (e *exitError) Unwrap() error   { return e.wrapped }
+
 // cliError prints a styled error to stderr with an optional hint and returns
-// an error for cobra's RunE to propagate as a non-zero exit code.
+// an error for cobra's RunE to propagate. Paths under $HOME in msg/hint are
+// tilde-abbreviated so error output is safe to paste into issues and chat.
 func cliError(msg string, hint string) error {
-	return ui.FormatError(os.Stderr, msg, hint)
+	return formatCLIError(os.Stderr, msg, hint)
+}
+
+// cliErrorf formats msg and delegates to cliError. Convenience for the
+// common `cliError(fmt.Sprintf("doing X: %v", err), "")` pattern.
+func cliErrorf(format string, args ...any) error {
+	return cliError(fmt.Sprintf(format, args...), "")
+}
+
+// cliErrorWith prints a styled error like cliError but also wraps the
+// supplied sentinel so exitCodeFor can map it to a meaningful exit code.
+// The returned error is still the stable message for existing test assertions
+// that match via strings.Contains.
+func cliErrorWith(sentinel error, msg, hint string) error {
+	_ = formatCLIError(os.Stderr, msg, hint)
+	return &exitError{
+		code:    exitCodeForSentinel(sentinel),
+		msg:     ui.RedactPath(msg),
+		wrapped: sentinel,
+	}
+}
+
+// formatCLIError is cliError's writer-injectable core, used by tests.
+func formatCLIError(w io.Writer, msg, hint string) error {
+	return ui.FormatError(w, ui.RedactPath(msg), ui.RedactPath(hint))
+}
+
+// FormatErrorForTest is exported for cross-package tests (cmd/veil) that need
+// to simulate what commands return to Cobra. It mirrors cliError but writes
+// to the supplied writer instead of os.Stderr.
+func FormatErrorForTest(w io.Writer, msg, hint string) error {
+	return formatCLIError(w, msg, hint)
+}
+
+// WrapExitError builds an error that carries a sentinel (for exit-code
+// mapping) and a user-facing message. Exported for the main-package test
+// that verifies exit codes propagate through run().
+func WrapExitError(sentinel error, msg string) error {
+	return &exitError{
+		code:    exitCodeForSentinel(sentinel),
+		msg:     ui.RedactPath(msg),
+		wrapped: sentinel,
+	}
+}
+
+// ExitCodeFor is exported for cmd/veil/main.go to map cobra RunE errors to
+// exit codes.
+func ExitCodeFor(err error) int { return exitCodeFor(err) }
+
+// exitCodeFor classifies err into a shell exit code. Returns 0 for nil,
+// respects an ExitCoder implementation, and falls back to sentinel-based
+// mapping.
+func exitCodeFor(err error) int {
+	if err == nil {
+		return ExitSuccess
+	}
+	var coder ExitCoder
+	if errors.As(err, &coder) {
+		return coder.ExitCode()
+	}
+	return exitCodeForSentinel(err)
+}
+
+// exitCodeForSentinel maps known sentinel errors (CLI, vault, proxy) to
+// their shell exit code. Unknown errors return ExitGeneric.
+func exitCodeForSentinel(err error) int {
+	switch {
+	case err == nil:
+		return ExitSuccess
+	case errors.Is(err, ErrNotInitialized):
+		return ExitNotInitialized
+	case errors.Is(err, ErrAlreadyInitialized):
+		return ExitAlreadyInitialized
+	case errors.Is(err, ErrNotFound):
+		return ExitNotFound
+	case errors.Is(err, ErrUsage):
+		return ExitUsage
+	case errors.Is(err, ErrCanceled):
+		return ExitCanceled
+	case errors.Is(err, vault.ErrOpen),
+		errors.Is(err, vault.ErrMasterKey),
+		errors.Is(err, vault.ErrCorrupt):
+		return ExitVaultLocked
+	case errors.Is(err, proxy.ErrCALoad),
+		errors.Is(err, proxy.ErrCAGenerate),
+		errors.Is(err, proxy.ErrCABundle):
+		return ExitCAError
+	case errors.Is(err, proxy.ErrListen):
+		return ExitProxyListen
+	case errors.Is(err, audit.ErrAuditOpen):
+		return ExitGeneric
+	default:
+		return ExitGeneric
+	}
 }
