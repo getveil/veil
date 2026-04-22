@@ -42,13 +42,19 @@ func stripPort(host string) string {
 }
 
 // ExtractURLHost attempts to parse value as a URL and return the hostname
-// (without port). Returns "" if value is not a parseable URL with a host.
+// (without port). Returns "" if value is not a parseable URL with a host,
+// or if the URL scheme is outside the allowlist (see url.go). The
+// allowlist gate prevents crafted env-var values like "javascript://evil.com"
+// from widening the proxy's allow-host set via HostsForCredential.
 func ExtractURLHost(value string) string {
 	u, err := url.Parse(value)
 	if err != nil {
 		return ""
 	}
 	if u.Host == "" || u.Scheme == "" {
+		return ""
+	}
+	if !allowedSchemes[u.Scheme] {
 		return ""
 	}
 	return stripPort(u.Host)
