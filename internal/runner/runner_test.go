@@ -11,41 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/vault"
+	"github.com/8enji/veil/internal/testutil"
 )
-
-// setupProject creates a temp directory with a vault and one credential,
-// returning the project root and the keystore used.
-func setupProject(t *testing.T) (string, vault.Keystore) {
-	t.Helper()
-	root := t.TempDir()
-	ks := vault.NewMemKeystore()
-
-	v, err := vault.CreateVault(root, "test-project", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-
-	cred := &vault.Credential{
-		ID:          vault.NewID(),
-		Name:        "TEST_SECRET",
-		Real:        "real-secret-value",
-		Placeholder: "VEIL_PH_test_secret",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add credential: %v", err)
-	}
-	return root, ks
-}
 
 func TestRunHappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -68,7 +42,7 @@ func TestRunExitCode(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -91,7 +65,7 @@ func TestRunChildEnv(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	outFile := filepath.Join(t.TempDir(), "env-out.txt")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -125,7 +99,7 @@ func TestRunCommandNotFound(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -144,7 +118,7 @@ func TestRunChildCAEnvVars(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	outFile := filepath.Join(t.TempDir(), "ca-env-out.txt")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -181,7 +155,7 @@ func TestRunStripsVaultEnvAndAnnounces(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	outFile := filepath.Join(t.TempDir(), "child-env.txt")
 
 	// Simulate the user exporting the managed secret in their shell.
@@ -263,7 +237,7 @@ func TestRunBannerShowsResolvedAgentPath(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -301,7 +275,7 @@ func TestRunBookends(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -648,19 +622,18 @@ func TestResolveAgentCommand_EmptyCommandIsError(t *testing.T) {
 }
 
 func TestSweepStaleSessionDirs(t *testing.T) {
-	root := os.TempDir()
+	root := t.TempDir()
 	stale, err := os.MkdirTemp(root, "veil-session-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(stale) })
 
 	past := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(stale, past, past); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	SweepStaleSessionDirsForTest()
+	SweepStaleSessionDirsForTest(root)
 
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale dir removed, got err=%v", err)
@@ -668,14 +641,13 @@ func TestSweepStaleSessionDirs(t *testing.T) {
 }
 
 func TestSweepStaleSessionDirsLeavesFresh(t *testing.T) {
-	root := os.TempDir()
+	root := t.TempDir()
 	fresh, err := os.MkdirTemp(root, "veil-session-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(fresh) })
 
-	SweepStaleSessionDirsForTest()
+	SweepStaleSessionDirsForTest(root)
 
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatalf("fresh dir should survive, got err=%v", err)

@@ -8,17 +8,17 @@ import (
 	"testing"
 
 	"github.com/8enji/veil/internal/audit"
+	"github.com/8enji/veil/internal/testutil"
 	"github.com/8enji/veil/internal/vault"
 )
 
+// makeCred is a thin wrapper that delegates to testutil.MakeCred while
+// preserving the existing call-site arg order (name, placeholder, real, hosts)
+// and the "cred-<name>" ID convention that audit-assertion tests depend on.
 func makeCred(name, placeholder, real string, hosts ...string) *vault.Credential {
-	return &vault.Credential{
-		ID:           "cred-" + name,
-		Name:         name,
-		Placeholder:  placeholder,
-		Real:         real,
-		AllowedHosts: hosts,
-	}
+	c := testutil.MakeCred(name, real, placeholder, hosts...)
+	c.ID = "cred-" + name
+	return c
 }
 
 func placeholderMap(creds ...*vault.Credential) map[string]*vault.Credential {

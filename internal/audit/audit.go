@@ -47,6 +47,7 @@ type Store struct {
 	done      chan struct{}
 	flush     chan struct{} // signal immediate flush
 	closeOnce sync.Once
+	stopOnce  sync.Once      // gates close(done) so Close+DrainForTest can coexist
 	closeErr  error
 	wg        sync.WaitGroup // tracks the flusher goroutine
 
@@ -194,6 +195,23 @@ func (s *Store) Health() Health {
 	}
 }
 
+// stopFlusher signals the flusher goroutine to exit. It is idempotent and
+// safe to call from both Close() and DrainForTest().
+func (s *Store) stopFlusher() {
+	s.stopOnce.Do(func() { close(s.done) })
+}
+
+// DrainForTest stops the background flusher, waits for it to exit, and
+// synchronously flushes any pending rows. This is a test-only helper: it
+// lets tests deterministically wait for all Record() calls to land in the
+// DB without a time.Sleep. Safe to call before Close(); Close() uses the
+// same stopOnce so the done channel is only closed once.
+func (s *Store) DrainForTest() {
+	s.stopFlusher()
+	s.wg.Wait()
+	s.flushPending()
+}
+
 // Record appends an injection event to the pending buffer. It is safe for
 // concurrent use. When the buffer reaches 50 rows the flusher is signalled
 // to write immediately.
@@ -245,8 +263,8 @@ func (s *Store) Record(inj Injection) {
 // database handle is closed.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.done)
-		s.wg.Wait()      // flusher has observed done and returned
+		s.stopFlusher() // idempotent: DrainForTest may have already stopped it
+		s.wg.Wait()     // flusher has observed done and returned
 		s.flushPending() // drain anything enqueued after the last tick
 
 		s.mu.Lock()
