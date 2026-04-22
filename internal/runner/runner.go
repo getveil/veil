@@ -292,7 +292,13 @@ func formatDuration(d time.Duration) string {
 // sweepStaleSessionDirs removes veil-session-* directories under the OS temp
 // root that are older than 24h. Best-effort; errors are silently tolerated.
 func sweepStaleSessionDirs() {
-	root := os.TempDir()
+	sweepStaleSessionDirsIn(os.TempDir())
+}
+
+// sweepStaleSessionDirsIn is the inner form of sweepStaleSessionDirs that
+// accepts a custom root. Exposed via SweepStaleSessionDirsForTest so tests
+// can point the sweeper at t.TempDir() instead of the shared OS temp dir.
+func sweepStaleSessionDirsIn(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -311,5 +317,13 @@ func sweepStaleSessionDirs() {
 	}
 }
 
-// SweepStaleSessionDirsForTest exposes the sweeper for tests.
-var SweepStaleSessionDirsForTest = sweepStaleSessionDirs
+// SweepStaleSessionDirsForTest exposes the sweeper for tests. Callers pass
+// a custom root to avoid interfering with the shared OS temp dir; passing
+// "" uses os.TempDir() (the production path).
+func SweepStaleSessionDirsForTest(root string) {
+	if root == "" {
+		sweepStaleSessionDirs()
+		return
+	}
+	sweepStaleSessionDirsIn(root)
+}

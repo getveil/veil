@@ -344,19 +344,18 @@ func TestBuildChildEnv_EmptySkipHosts(t *testing.T) {
 }
 
 func TestSweepStaleSessionDirs(t *testing.T) {
-	root := os.TempDir()
+	root := t.TempDir()
 	stale, err := os.MkdirTemp(root, "veil-session-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(stale) })
 
 	past := time.Now().Add(-48 * time.Hour)
 	if err := os.Chtimes(stale, past, past); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	SweepStaleSessionDirsForTest()
+	SweepStaleSessionDirsForTest(root)
 
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale dir removed, got err=%v", err)
@@ -364,14 +363,13 @@ func TestSweepStaleSessionDirs(t *testing.T) {
 }
 
 func TestSweepStaleSessionDirsLeavesFresh(t *testing.T) {
-	root := os.TempDir()
+	root := t.TempDir()
 	fresh, err := os.MkdirTemp(root, "veil-session-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(fresh) })
 
-	SweepStaleSessionDirsForTest()
+	SweepStaleSessionDirsForTest(root)
 
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatalf("fresh dir should survive, got err=%v", err)
