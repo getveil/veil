@@ -124,7 +124,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// intervened on — this is the single most important guarantee in the
 	// product ("the agent never sees real tokens").
 	proxyURL := "http://" + server.Addr()
-	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, vlt.Names())
+	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, "", cfg.SkipHosts, vlt.Names())
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -203,13 +203,15 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 // buildChildEnv takes the current env, strips proxy-related, CA-related, and
 // vault-managed credential vars, and adds the proxy vars pointing to proxyURL
 // and CA vars pointing to bundlePath. skipHosts are appended to the default
-// NO_PROXY list. vaultNames is the set of credential names loaded from the
-// vault; any env var whose key matches (case-insensitively) is removed so the
-// child process cannot observe the real secret that the user exported in
-// their shell. The names of env vars actually stripped because of the vault
-// match are returned (using the original casing from the environment), so the
-// caller can surface a startup warning.
-func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vaultNames []string) ([]string, []string) {
+// NO_PROXY list. javaTruststorePath is the per-session PKCS12 that JVM
+// children use via JAVA_TOOL_OPTIONS (see Task 5/6). vaultNames is the set of
+// credential names loaded from the vault; any env var whose key matches
+// (case-insensitively) is removed so the child process cannot observe the
+// real secret that the user exported in their shell. The names of env vars
+// actually stripped because of the vault match are returned (using the
+// original casing from the environment), so the caller can surface a startup
+// warning.
+func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath string, skipHosts, vaultNames []string) ([]string, []string) {
 	vaultSet := make(map[string]struct{}, len(vaultNames))
 	for _, n := range vaultNames {
 		if n == "" {

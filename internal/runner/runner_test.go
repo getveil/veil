@@ -368,7 +368,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"REQUESTS_CA_BUNDLE=/old/requests-ca.pem",
 	}
 
-	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", nil, nil)
+	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
 
 	env := make(map[string]string)
 	for _, kv := range result {
@@ -426,7 +426,7 @@ func TestBuildChildEnv(t *testing.T) {
 }
 
 func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", []string{"staging.internal.com", "*.metrics.corp"}, nil)
+	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", []string{"staging.internal.com", "*.metrics.corp"}, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -451,7 +451,7 @@ func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
 }
 
 func TestBuildChildEnv_EmptySkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, nil)
+	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -478,7 +478,7 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY", "AWS_ACCESS_KEY_ID"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []string{"OPENAI_API_KEY", "AWS_ACCESS_KEY_ID"})
 
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
@@ -510,7 +510,7 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []string{"OPENAI_API_KEY"})
 
 	if len(stripped) != 0 {
 		t.Fatalf("stripped should be empty when no matches, got %v", stripped)
@@ -532,7 +532,7 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"openai_api_key"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []string{"openai_api_key"})
 
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "OPENAI_API_KEY=") {
