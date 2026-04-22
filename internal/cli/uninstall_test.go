@@ -148,3 +148,95 @@ func TestDiscoverBackupsEmpty(t *testing.T) {
 		t.Errorf("expected 0 pairs, got %v", pairs)
 	}
 }
+
+func TestClassifyEnvPairOriginalMissing(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+	if err := os.WriteFile(backup, []byte("KEY=value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, _, err := classifyEnvPair(orig, backup, nil)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classOriginalMissing {
+		t.Errorf("status = %v, want classOriginalMissing", status)
+	}
+}
+
+func TestClassifyEnvPairUnmodified(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+
+	backupContent := []byte("# header\nTOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	currentContent := []byte("# header\nTOKEN=ghp_veil_abc123\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := placeholderResolver{
+		"ghp_veil_abc123": "ghp_real1234567890abcdef1234567890abcdef",
+	}
+
+	status, _, err := classifyEnvPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classUnmodified {
+		t.Errorf("status = %v, want classUnmodified", status)
+	}
+}
+
+func TestClassifyEnvPairModified(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+
+	backupContent := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	currentContent := []byte("TOKEN=ghp_veil_abc123\nLOG_LEVEL=debug\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := placeholderResolver{
+		"ghp_veil_abc123": "ghp_real1234567890abcdef1234567890abcdef",
+	}
+
+	status, _, err := classifyEnvPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classModified {
+		t.Errorf("status = %v, want classModified", status)
+	}
+}
+
+func TestClassifyEnvPairModifiedWhenResolverNil(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+	if err := os.WriteFile(backup, []byte("A=b\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orig, []byte("A=b\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, _, err := classifyEnvPair(orig, backup, nil)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classUnmodified {
+		t.Errorf("status = %v, want classUnmodified (byte-equal, no substitution needed)", status)
+	}
+}
