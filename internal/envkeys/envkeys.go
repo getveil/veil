@@ -24,12 +24,14 @@ var ProxyKeys = []string{
 }
 
 // CAKeys lists environment variables that configure CA certificate bundles
-// across common runtimes (Node, curl, Python requests, httplib2, OpenSSL).
-// The runner strips these and replaces them with Veil's combined bundle.
+// across common runtimes (Node, curl, Python requests, httplib2, OpenSSL,
+// cargo). The runner strips these and replaces them with Veil's combined
+// bundle path.
 var CAKeys = []string{
 	"NODE_EXTRA_CA_CERTS",
 	"SSL_CERT_FILE",
 	"CURL_CA_BUNDLE",
 	"REQUESTS_CA_BUNDLE",
 	"HTTPLIB2_CA_CERTS",
+	"CARGO_HTTP_CAINFO",
 }

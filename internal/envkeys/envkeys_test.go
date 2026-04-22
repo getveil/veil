@@ -33,6 +33,7 @@ func TestCAKeysCoverage(t *testing.T) {
 		"CURL_CA_BUNDLE":      true,
 		"REQUESTS_CA_BUNDLE":  true,
 		"HTTPLIB2_CA_CERTS":   true,
+		"CARGO_HTTP_CAINFO":   true,
 	}
 	got := make(map[string]bool, len(CAKeys))
 	for _, k := range CAKeys {
