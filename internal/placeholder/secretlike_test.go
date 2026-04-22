@@ -94,3 +94,74 @@ func TestIsSecretLike_LongButRepeating(t *testing.T) {
 		t.Fatal("expected false for long all-same-char string")
 	}
 }
+
+// TestIsSecretLike_FilePathNotFlagged asserts that a typical Unix file path
+// is not flagged as secret-like. These are a common false-positive source
+// because they have moderate entropy (~4.0 bits/char) and exceed 20 chars.
+func TestIsSecretLike_FilePathNotFlagged(t *testing.T) {
+	cases := []string{
+		"/Users/ben/workspace/Veil/internal/placeholder/providers.go",
+		"/home/alice/projects/foo/bar/baz/qux.py",
+		"/var/log/syslog.1.gz",
+		"~/.config/app/settings.json",
+	}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			// Key name is deliberately non-secretish so only the
+			// length+entropy heuristic can fire.
+			if IsSecretLike("SOMEPATH", value) {
+				t.Fatalf("expected file path not to be secret-like: %q (entropy=%.2f, distinct=%d)",
+					value, shannonEntropy(value), distinctBytes(value))
+			}
+		})
+	}
+}
+
+// TestIsSecretLike_EnglishSentenceNotFlagged asserts that a typical English
+// sentence is not flagged as secret-like.
+func TestIsSecretLike_EnglishSentenceNotFlagged(t *testing.T) {
+	cases := []string{
+		"the quick brown fox jumps over the lazy dog",
+		"this is a sample log line emitted by the service",
+		"error: could not connect to the backend server",
+	}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			if IsSecretLike("LOG_LINE", value) {
+				t.Fatalf("expected English sentence not to be secret-like: %q (entropy=%.2f, distinct=%d)",
+					value, shannonEntropy(value), distinctBytes(value))
+			}
+		})
+	}
+}
+
+// TestIsSecretLike_HighEntropyLong_StillFlagged preserves the original
+// positive signal: a genuinely random, high-entropy string with many
+// distinct bytes must still be flagged.
+func TestIsSecretLike_HighEntropyLong_StillFlagged(t *testing.T) {
+	value := "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"
+	if !IsSecretLike("UNKNOWN", value) {
+		t.Fatalf("expected true for high-entropy long string (entropy=%.2f, distinct=%d)",
+			shannonEntropy(value), distinctBytes(value))
+	}
+}
+
+// TestDistinctBytes verifies the helper's correctness.
+func TestDistinctBytes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"a", 1},
+		{"aa", 1},
+		{"ab", 2},
+		{"abcabc", 3},
+		{"abcdefghij", 10},
+	}
+	for _, tc := range cases {
+		if got := distinctBytes(tc.in); got != tc.want {
+			t.Fatalf("distinctBytes(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
