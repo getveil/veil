@@ -14,6 +14,15 @@ import (
 	"github.com/8enji/veil/internal/testutil"
 )
 
+// allowAllAmbientSecretLikes returns the list of env-var names in the current
+// process environment that look secret-like per scanUnvaultedSecretLikes.
+// Tests that exercise Run() use this as AllowEnvSecrets so they don't trip on
+// the test runner's shell env (e.g. PATH, OAUTH tokens in CI). The contract
+// under test is separately covered by TestRun_FailsClosedOnUnvaultedShellSecrets.
+func allowAllAmbientSecretLikes() []string {
+	return scanUnvaultedSecretLikes(os.Environ(), nil, nil)
+}
+
 func TestRunHappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -24,10 +33,11 @@ func TestRunHappyPath(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "echo",
-		Args:     []string{"hello"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -47,10 +57,11 @@ func TestRunExitCode(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "exit 42"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "exit 42"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -72,10 +83,11 @@ func TestRunChildEnv(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "printenv HTTPS_PROXY > " + outFile},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "printenv HTTPS_PROXY > " + outFile},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -104,9 +116,10 @@ func TestRunCommandNotFound(t *testing.T) {
 	defer cancel()
 
 	_, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "/nonexistent/binary",
-		Keystore: ks,
+		Root:            root,
+		Command:         "/nonexistent/binary",
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err == nil {
 		t.Fatal("expected error for nonexistent command")
@@ -125,10 +138,11 @@ func TestRunChildCAEnvVars(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "printenv SSL_CERT_FILE > " + outFile},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "printenv SSL_CERT_FILE > " + outFile},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -172,8 +186,9 @@ func TestRunStripsVaultEnvAndAnnounces(t *testing.T) {
 		Root:    root,
 		Command: "sh",
 		// Write the child's TEST_SECRET env to a file — empty if stripped.
-		Args:     []string{"-c", "printenv TEST_SECRET > " + outFile + "; true"},
-		Keystore: ks,
+		Args:            []string{"-c", "printenv TEST_SECRET > " + outFile + "; true"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 
 	_ = w.Close()
@@ -193,8 +208,10 @@ func TestRunStripsVaultEnvAndAnnounces(t *testing.T) {
 	if strings.Contains(string(data), "real-secret-value-from-shell") {
 		t.Fatalf("child still saw real secret: %q — SEC-1 regression", data)
 	}
-	if strings.TrimSpace(string(data)) != "" {
-		t.Fatalf("child TEST_SECRET should be empty after strip, got %q", data)
+	// After strip, the child must see the placeholder under the same name,
+	// not the real value and not an empty string.
+	if got := strings.TrimSpace(string(data)); got != "VEIL_PH_test_secret" {
+		t.Fatalf("child TEST_SECRET = %q, want placeholder %q", got, "VEIL_PH_test_secret")
 	}
 
 	var buf bytes.Buffer
@@ -246,10 +263,11 @@ func TestRunBannerShowsResolvedAgentPath(t *testing.T) {
 	os.Stderr = w
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "shadow-echo",
-		Args:     []string{"hi"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "shadow-echo",
+		Args:            []string{"hi"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	_ = w.Close()
 	os.Stderr = oldStderr
@@ -285,10 +303,11 @@ func TestRunBookends(t *testing.T) {
 	os.Stderr = w
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "echo",
-		Args:     []string{"hello"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 
 	_ = w.Close()
@@ -478,13 +497,12 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY", "AWS_ACCESS_KEY_ID"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+		{Name: "AWS_ACCESS_KEY_ID", Placeholder: "VEIL_AWS_BBB"},
+	})
 
 	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		if k == "OPENAI_API_KEY" || k == "AWS_ACCESS_KEY_ID" {
-			t.Fatalf("vault-named var leaked to child env: %s", kv)
-		}
 		if strings.Contains(kv, "sk-real-live-secret") || strings.Contains(kv, "AKIAREAL") {
 			t.Fatalf("real secret value leaked to child env: %s", kv)
 		}
@@ -499,6 +517,20 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 			t.Errorf("unexpected stripped name %q", n)
 		}
 	}
+
+	// New assertion: each stripped name must be re-injected with its placeholder.
+	for _, want := range []string{"OPENAI_API_KEY=VEIL_OPENAI_KEY_AAA", "AWS_ACCESS_KEY_ID=VEIL_AWS_BBB"} {
+		found := false
+		for _, kv := range env {
+			if kv == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("env missing placeholder re-injection %q", want)
+		}
+	}
 }
 
 // TestBuildChildEnv_PassesThroughNonMatchingVar verifies that env vars whose
@@ -510,7 +542,9 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"OPENAI_API_KEY"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+	})
 
 	if len(stripped) != 0 {
 		t.Fatalf("stripped should be empty when no matches, got %v", stripped)
@@ -527,15 +561,55 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 	}
 }
 
+// TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar verifies that when a
+// shell-exported env var's name matches a vault credential, the real value
+// is stripped AND the credential's placeholder is re-injected under the same
+// name so the child still has a value (the placeholder) to send upstream.
+func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
+	base := []string{
+		"HOME=/home/user",
+		"OPENAI_API_KEY=sk-real-secret-value-1234567890",
+	}
+	vaultEntries := []vaultEntry{
+		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_API_KEY_XYZ"},
+	}
+
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, vaultEntries)
+
+	if len(stripped) != 1 || stripped[0] != "OPENAI_API_KEY" {
+		t.Fatalf("stripped = %v, want [OPENAI_API_KEY]", stripped)
+	}
+	// Real value must NOT appear.
+	for _, kv := range env {
+		if strings.Contains(kv, "sk-real-secret-value-1234567890") {
+			t.Fatalf("real secret leaked into env: %q", kv)
+		}
+	}
+	// Placeholder MUST appear, keyed by the original var name.
+	want := "OPENAI_API_KEY=VEIL_OPENAI_API_KEY_XYZ"
+	found := false
+	for _, kv := range env {
+		if kv == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("env missing re-injected placeholder %q; env=%v", want, env)
+	}
+}
+
 // TestBuildChildEnv_StripVaultNameCaseInsensitive verifies that matching is
 // case-insensitive so that a credential named "openai_api_key" still strips
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []string{"openai_api_key"})
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", nil, []vaultEntry{
+		{Name: "openai_api_key", Placeholder: "VEIL_OPENAI_KEY_AAA"},
+	})
 
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "OPENAI_API_KEY=") {
+		if kv == "OPENAI_API_KEY=shell-value" {
 			t.Fatalf("case-insensitive match should have stripped: %s", kv)
 		}
 	}
@@ -637,6 +711,60 @@ func TestSweepStaleSessionDirs(t *testing.T) {
 
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale dir removed, got err=%v", err)
+	}
+}
+
+// TestRun_FailsClosedOnUnvaultedShellSecrets verifies that in non-interactive
+// mode, a shell-exported secret-like env var that is not in the vault causes
+// veil to refuse to launch the child.
+func TestRun_FailsClosedOnUnvaultedShellSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := Run(ctx, Config{
+		Root:     root,
+		Command:  "echo",
+		Args:     []string{"hello"},
+		Keystore: ks,
+	})
+	if err == nil {
+		t.Fatal("Run succeeded with unvaulted shell secret; expected fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "FAKE_PROVIDER_API_KEY") {
+		t.Errorf("err = %v, want message naming FAKE_PROVIDER_API_KEY", err)
+	}
+}
+
+// TestRun_AllowEnvSecretBypass verifies that --allow-env-secret permits a
+// secret-like shell export to pass through.
+func TestRun_AllowEnvSecretBypass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := Run(ctx, Config{
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: append(allowAllAmbientSecretLikes(), "FAKE_PROVIDER_API_KEY"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
 	}
 }
 

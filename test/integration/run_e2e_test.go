@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/8enji/veil/internal/placeholder"
+	"github.com/8enji/veil/internal/scanner"
 )
 
 // projectRoot returns the absolute path to the Veil repo root. It walks
@@ -84,6 +87,15 @@ func buildTestClient(t *testing.T, binDir string) string {
 //
 // We do NOT set VEIL_TEST_KEYSTORE=mem because e2e tests span multiple
 // processes that must share the keystore via disk.
+//
+// We also scrub ambient secret-like vars (ANTHROPIC_API_KEY, GITHUB_TOKEN,
+// USE_STAGING_OAUTH, etc.) that a developer or CI runner may have exported
+// in their shell. These would otherwise trip the runtime fail-closed scan in
+// `veil run` (see internal/runner/envscan.go). This mirrors the unit-test
+// hygiene in internal/cli/init_shellenv_test.go (clearShellEnvTestNoise) and
+// internal/runner/runner_test.go (allowAllAmbientSecretLikes): the tests
+// simulate a clean shell, which is what they always meant to model. POSIX
+// names on the scanner denylist (PATH, PWD, etc.) are left alone.
 func makeEnv(t *testing.T) []string {
 	t.Helper()
 	src := os.Environ()
@@ -94,6 +106,14 @@ func makeEnv(t *testing.T) []string {
 			continue
 		}
 		if overrideHome && strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		key, value, ok := strings.Cut(kv, "=")
+		if ok && key != "" &&
+			!scanner.IsObviouslyNotSecret(key) &&
+			placeholder.IsSecretLike(key, value) {
+			// Drop genuine ambient secret-like vars so veil run's
+			// fail-closed scan doesn't reject the test subprocess.
 			continue
 		}
 		out = append(out, kv)
@@ -438,8 +458,13 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	// placeholder would reach the wire. The fail-closed guard (SEC-2) must
 	// then detect the sentinel and refuse to forward the request — the test
 	// server should receive nothing.
-	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
-		clientBin, ts.URL+"/echo")
+	//
+	// TEST_API_KEY is an intentionally-passed test fixture whose value is a
+	// Veil placeholder that looks secret-like; --allow-env-secret satisfies
+	// the runtime fail-closed scan so the test can still exercise the path.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir,
+		"--allow-env-secret", "TEST_API_KEY",
+		"--", clientBin, ts.URL+"/echo")
 	runEnv := append(env, "TEST_API_KEY="+placeholder)
 	runCmd.Env = runEnv
 	// The proxy returns 502 to the testclient; testclient still exits 0 and
@@ -602,9 +627,12 @@ func TestE2E_ProxyBodyInjection(t *testing.T) {
 	// Build a JSON body containing the placeholder.
 	testBody := fmt.Sprintf(`{"model":"gpt-4","key":"%s"}`, placeholder)
 
-	// Run testclient_post through veil run.
-	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
-		postClientBin, ts.URL+"/v1/chat")
+	// Run testclient_post through veil run. TEST_BODY carries the
+	// placeholder; --allow-env-secret lets it past the runtime fail-closed
+	// scan.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir,
+		"--allow-env-secret", "TEST_BODY",
+		"--", postClientBin, ts.URL+"/v1/chat")
 	runCmd.Env = append(env, "TEST_BODY="+testBody)
 	runOut, err := runCmd.CombinedOutput()
 	if err != nil {
@@ -708,8 +736,11 @@ func TestE2E_ProxyHeaderInjectionAuthorizedHost(t *testing.T) {
 	}
 
 	// Run testclient through veil run with the placeholder as TEST_API_KEY.
-	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
-		clientBin, ts.URL+"/repos")
+	// --allow-env-secret permits the test-injected var past the runtime
+	// fail-closed scan.
+	runCmd := exec.Command(veilBin, "run", "--path", projDir,
+		"--allow-env-secret", "TEST_API_KEY",
+		"--", clientBin, ts.URL+"/repos")
 	runCmd.Env = append(env, "TEST_API_KEY="+placeholder)
 	runOut, err := runCmd.CombinedOutput()
 	if err != nil {

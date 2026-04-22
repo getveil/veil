@@ -180,6 +180,9 @@ func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	// Ensure no MCP config is discovered either.
 	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	// Strip CI/dev-shell secret-like exports so the shell-env scan also finds
+	// nothing, ensuring the early-exit gate fires for the "no sources" case.
+	clearShellEnvTestNoise(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -197,7 +200,7 @@ func TestInitNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "no .env files or MCP configs found") {
+	if !strings.Contains(outStr, "no .env files, MCP configs, or shell-exported secrets found") {
 		t.Errorf("expected no-sources message, got: %s", outStr)
 	}
 }
@@ -742,9 +745,15 @@ func TestInitYes_VaultsAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	creds := v.List()
-	if len(creds) != 2 {
-		t.Errorf("expected 2 credentials, got %d", len(creds))
+	// Assert on specific .env-derived credentials rather than total count:
+	// the test runner's shell env may contribute additional secret-like
+	// entries (e.g. CLAUDE_CODE_OAUTH_TOKEN) that would otherwise inflate
+	// the count unpredictably.
+	if _, ok := v.Get("OPENAI_API_KEY"); !ok {
+		t.Error("OPENAI_API_KEY should be vaulted")
+	}
+	if _, ok := v.Get("GITHUB_TOKEN"); !ok {
+		t.Error("GITHUB_TOKEN should be vaulted")
 	}
 }
 
@@ -806,6 +815,10 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Clear known test-runner env noise so shell-env scan has nothing to
+	// prompt about — otherwise the stdin script below would feed its inputs
+	// into the shell-env prompt instead of the skip-hosts prompt.
+	clearShellEnvTestNoise(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)

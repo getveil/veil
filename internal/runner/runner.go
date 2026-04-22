@@ -21,12 +21,13 @@ import (
 
 // Config holds the parameters for a single veil run invocation.
 type Config struct {
-	Root      string         // project root
-	Command   string         // child command
-	Args      []string       // child args
-	Verbose   bool           //nolint:unused // reserved for future use
-	SkipHosts []string       // hosts to exclude from proxying (added to NO_PROXY)
-	Keystore  vault.Keystore // optional; nil means AutoKeystore
+	Root            string         // project root
+	Command         string         // child command
+	Args            []string       // child args
+	Verbose         bool           //nolint:unused // reserved for future use
+	SkipHosts       []string       // hosts to exclude from proxying (added to NO_PROXY)
+	Keystore        vault.Keystore // optional; nil means AutoKeystore
+	AllowEnvSecrets []string       // env var names to pass through even if secret-like and not in vault
 }
 
 // Result holds the outcome of a completed child process.
@@ -124,9 +125,33 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// intervened on — this is the single most important guarantee in the
 	// product ("the agent never sees real tokens").
 	proxyURL := "http://" + server.Addr()
-	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, vlt.Names())
+	creds := vlt.List()
+	entries := make([]vaultEntry, 0, len(creds))
+	for _, c := range creds {
+		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
+	}
+	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
+	}
+
+	// 6b. Belt-and-suspenders: scan for secret-like env vars that slipped past
+	// init (e.g., a new export since `veil init` ran). Warn interactively;
+	// fail-closed non-interactively unless --allow-env-secret covers them.
+	allowSet := make(map[string]struct{}, len(cfg.AllowEnvSecrets))
+	for _, n := range cfg.AllowEnvSecrets {
+		if n == "" {
+			continue
+		}
+		allowSet[strings.ToUpper(n)] = struct{}{}
+	}
+	unvaulted := scanUnvaultedSecretLikes(os.Environ(), vlt.Names(), allowSet)
+	if len(unvaulted) > 0 {
+		printUnvaultedWarning(os.Stderr, unvaulted)
+		if stdinTTYFd() < 0 {
+			return nil, fmt.Errorf("refusing to launch: %d shell env var(s) look like unvaulted secrets (%s); rerun with --allow-env-secret or veil init --force",
+				len(unvaulted), strings.Join(unvaulted, ", "))
+		}
 	}
 
 	// 7. Exec child using the resolved realpath so we cannot race with a
@@ -200,26 +225,37 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	return &Result{ExitCode: 0}, nil
 }
 
+// vaultEntry is the minimum subset of a vault credential that buildChildEnv
+// needs: the env var name that may be shell-exported, and the placeholder to
+// substitute in its place so the child still has a value (the placeholder)
+// associated with that name.
+type vaultEntry struct {
+	Name        string
+	Placeholder string
+}
+
 // buildChildEnv takes the current env, strips proxy-related, CA-related, and
 // vault-managed credential vars, and adds the proxy vars pointing to proxyURL
 // and CA vars pointing to bundlePath. skipHosts are appended to the default
-// NO_PROXY list. vaultNames is the set of credential names loaded from the
-// vault; any env var whose key matches (case-insensitively) is removed so the
-// child process cannot observe the real secret that the user exported in
-// their shell. The names of env vars actually stripped because of the vault
-// match are returned (using the original casing from the environment), so the
+// NO_PROXY list. vaultEntries is the set of credentials loaded from the vault;
+// any env var whose key matches (case-insensitively) has its real value
+// stripped and replaced with the credential's placeholder, so the child
+// process cannot observe the real secret that the user exported in their
+// shell. The names of env vars actually stripped because of the vault match
+// are returned (using the original casing from the environment), so the
 // caller can surface a startup warning.
-func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vaultNames []string) ([]string, []string) {
-	vaultSet := make(map[string]struct{}, len(vaultNames))
-	for _, n := range vaultNames {
-		if n == "" {
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string) {
+	vaultMap := make(map[string]string, len(vaultEntries))
+	for _, e := range vaultEntries {
+		if e.Name == "" {
 			continue
 		}
-		vaultSet[strings.ToUpper(n)] = struct{}{}
+		vaultMap[strings.ToUpper(e.Name)] = e.Placeholder
 	}
 
 	stripped := make([]string, 0, len(environ))
 	strippedVault := make([]string, 0)
+	reinject := make([]string, 0)
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -229,8 +265,9 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vau
 		if isProxyEnvKey(key) || isCAEnvKey(key) {
 			continue
 		}
-		if _, hit := vaultSet[strings.ToUpper(key)]; hit {
+		if ph, hit := vaultMap[strings.ToUpper(key)]; hit {
 			strippedVault = append(strippedVault, key)
+			reinject = append(reinject, key+"="+ph)
 			continue
 		}
 		stripped = append(stripped, kv)
@@ -254,6 +291,11 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vau
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
 	)
+	// Append re-injected placeholders last for readability. The proxy/CA
+	// filter above skips any name matching isProxyEnvKey/isCAEnvKey before
+	// reaching the vault branch, so there is no collision with the proxy/CA
+	// vars we just appended.
+	env = append(env, reinject...)
 	return env, strippedVault
 }
 
