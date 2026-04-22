@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/8enji/veil/internal/envkeys"
 	"github.com/8enji/veil/internal/vault"
 )
 
@@ -25,12 +26,12 @@ func testKeystore() *vault.MemKeystore {
 	return testKeystoreInst
 }
 
-// maybeTestKeystore returns (mem-keystore, true) when VEIL_TEST_KEYSTORE=mem is
-// set and the binary was built with -tags testkeystore. The !testkeystore stub
-// (compiled into production builds) always returns (nil, false), so the env-var
-// branch does not exist in production binaries.
+// maybeTestKeystore returns (mem-keystore, true) when envkeys.TestKeystoreToggle
+// is set to "mem" and the binary was built with -tags testkeystore. The
+// !testkeystore stub (compiled into production builds) always returns (nil,
+// false), so the env-var branch does not exist in production binaries.
 func maybeTestKeystore() (vault.Keystore, bool) {
-	if os.Getenv("VEIL_TEST_KEYSTORE") == "mem" {
+	if os.Getenv(envkeys.TestKeystoreToggle) == "mem" {
 		return testKeystore(), true
 	}
 	return nil, false

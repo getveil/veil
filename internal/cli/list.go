@@ -9,6 +9,7 @@ import (
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/ui"
+	"github.com/8enji/veil/internal/vault"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -36,11 +37,6 @@ func listCmd() *cobra.Command {
 }
 
 func runList(cmd *cobra.Command, reveal, showPlaceholder, assumeYes bool) error {
-	root, err := resolveRoot()
-	if err != nil {
-		return cliError(err.Error(), "")
-	}
-
 	if reveal {
 		if !stdoutIsTerminal() && !assumeYes {
 			return cliError(
@@ -52,11 +48,12 @@ func runList(cmd *cobra.Command, reveal, showPlaceholder, assumeYes bool) error 
 			"This action is recorded in the audit log.")
 	}
 
-	v, err := openVault(root)
-	if err != nil {
-		return cliError(fmt.Sprintf("opening vault: %v", err), "")
-	}
+	return withVault(cmd, func(root string, v *vault.Vault) error {
+		return runListInVault(cmd, root, v, reveal, showPlaceholder)
+	})
+}
 
+func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, showPlaceholder bool) error {
 	creds := v.List()
 	if len(creds) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No credentials in vault.")

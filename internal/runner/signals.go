@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -59,7 +58,7 @@ func escalate(ctx context.Context, cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return
 		}
-		fmt.Fprintln(os.Stderr, ui.Muted.Sprint("Waiting for process to exit..."))
+		ui.Dim(os.Stderr, "Waiting for process to exit...")
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 
@@ -73,7 +72,7 @@ func escalate(ctx context.Context, cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return
 		}
-		fmt.Fprintln(os.Stderr, ui.Muted.Sprint("Force-killed child process."))
+		ui.Dim(os.Stderr, "Force-killed child process.")
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }

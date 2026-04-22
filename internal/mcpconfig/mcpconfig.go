@@ -8,14 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/8enji/veil/internal/envkeys"
 )
 
 const configFileName = "claude_desktop_config.json"
 
 // Discover returns the path to Claude Desktop's MCP config file, or "" if not found.
-// If VEIL_MCP_CONFIG_PATH is set, it is used instead (for testing).
+// If envkeys.MCPConfigOverride is set, it is used instead (for testing).
 func Discover() (string, error) {
-	if override := os.Getenv("VEIL_MCP_CONFIG_PATH"); override != "" {
+	if override := os.Getenv(envkeys.MCPConfigOverride); override != "" {
 		info, err := os.Stat(override) // #nosec G304 G703 -- override is an opt-in test hook
 		if err != nil {
 			return "", nil

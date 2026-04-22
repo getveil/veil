@@ -13,6 +13,7 @@ import (
 
 	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/envkeys"
 	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
@@ -31,12 +32,6 @@ type Config struct {
 // Result holds the outcome of a completed child process.
 type Result struct {
 	ExitCode int
-}
-
-// proxyEnvKeys lists all environment variable names that configure HTTP proxies.
-var proxyEnvKeys = []string{
-	"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-	"NO_PROXY", "no_proxy",
 }
 
 // Run starts the proxy, launches the child command with proxy env vars injected,
@@ -118,7 +113,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
 		ui.Success.Sprint("veil"), credCount)
 	fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Muted.Sprint("agent:"), ui.Muted.Sprint(resolvedCmd))
-	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
+	ui.Dim(os.Stderr, "───────────────────────────────────────")
 	if warning := formatStartupWarning(credCount); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
 	}
@@ -180,7 +175,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// 11c. Print exit summary to stderr.
 	sessionDuration := time.Since(sessionStart)
 	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := auditStore.Summary(sessionStart)
-	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
+	ui.Dim(os.Stderr, "───────────────────────────────────────")
 	fmt.Fprintf(os.Stderr, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
 	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", formatDuration(sessionDuration))
 	if summaryErr == nil {
@@ -265,7 +260,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vau
 // isProxyEnvKey returns true if the given key is a proxy-related environment
 // variable that should be stripped and replaced.
 func isProxyEnvKey(key string) bool {
-	for _, k := range proxyEnvKeys {
+	for _, k := range envkeys.ProxyKeys {
 		if strings.EqualFold(key, k) {
 			return true
 		}
@@ -273,21 +268,10 @@ func isProxyEnvKey(key string) bool {
 	return false
 }
 
-// caEnvKeys lists environment variable names that configure CA certificate
-// bundles across runtimes. These are stripped and replaced with Veil's
-// combined bundle.
-var caEnvKeys = []string{
-	"NODE_EXTRA_CA_CERTS",
-	"SSL_CERT_FILE",
-	"CURL_CA_BUNDLE",
-	"REQUESTS_CA_BUNDLE",
-	"HTTPLIB2_CA_CERTS",
-}
-
 // isCAEnvKey returns true if the given key is a CA-related environment
-// variable that should be stripped and replaced.
+// variable that should be stripped and replaced with Veil's combined bundle.
 func isCAEnvKey(key string) bool {
-	for _, k := range caEnvKeys {
+	for _, k := range envkeys.CAKeys {
 		if strings.EqualFold(key, k) {
 			return true
 		}
@@ -335,12 +319,12 @@ func resolveAgentCommand(cmd string) (string, error) {
 //	    NAME_2
 //	  the agent will see Veil's placeholders instead.
 func printStrippedEnvWarning(w *os.File, names []string) {
-	fmt.Fprintf(w, "  %s stripped %d credential(s) from agent environment (sourced from your shell):\n",
+	_, _ = fmt.Fprintf(w, "  %s stripped %d credential(s) from agent environment (sourced from your shell):\n",
 		ui.Warning.Sprint("!"), len(names))
 	for _, n := range names {
-		fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
+		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
 	}
-	fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("the agent will see Veil's placeholders instead."))
+	_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("the agent will see Veil's placeholders instead."))
 }
 
 // formatStartupWarning returns a warning message if credCount is zero, or empty string otherwise.

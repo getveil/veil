@@ -47,7 +47,7 @@ type Store struct {
 	done      chan struct{}
 	flush     chan struct{} // signal immediate flush
 	closeOnce sync.Once
-	stopOnce  sync.Once      // gates close(done) so Close+DrainForTest can coexist
+	stopOnce  sync.Once // gates close(done) so Close+DrainForTest can coexist
 	closeErr  error
 	wg        sync.WaitGroup // tracks the flusher goroutine
 
@@ -100,10 +100,10 @@ func Open(dbPath string) (*Store, error) {
 	// Ensure parent dir is 0700 before creating the DB.
 	parent := filepath.Dir(dbPath)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: create parent dir: %w", ErrAuditOpen, err)
+		return nil, fmt.Errorf("%w: create parent dir: %w", ErrOpen, err)
 	}
 	if err := os.Chmod(parent, 0o700); err != nil { // #nosec G302 -- 0700 is correct for a directory
-		return nil, fmt.Errorf("%w: chmod parent dir: %w", ErrAuditOpen, err)
+		return nil, fmt.Errorf("%w: chmod parent dir: %w", ErrOpen, err)
 	}
 
 	// modernc.org/sqlite does not honour _journal_mode= / _synchronous= DSN
@@ -153,7 +153,7 @@ func Open(dbPath string) (*Store, error) {
 		}
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrAuditOpen, err)
+		return nil, fmt.Errorf("%w: %w", ErrOpen, err)
 	}
 
 	// Chmod 0600 on db and sidecars. `-wal` may have been auto-checkpointed
@@ -167,7 +167,7 @@ func Open(dbPath string) (*Store, error) {
 				continue
 			}
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: chmod %s: %w", ErrAuditOpen, p, err)
+			return nil, fmt.Errorf("%w: chmod %s: %w", ErrOpen, p, err)
 		}
 	}
 
@@ -263,8 +263,8 @@ func (s *Store) Record(inj Injection) {
 // database handle is closed.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
-		s.stopFlusher() // idempotent: DrainForTest may have already stopped it
-		s.wg.Wait()     // flusher has observed done and returned
+		s.stopFlusher()  // idempotent: DrainForTest may have already stopped it
+		s.wg.Wait()      // flusher has observed done and returned
 		s.flushPending() // drain anything enqueued after the last tick
 
 		s.mu.Lock()
@@ -339,12 +339,12 @@ func (s *Store) flushPending() {
 func (s *Store) writeBatch(batch []Injection) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("%w: begin: %w", ErrAuditWrite, err)
+		return fmt.Errorf("%w: begin: %w", ErrWrite, err)
 	}
 	stmt, err := tx.Prepare(insertSQL)
 	if err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("%w: prepare: %w", ErrAuditWrite, err)
+		return fmt.Errorf("%w: prepare: %w", ErrWrite, err)
 	}
 	for _, inj := range batch {
 		suspect := 0
@@ -369,12 +369,12 @@ func (s *Store) writeBatch(batch []Injection) error {
 		); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
-			return fmt.Errorf("%w: exec: %w", ErrAuditWrite, err)
+			return fmt.Errorf("%w: exec: %w", ErrWrite, err)
 		}
 	}
 	_ = stmt.Close()
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%w: commit: %w", ErrAuditWrite, err)
+		return fmt.Errorf("%w: commit: %w", ErrWrite, err)
 	}
 	return nil
 }

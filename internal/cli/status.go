@@ -11,6 +11,7 @@ import (
 	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/runner"
 	"github.com/8enji/veil/internal/ui"
+	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -25,18 +26,13 @@ func statusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command) error {
-	root, err := resolveRoot()
-	if err != nil {
-		return cliError(err.Error(), "")
-	}
+	return withVault(cmd, func(root string, v *vault.Vault) error {
+		return runStatusInVault(cmd, root, v)
+	})
+}
 
+func runStatusInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	w := cmd.OutOrStdout()
-
-	// Open vault.
-	v, err := openVault(root)
-	if err != nil {
-		return cliError(fmt.Sprintf("opening vault: %v", err), "")
-	}
 
 	creds := v.List()
 	credCount := len(creds)
@@ -44,7 +40,7 @@ func runStatus(cmd *cobra.Command) error {
 	// Check CA — call once and store result.
 	caFile, err := config.CAFile()
 	if err != nil {
-		return cliError(fmt.Sprintf("CA file path: %v", err), "")
+		return wrapErr("CA file path", err)
 	}
 
 	_, caErr := proxy.LoadOrCreateCA()
@@ -53,14 +49,14 @@ func runStatus(cmd *cobra.Command) error {
 	auditDBPath := config.AuditDBFile(root)
 	store, err := audit.Open(auditDBPath)
 	if err != nil {
-		return cliError(fmt.Sprintf("opening audit db: %v", err), "")
+		return wrapErr("opening audit db", err)
 	}
 	defer func() { _ = store.Close() }()
 
 	since := time.Now().Add(-24 * time.Hour)
 	total, blocked, hosts, lastInj, err := store.Summary(since)
 	if err != nil {
-		return cliError(fmt.Sprintf("querying audit: %v", err), "")
+		return wrapErr("querying audit", err)
 	}
 
 	// Print header: "Veil Status  /path/to/project"

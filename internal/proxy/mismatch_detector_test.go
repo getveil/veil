@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -132,16 +131,7 @@ func TestDetector_HostWithPortMatches(t *testing.T) {
 
 func TestDetectorLogLine(t *testing.T) {
 	var buf bytes.Buffer
-	origOutput := log.Writer()
-	origFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(origOutput)
-		log.SetFlags(origFlags)
-	})
-
-	logMismatch("api.github.com", "/user", "GET", authSignalAuthorizationHeader, []string{"gh"})
+	logMismatch(&buf, "api.github.com", "/user", "GET", authSignalAuthorizationHeader, []string{"gh"})
 
 	out := buf.String()
 	if !strings.Contains(out, "event=transform_mismatch_suspected") {

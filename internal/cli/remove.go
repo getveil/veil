@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/8enji/veil/internal/ui"
+	"github.com/8enji/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -23,16 +24,12 @@ func removeCmd() *cobra.Command {
 }
 
 func runRemove(cmd *cobra.Command, name string, force bool) error {
-	root, err := resolveRoot()
-	if err != nil {
-		return cliError(err.Error(), "")
-	}
+	return withVault(cmd, func(_ string, v *vault.Vault) error {
+		return runRemoveInVault(cmd, v, name, force)
+	})
+}
 
-	v, err := openVault(root)
-	if err != nil {
-		return cliError(fmt.Sprintf("opening vault: %v", err), "")
-	}
-
+func runRemoveInVault(cmd *cobra.Command, v *vault.Vault, name string, force bool) error {
 	// Check the credential exists before prompting.
 	cred, found := v.Get(name)
 	if !found {
