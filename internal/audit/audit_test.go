@@ -177,6 +177,13 @@ func TestSummary(t *testing.T) {
 	blockedInj2.BytesAfter = 0
 	s.Record(blockedInj2)
 
+	// Add a suspect row — must NOT count toward total, hosts, or last.
+	suspect := makeInjection("suspect.example.com", "susp-key", base.Add(7*time.Second))
+	suspect.Location = "mismatch_suspected"
+	suspect.SuspectFlag = true
+	suspect.AuthSignal = "authorization_header"
+	s.Record(suspect)
+
 	s.flushPending()
 
 	total, blocked, hostList, last, err := s.Summary(base)
@@ -185,19 +192,24 @@ func TestSummary(t *testing.T) {
 	}
 
 	if total != 3 {
-		t.Errorf("total = %d, want 3", total)
+		t.Errorf("total = %d, want 3 (suspect row must be excluded)", total)
 	}
 	if blocked != 2 {
 		t.Errorf("blocked = %d, want 2", blocked)
 	}
 	if len(hostList) != 3 {
-		t.Errorf("hosts = %v, want 3 distinct", hostList)
+		t.Errorf("hosts = %v, want 3 distinct (suspect host must be excluded)", hostList)
+	}
+	for _, h := range hostList {
+		if h == "suspect.example.com" {
+			t.Errorf("suspect host leaked into hostList: %v", hostList)
+		}
 	}
 	if last == nil {
 		t.Fatal("lastInjection is nil")
 	}
 	if last.Host != "api.cohere.com" {
-		t.Errorf("last host = %q, want api.cohere.com", last.Host)
+		t.Errorf("last host = %q, want api.cohere.com (suspect row must be excluded)", last.Host)
 	}
 }
 

@@ -125,8 +125,9 @@ func buildSelectQuery(clauses []string) string { //nolint:gosec // clauses are s
 func (s *Store) Summary(since time.Time) (total int, blocked int, hosts []string, lastInjection *Row, err error) {
 	sinceMillis := since.UnixMilli()
 
-	// Total successful count.
-	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location != 'blocked'", sinceMillis).Scan(&total)
+	// Total successful count — excludes blocked and suspect (transform
+	// mismatch) rows so callers like the session-end banner don't over-count.
+	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location != 'blocked' AND suspect_flag = 0", sinceMillis).Scan(&total)
 	if err != nil {
 		return
 	}
@@ -137,8 +138,8 @@ func (s *Store) Summary(since time.Time) (total int, blocked int, hosts []string
 		return
 	}
 
-	// Distinct hosts (successful injections only).
-	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? AND location != 'blocked' ORDER BY host", sinceMillis)
+	// Distinct hosts (successful injections only — suspects excluded).
+	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? AND location != 'blocked' AND suspect_flag = 0 ORDER BY host", sinceMillis)
 	if err != nil {
 		return
 	}
@@ -154,11 +155,11 @@ func (s *Store) Summary(since time.Time) (total int, blocked int, hosts []string
 		return
 	}
 
-	// Most recent successful injection.
+	// Most recent successful injection — suspects excluded.
 	r := &Row{}
 	var tsMillis int64
 	scanErr := s.db.QueryRow(
-		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? AND location != 'blocked' ORDER BY ts DESC LIMIT 1",
+		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? AND location != 'blocked' AND suspect_flag = 0 ORDER BY ts DESC LIMIT 1",
 		sinceMillis,
 	).Scan(
 		&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,
