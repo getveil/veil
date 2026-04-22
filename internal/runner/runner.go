@@ -140,7 +140,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// fail-closed non-interactively unless --allow-env-secret covers them.
 	allowSet := make(map[string]struct{}, len(cfg.AllowEnvSecrets))
 	for _, n := range cfg.AllowEnvSecrets {
-		allowSet[n] = struct{}{}
+		if n == "" {
+			continue
+		}
+		allowSet[strings.ToUpper(n)] = struct{}{}
 	}
 	unvaulted := scanUnvaultedSecretLikes(os.Environ(), vlt.Names(), allowSet)
 	if len(unvaulted) > 0 {

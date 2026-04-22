@@ -64,6 +64,21 @@ func TestScanUnvaultedSecretLikes_CaseInsensitiveVaultMatch(t *testing.T) {
 	}
 }
 
+func TestScanUnvaultedSecretLikes_CaseInsensitiveAllowMatch(t *testing.T) {
+	environ := []string{
+		"OPENAI_API_KEY=sk-proj-notvaulted1234567890abc",
+	}
+	vaultNames := []string{}
+	// User passed --allow-env-secret with different case from the actual env var.
+	allow := map[string]struct{}{"openai_api_key": {}}
+
+	got := scanUnvaultedSecretLikes(environ, vaultNames, allow)
+
+	if len(got) != 0 {
+		t.Fatalf("got %d names, want 0 (allow match must be case-insensitive): %v", len(got), got)
+	}
+}
+
 func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 	var buf bytes.Buffer
 	printUnvaultedWarning(&buf, []string{"FOO_TOKEN", "BAR_SECRET"})
