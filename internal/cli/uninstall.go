@@ -13,6 +13,7 @@ import (
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/mcpconfig"
 	"github.com/8enji/veil/internal/scanner"
+	"github.com/8enji/veil/internal/vault"
 )
 
 // activeProxyPIDs returns the list of PIDs from proxy-*.pid files that
@@ -314,4 +315,20 @@ func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, 
 		}
 	}
 	return cfg.Bytes()
+}
+
+// resolverFromVault returns a placeholderResolver mapping each credential's
+// placeholder → real value. If a credential has a Basic-auth username
+// placeholder, that mapping is included too.
+func resolverFromVault(v *vault.Vault) placeholderResolver {
+	resolver := make(placeholderResolver)
+	for _, cred := range v.List() {
+		if cred.Placeholder != "" {
+			resolver[cred.Placeholder] = cred.Real
+		}
+		if cred.UsernamePlaceholder != "" {
+			resolver[cred.UsernamePlaceholder] = cred.Username
+		}
+	}
+	return resolver
 }

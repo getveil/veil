@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -349,5 +350,42 @@ func TestClassifyMCPPairOriginalMissing(t *testing.T) {
 	}
 	if status != classOriginalMissing {
 		t.Errorf("status = %v, want classOriginalMissing", status)
+	}
+}
+
+func TestResolverFromVault(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+
+	resolver := resolverFromVault(v)
+	found := false
+	for ph, real := range resolver {
+		if real == "ghp_real1234567890abcdef1234567890abcdef" && strings.HasPrefix(ph, "ghp_") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("resolver missing expected placeholder→real mapping; got: %v", resolver)
 	}
 }
