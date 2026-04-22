@@ -21,12 +21,13 @@ import (
 
 // Config holds the parameters for a single veil run invocation.
 type Config struct {
-	Root      string         // project root
-	Command   string         // child command
-	Args      []string       // child args
-	Verbose   bool           //nolint:unused // reserved for future use
-	SkipHosts []string       // hosts to exclude from proxying (added to NO_PROXY)
-	Keystore  vault.Keystore // optional; nil means AutoKeystore
+	Root            string         // project root
+	Command         string         // child command
+	Args            []string       // child args
+	Verbose         bool           //nolint:unused // reserved for future use
+	SkipHosts       []string       // hosts to exclude from proxying (added to NO_PROXY)
+	Keystore        vault.Keystore // optional; nil means AutoKeystore
+	AllowEnvSecrets []string       // env var names to pass through even if secret-like and not in vault
 }
 
 // Result holds the outcome of a completed child process.
@@ -132,6 +133,22 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
+	}
+
+	// 6b. Belt-and-suspenders: scan for secret-like env vars that slipped past
+	// init (e.g., a new export since `veil init` ran). Warn interactively;
+	// fail-closed non-interactively unless --allow-env-secret covers them.
+	allowSet := make(map[string]struct{}, len(cfg.AllowEnvSecrets))
+	for _, n := range cfg.AllowEnvSecrets {
+		allowSet[n] = struct{}{}
+	}
+	unvaulted := scanUnvaultedSecretLikes(os.Environ(), vlt.Names(), allowSet)
+	if len(unvaulted) > 0 {
+		printUnvaultedWarning(os.Stderr, unvaulted)
+		if stdinTTYFd() < 0 {
+			return nil, fmt.Errorf("refusing to launch: %d shell env var(s) look like unvaulted secrets (%s); rerun with --allow-env-secret or veil init --force",
+				len(unvaulted), strings.Join(unvaulted, ", "))
+		}
 	}
 
 	// 7. Exec child using the resolved realpath so we cannot race with a

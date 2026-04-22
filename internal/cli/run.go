@@ -15,20 +15,22 @@ import (
 
 func runCmd() *cobra.Command {
 	var ephemeralSkip []string
+	var allowEnvSecrets []string
 	cmd := &cobra.Command{
 		Use:   "run [flags] -- <command> [args...]",
 		Short: "Run a command with secrets injected via proxy",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun(cmd, args, ephemeralSkip)
+			return runRun(cmd, args, ephemeralSkip, allowEnvSecrets)
 		},
 	}
 	cmd.Flags().SetInterspersed(false)
 	cmd.Flags().StringArrayVar(&ephemeralSkip, "skip", nil, "host to pass through without proxying (non-persistent, repeatable)")
+	cmd.Flags().StringArrayVar(&allowEnvSecrets, "allow-env-secret", nil, "env var name to pass through even if it looks secret-like and is not in the vault (repeatable)")
 	return cmd
 }
 
-func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
+func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string, allowEnvSecrets []string) error {
 	root, err := requireInitializedProject(cmd)
 	if err != nil {
 		return err
@@ -44,11 +46,12 @@ func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string) error {
 	skipHosts = append(skipHosts, ephemeralSkip...)
 
 	result, err := runner.Run(cmd.Context(), runner.Config{
-		Root:      root,
-		Command:   args[0],
-		Args:      args[1:],
-		Verbose:   flagVerbose,
-		SkipHosts: skipHosts,
+		Root:            root,
+		Command:         args[0],
+		Args:            args[1:],
+		Verbose:         flagVerbose,
+		SkipHosts:       skipHosts,
+		AllowEnvSecrets: allowEnvSecrets,
 	})
 	if err != nil {
 		return cliError(mapRunError(err), "")

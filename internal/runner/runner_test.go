@@ -14,6 +14,15 @@ import (
 	"github.com/8enji/veil/internal/testutil"
 )
 
+// allowAllAmbientSecretLikes returns the list of env-var names in the current
+// process environment that look secret-like per scanUnvaultedSecretLikes.
+// Tests that exercise Run() use this as AllowEnvSecrets so they don't trip on
+// the test runner's shell env (e.g. PATH, OAUTH tokens in CI). The contract
+// under test is separately covered by TestRun_FailsClosedOnUnvaultedShellSecrets.
+func allowAllAmbientSecretLikes() []string {
+	return scanUnvaultedSecretLikes(os.Environ(), nil, nil)
+}
+
 func TestRunHappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -24,10 +33,11 @@ func TestRunHappyPath(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "echo",
-		Args:     []string{"hello"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -47,10 +57,11 @@ func TestRunExitCode(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "exit 42"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "exit 42"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -72,10 +83,11 @@ func TestRunChildEnv(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "printenv HTTPS_PROXY > " + outFile},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "printenv HTTPS_PROXY > " + outFile},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -104,9 +116,10 @@ func TestRunCommandNotFound(t *testing.T) {
 	defer cancel()
 
 	_, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "/nonexistent/binary",
-		Keystore: ks,
+		Root:            root,
+		Command:         "/nonexistent/binary",
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err == nil {
 		t.Fatal("expected error for nonexistent command")
@@ -125,10 +138,11 @@ func TestRunChildCAEnvVars(t *testing.T) {
 	defer cancel()
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "sh",
-		Args:     []string{"-c", "printenv SSL_CERT_FILE > " + outFile},
-		Keystore: ks,
+		Root:            root,
+		Command:         "sh",
+		Args:            []string{"-c", "printenv SSL_CERT_FILE > " + outFile},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -172,8 +186,9 @@ func TestRunStripsVaultEnvAndAnnounces(t *testing.T) {
 		Root:    root,
 		Command: "sh",
 		// Write the child's TEST_SECRET env to a file — empty if stripped.
-		Args:     []string{"-c", "printenv TEST_SECRET > " + outFile + "; true"},
-		Keystore: ks,
+		Args:            []string{"-c", "printenv TEST_SECRET > " + outFile + "; true"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 
 	_ = w.Close()
@@ -248,10 +263,11 @@ func TestRunBannerShowsResolvedAgentPath(t *testing.T) {
 	os.Stderr = w
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "shadow-echo",
-		Args:     []string{"hi"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "shadow-echo",
+		Args:            []string{"hi"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 	_ = w.Close()
 	os.Stderr = oldStderr
@@ -287,10 +303,11 @@ func TestRunBookends(t *testing.T) {
 	os.Stderr = w
 
 	result, err := Run(ctx, Config{
-		Root:     root,
-		Command:  "echo",
-		Args:     []string{"hello"},
-		Keystore: ks,
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
 	})
 
 	_ = w.Close()
@@ -694,6 +711,60 @@ func TestSweepStaleSessionDirs(t *testing.T) {
 
 	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale dir removed, got err=%v", err)
+	}
+}
+
+// TestRun_FailsClosedOnUnvaultedShellSecrets verifies that in non-interactive
+// mode, a shell-exported secret-like env var that is not in the vault causes
+// veil to refuse to launch the child.
+func TestRun_FailsClosedOnUnvaultedShellSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := Run(ctx, Config{
+		Root:     root,
+		Command:  "echo",
+		Args:     []string{"hello"},
+		Keystore: ks,
+	})
+	if err == nil {
+		t.Fatal("Run succeeded with unvaulted shell secret; expected fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "FAKE_PROVIDER_API_KEY") {
+		t.Errorf("err = %v, want message naming FAKE_PROVIDER_API_KEY", err)
+	}
+}
+
+// TestRun_AllowEnvSecretBypass verifies that --allow-env-secret permits a
+// secret-like shell export to pass through.
+func TestRun_AllowEnvSecretBypass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := Run(ctx, Config{
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hello"},
+		Keystore:        ks,
+		AllowEnvSecrets: append(allowAllAmbientSecretLikes(), "FAKE_PROVIDER_API_KEY"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
 	}
 }
 
