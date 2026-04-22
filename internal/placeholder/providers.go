@@ -146,7 +146,7 @@ type Format struct {
 	Length   int      // total output length including prefix (0 = match input length)
 	Charset  string   // "alphanumeric", "hex", "base64", "upper-alphanumeric"
 	Hosts    []string
-	Priority int      // optional; defaults to PriorityFormat if zero
+	Priority int // optional; defaults to PriorityFormat if zero
 }
 
 // registerFormat constructs a ProviderPattern from a Format and appends it
