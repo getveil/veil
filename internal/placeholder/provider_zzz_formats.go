@@ -11,6 +11,15 @@ func init() {
 	})
 
 	registerFormat(Format{
+		Name:     "anthropic",
+		Prefixes: []string{"sk-ant-api", "sk-ant-"}, // sorted by len desc inside registerFormat
+		KeyHints: []string{"ANTHROPIC"},
+		Length:   0,
+		Charset:  "alphanumeric",
+		Hosts:    []string{"api.anthropic.com"},
+	})
+
+	registerFormat(Format{
 		Name:     "google",
 		Prefixes: []string{"AIza"},
 		KeyHints: []string{"GOOGLE_API", "FIREBASE_API"},
