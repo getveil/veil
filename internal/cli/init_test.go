@@ -742,9 +742,15 @@ func TestInitYes_VaultsAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	creds := v.List()
-	if len(creds) != 2 {
-		t.Errorf("expected 2 credentials, got %d", len(creds))
+	// Assert on specific .env-derived credentials rather than total count:
+	// the test runner's shell env may contribute additional secret-like
+	// entries (e.g. CLAUDE_CODE_OAUTH_TOKEN) that would otherwise inflate
+	// the count unpredictably.
+	if _, ok := v.Get("OPENAI_API_KEY"); !ok {
+		t.Error("OPENAI_API_KEY should be vaulted")
+	}
+	if _, ok := v.Get("GITHUB_TOKEN"); !ok {
+		t.Error("GITHUB_TOKEN should be vaulted")
 	}
 }
 
@@ -806,6 +812,10 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Clear known test-runner env noise so shell-env scan has nothing to
+	// prompt about — otherwise the stdin script below would feed its inputs
+	// into the shell-env prompt instead of the skip-hosts prompt.
+	clearShellEnvTestNoise(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)

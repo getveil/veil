@@ -20,6 +20,10 @@ import (
 func initProject(t *testing.T) string {
 	t.Helper()
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Shell-env scanning would otherwise pull secret-like vars (e.g. CLAUDE_*)
+	// from the test runner's environment into the vault, inflating the
+	// credential count in tests that assert on exact totals.
+	clearShellEnvTestNoise(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {

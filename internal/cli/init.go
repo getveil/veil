@@ -156,6 +156,24 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		}
 	}
 
+	// Scan shell environment for secret-like exports that never made it into
+	// a .env file. Closes SEC-1 residual gap: shell-exported secrets would
+	// otherwise never enter the vault and would pass through to the agent.
+	// processShellEnv re-filters candidates against the vault (to skip names
+	// already captured by an earlier phase) and drops empty values, so the
+	// raw candidate count from ScanEnviron is only used as a fast-path check
+	// for "was there anything at all to look at."
+	if shellCandidates := scanner.ScanEnviron(os.Environ()); len(shellCandidates) > 0 {
+		ui.Phase(w, "Scanning shell environment...")
+		n, s, err := processShellEnv(w, in, v, shellCandidates, dryRun, interactive)
+		if err != nil {
+			return err
+		}
+		secretsVaulted += n
+		secretsScoped += s
+		_, _ = fmt.Fprintln(w)
+	}
+
 	unscoped := secretsVaulted - secretsScoped
 	ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
 	if secretsScoped > 0 {
