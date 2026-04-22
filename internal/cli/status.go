@@ -157,5 +157,21 @@ func runStatus(cmd *cobra.Command) error {
 		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope them"))
 	}
 
+	// Audit health from prior runs — a sidecar persists if a process saw
+	// drops or flush errors without a clean Close.
+	if health, herr := audit.ReadHealth(auditDBPath); herr == nil && health.Degraded() {
+		_, _ = fmt.Fprintln(w)
+		ui.Warn(w, "Audit subsystem reported issues in a prior session")
+		if health.Dropped > 0 {
+			_, _ = fmt.Fprintf(w, "    %s\n",
+				ui.Muted.Sprintf("%d event(s) dropped due to full buffer", health.Dropped))
+		}
+		if !health.LastErrorTime.IsZero() {
+			_, _ = fmt.Fprintf(w, "    %s\n",
+				ui.Muted.Sprintf("last error %s: %s",
+					ui.RelativeTime(health.LastErrorTime), health.LastErrorMsg))
+		}
+	}
+
 	return nil
 }

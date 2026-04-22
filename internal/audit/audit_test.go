@@ -3,7 +3,9 @@ package audit
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -654,5 +656,113 @@ func TestQueryCombinedFilters(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Errorf("combined host+cred+since filter: got %d rows, want 1", len(rows))
+	}
+}
+
+// captureWarn captures ui.Warnf output for inspection.
+type captureWarn struct{ buf strings.Builder }
+
+func (c *captureWarn) Write(p []byte) (int, error) { return c.buf.Write(p) }
+
+func TestPendingCapBoundsMemory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	warn := &captureWarn{}
+	s.mu.Lock()
+	s.warnWriter = warn
+	s.mu.Unlock()
+
+	// Close the underlying DB handle so flush writes fail. We avoid Close()
+	// because it tears down the flusher goroutine.
+	_ = s.db.Close()
+
+	base := time.Now()
+	const extras = 1_000
+	for i := 0; i < pendingCap+extras; i++ {
+		s.Record(makeInjection("bp.example.com", "bp-key", base.Add(time.Duration(i)*time.Millisecond)))
+	}
+
+	s.mu.Lock()
+	pending := len(s.pending)
+	dropped := s.dropped
+	warnOutput := warn.buf.String()
+	s.mu.Unlock()
+
+	if pending > pendingCap {
+		t.Errorf("pending = %d, want <= %d", pending, pendingCap)
+	}
+	if dropped < extras {
+		t.Errorf("dropped = %d, want at least %d", dropped, extras)
+	}
+	if !strings.Contains(warnOutput, "audit buffer full") {
+		t.Errorf("expected ui.Warnf for full buffer, got %q", warnOutput)
+	}
+
+	// Tear down the flusher goroutine without re-closing s.db.
+	close(s.done)
+	s.wg.Wait()
+}
+
+func TestHealthReflectsDrops(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = s.db.Close()
+	s.mu.Lock()
+	s.warnWriter = &captureWarn{}
+	s.mu.Unlock()
+
+	base := time.Now()
+	for i := 0; i < pendingCap+5; i++ {
+		s.Record(makeInjection("h.example.com", "k", base.Add(time.Duration(i)*time.Millisecond)))
+	}
+
+	h := s.Health()
+	if h.Dropped < 5 {
+		t.Errorf("Health.Dropped = %d, want >= 5", h.Dropped)
+	}
+	if !h.Degraded() {
+		t.Error("Health.Degraded() = false, want true after drops")
+	}
+
+	persisted, err := ReadHealth(dbPath)
+	if err != nil {
+		t.Fatalf("ReadHealth: %v", err)
+	}
+	if persisted.Dropped < 5 {
+		t.Errorf("persisted.Dropped = %d, want >= 5", persisted.Dropped)
+	}
+
+	close(s.done)
+	s.wg.Wait()
+}
+
+func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	// Pre-create a stale sidecar that should be cleared on a clean close.
+	sidecar := dbPath + ".health"
+	if err := os.MkdirAll(filepath.Dir(sidecar), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(sidecar, []byte("dropped=42\n"), 0o600); err != nil {
+		t.Fatalf("write stale sidecar: %v", err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.Record(makeInjection("ok.example.com", "k", time.Now()))
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("health sidecar should have been removed on clean close, stat err=%v", err)
 	}
 }

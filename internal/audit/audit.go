@@ -6,13 +6,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/8enji/veil/internal/ui"
 	_ "modernc.org/sqlite"
 )
+
+// pendingCap bounds the in-memory Injection buffer. ~160 bytes per row, so
+// 10k rows ≈ 1.6MB — enough to absorb a several-minute flush outage on a
+// normal workload while keeping a hard memory ceiling.
+const pendingCap = 10_000
 
 // Injection represents a single secret-injection event.
 type Injection struct {
@@ -42,6 +49,15 @@ type Store struct {
 	closeOnce sync.Once
 	closeErr  error
 	wg        sync.WaitGroup // tracks the flusher goroutine
+
+	// Backpressure / health (all guarded by mu).
+	dbPath          string
+	dropped         int
+	lastErr         string
+	lastErrTime     time.Time
+	warnedFullOnce  bool      // gate the buffer-full warning
+	warnedFlushOnce bool      // gate the flush-failure warning
+	warnWriter      io.Writer // destination for ui.Warnf; defaults to os.Stderr
 }
 
 const schemaDDL = `
@@ -155,13 +171,27 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{
-		db:    db,
-		done:  make(chan struct{}),
-		flush: make(chan struct{}, 1),
+		db:         db,
+		done:       make(chan struct{}),
+		flush:      make(chan struct{}, 1),
+		dbPath:     dbPath,
+		warnWriter: os.Stderr,
 	}
 	s.wg.Add(1)
 	go s.flusher()
 	return s, nil
+}
+
+// Health returns an in-memory snapshot of audit backpressure state. Safe to
+// call concurrently with Record and flushPending.
+func (s *Store) Health() Health {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Health{
+		Dropped:       s.dropped,
+		LastErrorTime: s.lastErrTime,
+		LastErrorMsg:  s.lastErr,
+	}
 }
 
 // Record appends an injection event to the pending buffer. It is safe for
@@ -177,6 +207,25 @@ func (s *Store) Record(inj Injection) {
 	inj.AgentCmd = redactAgentCmd(inj.AgentCmd)
 
 	s.mu.Lock()
+	if len(s.pending) >= pendingCap {
+		s.dropped++
+		warnNow := !s.warnedFullOnce
+		s.warnedFullOnce = true
+		dbPath := s.dbPath
+		warn := s.warnWriter
+		snapshot := Health{
+			Dropped:       s.dropped,
+			LastErrorTime: s.lastErrTime,
+			LastErrorMsg:  s.lastErr,
+		}
+		s.mu.Unlock()
+
+		if warnNow {
+			ui.Warnf(warn, "audit buffer full; dropping events (cap=%d)", pendingCap)
+		}
+		_ = writeHealthSidecar(dbPath, snapshot)
+		return
+	}
 	s.pending = append(s.pending, inj)
 	n := len(s.pending)
 	s.mu.Unlock()
@@ -199,6 +248,15 @@ func (s *Store) Close() error {
 		close(s.done)
 		s.wg.Wait()      // flusher has observed done and returned
 		s.flushPending() // drain anything enqueued after the last tick
+
+		s.mu.Lock()
+		healthy := s.dropped == 0 && s.lastErr == ""
+		dbPath := s.dbPath
+		s.mu.Unlock()
+		if healthy {
+			_ = clearHealthSidecar(dbPath)
+		}
+
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
@@ -223,7 +281,9 @@ func (s *Store) flusher() {
 }
 
 // flushPending swaps the pending buffer and inserts all rows in a single
-// transaction.
+// transaction. On failure, the batch is requeued up to pendingCap and
+// the flush failure is recorded on the Store / persisted to the health
+// sidecar.
 func (s *Store) flushPending() {
 	s.mu.Lock()
 	if len(s.pending) == 0 {
@@ -234,30 +294,46 @@ func (s *Store) flushPending() {
 	s.pending = nil
 	s.mu.Unlock()
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		// Put them back so they aren't lost.
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
+	if err := s.writeBatch(batch); err != nil {
+		s.recordFlushFailure(batch, err)
 		return
 	}
 
+	s.mu.Lock()
+	hadError := s.lastErr != ""
+	if hadError {
+		s.lastErr = ""
+		s.lastErrTime = time.Time{}
+	}
+	dropped := s.dropped
+	dbPath := s.dbPath
+	s.mu.Unlock()
+
+	if hadError && dropped == 0 {
+		_ = clearHealthSidecar(dbPath)
+	} else if hadError {
+		_ = writeHealthSidecar(dbPath, Health{Dropped: dropped})
+	}
+}
+
+// writeBatch inserts the batch in a single transaction. Returns the first
+// error encountered; on success returns nil.
+func (s *Store) writeBatch(batch []Injection) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("%w: begin: %w", ErrAuditWrite, err)
+	}
 	stmt, err := tx.Prepare(insertSQL)
 	if err != nil {
 		_ = tx.Rollback()
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
-		return
+		return fmt.Errorf("%w: prepare: %w", ErrAuditWrite, err)
 	}
-
 	for _, inj := range batch {
 		suspect := 0
 		if inj.SuspectFlag {
 			suspect = 1
 		}
-		_, err := stmt.Exec(
+		if _, err := stmt.Exec(
 			inj.Timestamp.UnixMilli(),
 			inj.RequestID,
 			inj.Host,
@@ -272,22 +348,53 @@ func (s *Store) flushPending() {
 			inj.Location,
 			suspect,
 			inj.AuthSignal,
-		)
-		if err != nil {
+		); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
-			s.mu.Lock()
-			s.pending = append(batch, s.pending...)
-			s.mu.Unlock()
-			return
+			return fmt.Errorf("%w: exec: %w", ErrAuditWrite, err)
 		}
 	}
 	_ = stmt.Close()
 	if err := tx.Commit(); err != nil {
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
+		return fmt.Errorf("%w: commit: %w", ErrAuditWrite, err)
 	}
+	return nil
+}
+
+// recordFlushFailure re-queues the batch (respecting pendingCap) and records
+// the error for veil status to surface. The first failure emits a ui.Warnf
+// so the user sees it in the current session; subsequent failures are
+// silent (the sidecar remains the durable signal).
+func (s *Store) recordFlushFailure(batch []Injection, err error) {
+	s.mu.Lock()
+	room := pendingCap - len(s.pending)
+	if room < 0 {
+		room = 0
+	}
+	if room >= len(batch) {
+		s.pending = append(batch, s.pending...)
+	} else {
+		keep := batch[len(batch)-room:]
+		s.pending = append(keep, s.pending...)
+		s.dropped += len(batch) - room
+	}
+	s.lastErr = err.Error()
+	s.lastErrTime = time.Now().UTC()
+	firstWarn := !s.warnedFlushOnce
+	s.warnedFlushOnce = true
+	snapshot := Health{
+		Dropped:       s.dropped,
+		LastErrorTime: s.lastErrTime,
+		LastErrorMsg:  s.lastErr,
+	}
+	dbPath := s.dbPath
+	warn := s.warnWriter
+	s.mu.Unlock()
+
+	if firstWarn {
+		ui.Warnf(warn, "audit flush failed: %v", err)
+	}
+	_ = writeHealthSidecar(dbPath, snapshot)
 }
 
 // migrateToV2 adds the suspect_flag and auth_signal columns to pre-existing
