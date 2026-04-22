@@ -41,6 +41,7 @@ type Store struct {
 	flush     chan struct{} // signal immediate flush
 	closeOnce sync.Once
 	closeErr  error
+	wg        sync.WaitGroup // tracks the flusher goroutine
 }
 
 const schemaDDL = `
@@ -147,6 +148,7 @@ func Open(dbPath string) (*Store, error) {
 		done:  make(chan struct{}),
 		flush: make(chan struct{}, 1),
 	}
+	s.wg.Add(1)
 	go s.flusher()
 	return s, nil
 }
@@ -170,11 +172,14 @@ func (s *Store) Record(inj Injection) {
 
 // Close stops the background flusher, flushes remaining rows, and closes
 // the database. Close is idempotent; subsequent calls return the original
-// result without side effects.
+// result without side effects. Close blocks until the flusher goroutine has
+// exited, so any in-flight flushPending transaction completes before the
+// database handle is closed.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		s.flushPending()
+		s.wg.Wait()      // flusher has observed done and returned
+		s.flushPending() // drain anything enqueued after the last tick
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
@@ -182,6 +187,7 @@ func (s *Store) Close() error {
 
 // flusher runs in a goroutine, periodically writing pending rows.
 func (s *Store) flusher() {
+	defer s.wg.Done()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 

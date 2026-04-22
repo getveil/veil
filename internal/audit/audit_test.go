@@ -492,6 +492,46 @@ func TestRecordAndQuerySuspectFields(t *testing.T) {
 	}
 }
 
+func TestCloseWaitsForFlusher(t *testing.T) {
+	// Verify that Close() synchronises with the flusher goroutine and no
+	// rows are lost when close-and-flush interleave. Each iteration writes
+	// exactly 200 rows past the 50-row flush threshold, closes the store,
+	// then re-opens the DB and counts. If the flusher raced db.Close,
+	// tx.Commit in the flusher's flushPending would fail and rows would be
+	// silently lost (the old code re-queued into a pending buffer that
+	// dies with the process).
+	const rowsPerIter = 200
+	for i := 0; i < 30; i++ {
+		dbPath := filepath.Join(t.TempDir(), "audit.db")
+		s, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open iter %d: %v", i, err)
+		}
+		base := time.Now()
+		for j := 0; j < rowsPerIter; j++ {
+			s.Record(makeInjection("close.example.com", "close-key", base.Add(time.Duration(j)*time.Millisecond)))
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close iter %d: %v", i, err)
+		}
+
+		// Re-open and count.
+		s2, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("re-Open iter %d: %v", i, err)
+		}
+		rows, err := s2.Query(Filter{Limit: rowsPerIter + 10})
+		if err != nil {
+			t.Fatalf("Query iter %d: %v", i, err)
+		}
+		if len(rows) != rowsPerIter {
+			t.Errorf("iter %d: got %d rows, want %d (flusher raced db.Close and lost rows)",
+				i, len(rows), rowsPerIter)
+		}
+		_ = s2.Close()
+	}
+}
+
 func TestQueryCombinedFilters(t *testing.T) {
 	s := openTestStore(t)
 
