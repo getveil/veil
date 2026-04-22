@@ -10,41 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/vault"
+	"github.com/8enji/veil/internal/testutil"
 )
-
-// setupProject creates a temp directory with a vault and one credential,
-// returning the project root and the keystore used.
-func setupProject(t *testing.T) (string, vault.Keystore) {
-	t.Helper()
-	root := t.TempDir()
-	ks := vault.NewMemKeystore()
-
-	v, err := vault.CreateVault(root, "test-project", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-
-	cred := &vault.Credential{
-		ID:          vault.NewID(),
-		Name:        "TEST_SECRET",
-		Real:        "real-secret-value",
-		Placeholder: "VEIL_PH_test_secret",
-		Source:      "manual",
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add credential: %v", err)
-	}
-	return root, ks
-}
 
 func TestRunHappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -67,7 +41,7 @@ func TestRunExitCode(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -90,7 +64,7 @@ func TestRunChildEnv(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	outFile := filepath.Join(t.TempDir(), "env-out.txt")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -124,7 +98,7 @@ func TestRunCommandNotFound(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -143,7 +117,7 @@ func TestRunChildCAEnvVars(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	outFile := filepath.Join(t.TempDir(), "ca-env-out.txt")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -177,7 +151,7 @@ func TestRunBookends(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	root, ks := setupProject(t)
+	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
