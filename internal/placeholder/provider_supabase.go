@@ -62,7 +62,10 @@ func generateSupabaseJWT(role string) string {
 	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
 
 	const base64urlAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-	signature := randFromAlphabet(43, base64urlAlphabet)
+	// Sentinel (uppercase letters) is valid base64url content; embed it at
+	// the start of the signature so leaked Supabase JWTs are detectable via
+	// a single substring scan.
+	signature := sentinelize(randFromAlphabet(43, base64urlAlphabet), 0)
 
 	return jwtHeader + "." + encodedPayload + "." + signature
 }

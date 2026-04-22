@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/8enji/veil/internal/audit"
+	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/ui"
 	"github.com/8enji/veil/internal/vault"
 	"github.com/elazarl/goproxy"
@@ -114,10 +116,18 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 
 	// Request handler: scan URL, headers, and body for placeholders.
 	px.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		// Skip body injection if Content-Encoding indicates a compressed body.
-		if ce := req.Header.Get("Content-Encoding"); ce != "" {
-			log.Printf("[veil] warning: skipping body injection for compressed request (Content-Encoding: %q)", ce) //nolint:gosec // ce is from a standard HTTP header, %q escapes any special characters
-			return req, nil
+		// SEC-3: reject compressed request bodies. Veil cannot reliably
+		// scan or rewrite placeholder strings inside a compressed payload
+		// without decompressing, mutating, and re-compressing — which can
+		// change Content-Length, interact with Content-MD5, and silently
+		// drop matches if the client used an encoding we don't understand.
+		// Returning 502 surfaces the mismatch to the caller rather than
+		// forwarding a payload that may still contain real placeholders.
+		// Explicit identity is allowed because it signals "no compression".
+		if ce := req.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(strings.TrimSpace(ce), "identity") {
+			ui.Warnf(os.Stderr, "veil: rejecting request to %s — Content-Encoding %q not supported; Veil does not inject into compressed request bodies", req.Host, ce)
+			return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
+				"veil: Content-Encoding "+ce+" is not supported; Veil does not inject into compressed request bodies")
 		}
 
 		var body []byte
@@ -139,6 +149,32 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 
 		newURL, newHeader, newBody, _ := inj.ProcessRequest(
 			requestID, req.Method, req.URL.String(), req.Header, body)
+
+		// --- Fail-closed sentinel guard ---
+		// Scan the final outbound bytes (URL, every header value, and body)
+		// for the placeholder sentinel. A hit means a placeholder either
+		// wasn't swapped (host-scope mismatch, partial match, etc.) or the
+		// sentinel was planted by a caller — either way we must not forward
+		// the request. We return 502 and record a "leaked" audit row so the
+		// user can diagnose the miss without the secret reaching the wire.
+		if leakLocation, leaked := detectLeak(newURL, newHeader, newBody); leaked {
+			if auditStore != nil {
+				host, urlPath, _ := parseRequestURL(newURL)
+				auditStore.Record(audit.Injection{
+					Timestamp: time.Now(),
+					RequestID: requestID,
+					Host:      host,
+					Method:    req.Method,
+					URLPath:   urlPath,
+					AgentPID:  agentPID,
+					AgentCmd:  agentCmd,
+					Location:  "leaked",
+				})
+			}
+			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — placeholder leak detected in %s", req.Host, leakLocation)
+			return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
+				fmt.Sprintf("veil: placeholder leak detected in %s; request blocked (see audit log)", leakLocation))
+		}
 
 		// Apply modified URL.
 		if newURL != req.URL.String() {
@@ -216,4 +252,26 @@ func stripHostPort(hostport string) string {
 		return hostport
 	}
 	return host
+}
+
+// detectLeak scans the final outbound URL, header values, and body for the
+// placeholder sentinel. A single bytes.Contains / strings.Contains lookup is
+// enough because the sentinel is embedded at a known offset in every
+// generated placeholder (see placeholder.Sentinel). The returned location is
+// "url", "header:<name>", or "body"; leaked is true if any hit is found.
+func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location string, leaked bool) {
+	if strings.Contains(newURL, placeholder.Sentinel) {
+		return "url", true
+	}
+	for name, values := range newHeader {
+		for _, v := range values {
+			if strings.Contains(v, placeholder.Sentinel) {
+				return "header:" + name, true
+			}
+		}
+	}
+	if len(newBody) > 0 && bytes.Contains(newBody, []byte(placeholder.Sentinel)) {
+		return "body", true
+	}
+	return "", false
 }

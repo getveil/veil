@@ -121,7 +121,8 @@ func registerFormat(f Format) {
 			default:
 				body = randAlphanumeric(rest)
 			}
-			return prefix + body
+			// Embed Sentinel at the start of the body (see engine.go).
+			return sentinelize(prefix+body, len(prefix))
 		},
 	}
 	register(p)

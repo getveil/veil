@@ -43,6 +43,20 @@ func init() {
 					ri++
 				}
 			}
+			// Overwrite the first len(Sentinel) non-dash positions with Sentinel
+			// so the sentinel lives in the randomized portion without clobbering
+			// structural dashes.
+			si := 0
+			for i := 0; i < len(out) && si < len(Sentinel); i++ {
+				if out[i] != '-' {
+					out[i] = Sentinel[si]
+					si++
+				}
+			}
+			if si < len(Sentinel) {
+				// Not enough non-dash positions — append sentinel defensively.
+				return prefix + string(out) + Sentinel
+			}
 			return prefix + string(out)
 		},
 		Hosts: []string{"slack.com", "api.slack.com", "files.slack.com"},

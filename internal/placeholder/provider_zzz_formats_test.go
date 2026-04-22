@@ -215,8 +215,19 @@ func TestFormatProviders(t *testing.T) {
 
 			t.Run("generate_charset", func(t *testing.T) {
 				result := prov.Generate(tt.genInput)
+				if !strings.Contains(result, Sentinel) {
+					t.Fatalf("expected sentinel %q in %s", Sentinel, result)
+				}
 				body := result[len(tt.wantPrefix):]
-				for _, c := range body {
+				// Exclude the first occurrence of Sentinel from charset checks;
+				// the sentinel intentionally displaces charset-native bytes so
+				// every placeholder is detectable via bytes.Contains.
+				sIdx := strings.Index(body, Sentinel)
+				if sIdx < 0 {
+					t.Fatalf("sentinel not found in body %s", body)
+				}
+				checked := body[:sIdx] + body[sIdx+len(Sentinel):]
+				for _, c := range checked {
 					valid := false
 					switch tt.charset {
 					case "hex":

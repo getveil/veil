@@ -16,14 +16,16 @@ func init() {
 			return strings.Contains(strings.ToUpper(name), "GITHUB")
 		},
 		Generate: func(value string) string {
-			// Fine-grained PATs: github_pat_ + 22 alnum + _ + N alnum
+			// Fine-grained PATs: github_pat_ + 22 alnum + _ + N alnum.
+			// Sentinel lands in the 22-char middle block (after "github_pat_").
 			if strings.HasPrefix(value, "github_pat_") {
 				// Derive suffix length from the actual token to preserve total length.
 				suffixLen := len(value) - 11 - 22 - 1 // len - prefix - mid - separator
 				if suffixLen < 1 {
 					suffixLen = 59 // default per GitHub spec
 				}
-				return "github_pat_" + randAlphanumeric(22) + "_" + randAlphanumeric(suffixLen)
+				raw := "github_pat_" + randAlphanumeric(22) + "_" + randAlphanumeric(suffixLen)
+				return sentinelize(raw, len("github_pat_"))
 			}
 			// Classic tokens: preserve prefix, fill remainder.
 			prefix := ""
@@ -34,7 +36,7 @@ func init() {
 				}
 			}
 			rest := len(value) - len(prefix)
-			return prefix + randAlphanumeric(rest)
+			return sentinelize(prefix+randAlphanumeric(rest), len(prefix))
 		},
 		Hosts: []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com", "ghcr.io"},
 	})

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // projectRoot returns the absolute path to the Veil repo root. It walks
@@ -417,37 +418,35 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	t.Logf("placeholder: %s", placeholder)
 
 	// 6. Run testclient through veil run.
-	// The testclient reads TEST_API_KEY from env, sends it as an
-	// Authorization header, and the proxy should swap the placeholder for
-	// the real value.
+	// The testclient reads TEST_API_KEY from env and sends it as an
+	// Authorization header. The credential is auto-scoped to api.openai.com
+	// (via provider detection), so host-scoping denies the swap and the
+	// placeholder would reach the wire. The fail-closed guard (SEC-2) must
+	// then detect the sentinel and refuse to forward the request — the test
+	// server should receive nothing.
 	runCmd := exec.Command(veilBin, "run", "--path", projDir, "--",
 		clientBin, ts.URL+"/echo")
 	runEnv := append(env, "TEST_API_KEY="+placeholder)
 	runCmd.Env = runEnv
-	runOut, err := runCmd.CombinedOutput()
-	if err != nil {
-		t.Logf("veil run output: %s", runOut)
-		t.Fatalf("veil run failed: %v", err)
-	}
+	// The proxy returns 502 to the testclient; testclient still exits 0 and
+	// writes the 502 body to stdout. We only use the output for diagnostics.
+	runOut, _ := runCmd.CombinedOutput()
 	t.Logf("testclient response: %s", runOut)
 
-	// 7. Check what the test server received.
-	cap := <-captureCh
-	t.Logf("server received Authorization: %s", cap.Auth)
-
-	// The credential is auto-scoped to api.openai.com (via provider detection),
-	// so the proxy should NOT inject it into a request to 127.0.0.1. The test
-	// server should receive the placeholder, not the real key. This verifies
-	// host-scoped injection works end-to-end.
-	expectedAuth := "Bearer " + placeholder
-	if cap.Auth != expectedAuth {
-		t.Errorf("host scoping failed — credential was injected to wrong host:\n  got:  %s\n  want: %s", cap.Auth, expectedAuth)
-	}
-	if strings.Contains(cap.Auth, originalKey) {
-		t.Error("real secret was leaked to non-matching host")
+	// 7. The fail-closed guard must prevent the placeholder from reaching a
+	// host outside the credential's allowed set. Any capture indicates a
+	// bypass of the guard — the real secret was not leaked, but sending a
+	// sentinelled placeholder to an unrelated host is still rejected.
+	select {
+	case cap := <-captureCh:
+		t.Fatalf("fail-closed bypass: server received request at non-matching host\n  Authorization: %s", cap.Auth)
+	case <-time.After(500 * time.Millisecond):
+		// Expected — the guard blocked the request.
 	}
 
-	// 8. Verify audit log recorded the blocked injection.
+	// 8. Verify audit log recorded both events:
+	//   - blocked: the injector denied the swap on host-scope mismatch.
+	//   - leaked:  the fail-closed guard caught the sentinel on the wire.
 	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json", "--blocked")
 	logCmd.Env = env
 	logOut, err := logCmd.CombinedOutput()
@@ -456,23 +455,30 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	}
 	logStr := string(logOut)
 	t.Logf("audit log:\n%s", logStr)
-
-	// The JSON log should have at least one blocked event.
 	if strings.TrimSpace(logStr) == "" {
-		t.Error("audit log is empty; expected at least one blocked event")
-	} else {
-		// Parse the first JSON line.
+		t.Fatal("audit log is empty; expected blocked + leaked events")
+	}
+
+	var sawBlocked, sawLeaked bool
+	for _, line := range strings.Split(strings.TrimSpace(logStr), "\n") {
 		var entry map[string]interface{}
-		lines := strings.Split(strings.TrimSpace(logStr), "\n")
-		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
-			t.Fatalf("parsing audit log JSON: %v\nline: %s", err, lines[0])
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("parsing audit log JSON: %v\nline: %s", err, line)
 		}
-		if entry["credential"] != "OPENAI_API_KEY" {
-			t.Errorf("audit entry credential = %v, want OPENAI_API_KEY", entry["credential"])
+		switch entry["location"] {
+		case "blocked":
+			if entry["credential"] == "OPENAI_API_KEY" {
+				sawBlocked = true
+			}
+		case "leaked":
+			sawLeaked = true
 		}
-		if entry["location"] != "blocked" {
-			t.Errorf("audit entry location = %v, want blocked", entry["location"])
-		}
+	}
+	if !sawBlocked {
+		t.Error("audit log missing blocked event for OPENAI_API_KEY (injector did not record host-scope denial)")
+	}
+	if !sawLeaked {
+		t.Error("audit log missing leaked event (fail-closed guard did not record sentinel detection)")
 	}
 }
 

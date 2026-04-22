@@ -17,7 +17,7 @@ func init() {
 				prefix = "sk-proj-"
 			}
 			rest := len(value) - len(prefix)
-			return prefix + randAlphanumeric(rest)
+			return sentinelize(prefix+randAlphanumeric(rest), len(prefix))
 		},
 		Hosts: []string{"api.openai.com"},
 	})

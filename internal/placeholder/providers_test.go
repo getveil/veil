@@ -419,7 +419,14 @@ func TestRegisterFormat_HexCharset(t *testing.T) {
 	if len(result) != 32 {
 		t.Fatalf("expected length 32, got %d", len(result))
 	}
-	for _, c := range result {
+	if !strings.Contains(result, Sentinel) {
+		t.Fatalf("expected sentinel %q in %s", Sentinel, result)
+	}
+	// Skip the sentinel window when checking hex charset — sentinel intentionally
+	// displaces 4 hex chars so every placeholder is detectable via bytes.Contains.
+	sIdx := strings.Index(result, Sentinel)
+	checked := result[:sIdx] + result[sIdx+len(Sentinel):]
+	for _, c := range checked {
 		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 		if !isHex {
 			t.Fatalf("expected hex char, got: %c in %s", c, result)

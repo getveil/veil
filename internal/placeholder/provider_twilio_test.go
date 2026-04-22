@@ -47,28 +47,46 @@ func TestProviderTwilio(t *testing.T) {
 		if !strings.HasPrefix(result, "SK") {
 			t.Fatalf("expected SK prefix, got: %s", result)
 		}
-		if len(result) != 34 { // SK + 32 hex
+		if len(result) != 34 { // SK + 32 body chars
 			t.Fatalf("expected length 34, got %d: %s", len(result), result)
 		}
-		for _, c := range result[2:] {
+		if !strings.Contains(result, Sentinel) {
+			t.Fatalf("expected sentinel %q in %s", Sentinel, result)
+		}
+		// Body chars outside the sentinel positions must still be hex. The
+		// sentinel (VEIL) intentionally displaces 4 hex chars to keep every
+		// generated placeholder detectable via bytes.Contains.
+		body := result[2:]
+		sIdx := strings.Index(body, Sentinel)
+		if sIdx < 0 {
+			t.Fatalf("sentinel not found in body %s", body)
+		}
+		nonSentinel := body[:sIdx] + body[sIdx+len(Sentinel):]
+		for _, c := range nonSentinel {
 			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 			if !isHex {
-				t.Fatalf("expected hex char, got: %c in %s", c, result)
+				t.Fatalf("expected hex char outside sentinel, got: %c in %s", c, result)
 			}
 		}
 	})
 
 	t.Run("generate_auth_token", func(t *testing.T) {
-		// Auth token matched by name, no SK prefix — 32 hex chars.
+		// Auth token matched by name, no SK prefix — 32 body chars with
+		// sentinel displacing 4 hex positions.
 		value := "abcdef1234567890abcdef1234567890"
 		result := prov.Generate(value)
 		if len(result) != 32 {
 			t.Fatalf("expected length 32, got %d: %s", len(result), result)
 		}
-		for _, c := range result {
+		if !strings.Contains(result, Sentinel) {
+			t.Fatalf("expected sentinel %q in %s", Sentinel, result)
+		}
+		sIdx := strings.Index(result, Sentinel)
+		nonSentinel := result[:sIdx] + result[sIdx+len(Sentinel):]
+		for _, c := range nonSentinel {
 			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 			if !isHex {
-				t.Fatalf("expected hex char, got: %c in %s", c, result)
+				t.Fatalf("expected hex char outside sentinel, got: %c in %s", c, result)
 			}
 		}
 	})

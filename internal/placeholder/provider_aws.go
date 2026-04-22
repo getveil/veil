@@ -15,11 +15,13 @@ func init() {
 		Generate: func(value string) string {
 			if strings.HasPrefix(value, "AKIA") {
 				// Access key ID: preserve AKIA, fill rest with uppercase alphanumeric.
+				// Sentinel (uppercase) fits cleanly in the upper-alnum body.
 				rest := len(value) - 4
-				return "AKIA" + randUpperAlphanumeric(rest)
+				return sentinelize("AKIA"+randUpperAlphanumeric(rest), 4)
 			}
 			// Secret access key: base64-ish characters, same length.
-			return randBase64ish(len(value))
+			// Sentinel (uppercase letters) is valid base64 content.
+			return sentinelize(randBase64ish(len(value)), 0)
 		},
 		Hosts: []string{"*.amazonaws.com"},
 	})
