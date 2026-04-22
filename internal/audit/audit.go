@@ -156,7 +156,15 @@ func Open(dbPath string) (*Store, error) {
 // Record appends an injection event to the pending buffer. It is safe for
 // concurrent use. When the buffer reaches 50 rows the flusher is signalled
 // to write immediately.
+//
+// URLPath and AgentCmd are passed through redactURLPath / redactAgentCmd
+// before enqueue so callers cannot accidentally persist query strings or
+// full argv into the audit DB. Build with `-tags audit_debug` to disable
+// redaction when diagnosing audit issues.
 func (s *Store) Record(inj Injection) {
+	inj.URLPath = redactURLPath(inj.URLPath)
+	inj.AgentCmd = redactAgentCmd(inj.AgentCmd)
+
 	s.mu.Lock()
 	s.pending = append(s.pending, inj)
 	n := len(s.pending)

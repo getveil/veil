@@ -504,6 +504,81 @@ func TestRecordAndQuerySuspectFields(t *testing.T) {
 	}
 }
 
+func TestRecordRedactsURLPathQuery(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp:      time.Now(),
+		RequestID:      "req-url-1",
+		Host:           "api.example.com",
+		Method:         "GET",
+		URLPath:        "/v1/thing?token=sk_live_ABCDEFGHIJ&lang=en",
+		CredentialID:   "c1",
+		CredentialName: "k",
+		Location:       "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].URLPath != "/v1/thing" {
+		t.Errorf("URLPath = %q, want %q — query string must be stripped at record time",
+			rows[0].URLPath, "/v1/thing")
+	}
+}
+
+func TestRecordRedactsURLPathPreservesPathOnly(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp: time.Now(), RequestID: "req-p-1",
+		Host: "api.example.com", Method: "GET",
+		URLPath: "/v1/thing", Location: "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if rows[0].URLPath != "/v1/thing" {
+		t.Errorf("URLPath = %q, want %q", rows[0].URLPath, "/v1/thing")
+	}
+}
+
+func TestRecordRedactsAgentCmdArgv(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp:      time.Now(),
+		RequestID:      "req-argv-1",
+		Host:           "api.example.com",
+		Method:         "GET",
+		URLPath:        "/x",
+		CredentialID:   "c1",
+		CredentialName: "k",
+		AgentCmd:       "curl -H Authorization: Bearer sk_live_SECRETSECRETSECRET",
+		Location:       "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].AgentCmd != "curl" {
+		t.Errorf("AgentCmd = %q, want %q — argv[1:] must be stripped", rows[0].AgentCmd, "curl")
+	}
+}
+
 func TestCloseWaitsForFlusher(t *testing.T) {
 	// Verify that Close() synchronises with the flusher goroutine and no
 	// rows are lost when close-and-flush interleave. Each iteration writes
