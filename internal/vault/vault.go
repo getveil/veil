@@ -166,6 +166,17 @@ func (v *Vault) List() []*Credential {
 	return out
 }
 
+// Names returns the names of all loaded credentials. The order matches
+// insertion order. Used by the runner to identify shell-exported env vars
+// that must be stripped before invoking the child process.
+func (v *Vault) Names() []string {
+	out := make([]string, 0, len(v.credentials))
+	for _, c := range v.credentials {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
 // Delete removes a credential by name and persists the vault.
 // Returns (false, nil) if the credential was not found.
 func (v *Vault) Delete(name string) (bool, error) {

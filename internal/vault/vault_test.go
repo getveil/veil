@@ -253,6 +253,48 @@ func TestListAndPlaceholderMap(t *testing.T) {
 	}
 }
 
+func TestNames(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+
+	v, err := CreateVault(root, "proj", ks)
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	if got := v.Names(); len(got) != 0 {
+		t.Fatalf("Names() on empty vault = %v, want empty", got)
+	}
+
+	for i, name := range []string{"OPENAI_API_KEY", "DATABASE_URL", "STRIPE_SECRET_KEY"} {
+		if err := v.Add(&Credential{
+			ID:          NewID(),
+			Name:        name,
+			Real:        "r-" + name,
+			Placeholder: "p-" + name,
+			Source:      "manual",
+			CreatedAt:   time.Now().UTC().Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("Add %q: %v", name, err)
+		}
+	}
+
+	got := v.Names()
+	want := map[string]bool{
+		"OPENAI_API_KEY":    true,
+		"DATABASE_URL":      true,
+		"STRIPE_SECRET_KEY": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Names() len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for _, n := range got {
+		if !want[n] {
+			t.Errorf("Names() contains unexpected %q", n)
+		}
+	}
+}
+
 func TestSaveAtomicityAndBackup(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
