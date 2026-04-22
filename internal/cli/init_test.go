@@ -910,3 +910,54 @@ func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
 		t.Errorf("expected 'already has a backup' warning on stderr, got: %s", stderr.String())
 	}
 }
+
+func TestInitEnvCreatesBackupBeforeRewrite(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(tmpDir, ".env")
+	original := []byte("# header\nGITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\nLOG_LEVEL=debug\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Backup must exist and contain the exact original bytes.
+	backup, err := os.ReadFile(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Errorf("backup content mismatch\ngot:  %q\nwant: %q", backup, original)
+	}
+
+	// Backup permission must be 0600.
+	info, err := os.Stat(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("backup mode = %o, want 0600", mode)
+	}
+
+	// .env must no longer contain the real token (placeholder substitution
+	// happened).
+	envContents, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Error("real token leaked into .env after init")
+	}
+}

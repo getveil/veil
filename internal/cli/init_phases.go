@@ -195,6 +195,9 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	if !dryRun && fileChanged {
+		if err := writeBackup(envPath); err != nil {
+			return vaulted, scoped, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
+		}
 		if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("writing %s", envPath), err)
 		}
