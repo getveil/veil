@@ -61,8 +61,8 @@ func ParseFile(path string) (*EnvFile, error) {
 
 // ParseBytes parses an .env file from a byte slice. Behaves identically
 // to ParseFile modulo the I/O step.
-func ParseBytes(data []byte) (*EnvFile, error) {
-	return parseContent(string(data)), nil
+func ParseBytes(data []byte) *EnvFile {
+	return parseContent(string(data))
 }
 
 func parseContent(content string) *EnvFile {

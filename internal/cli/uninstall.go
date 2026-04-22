@@ -172,13 +172,7 @@ func classifyEnvPair(original, backup string, resolver placeholderResolver) (cla
 		return 0, "", fmt.Errorf("read %s: %w", original, err)
 	}
 
-	expected, err := expectedOriginalEnv(currentBytes, resolver)
-	if err != nil {
-		// Parsing failed; treat as modified so the user sees a diff.
-		diff := renderUnifiedDiff(backupBytes, currentBytes)
-		return classModified, diff, nil
-	}
-
+	expected := expectedOriginalEnv(currentBytes, resolver)
 	if bytes.Equal(expected, backupBytes) {
 		return classUnmodified, "", nil
 	}
@@ -189,11 +183,8 @@ func classifyEnvPair(original, backup string, resolver placeholderResolver) (cla
 // KV-line's value with the real value from resolver when the current value
 // is a known placeholder. Returns the reconstructed bytes via
 // scanner.EnvFile.Bytes() so formatting is preserved.
-func expectedOriginalEnv(current []byte, resolver placeholderResolver) ([]byte, error) {
-	envFile, err := scanner.ParseBytes(current)
-	if err != nil {
-		return nil, err
-	}
+func expectedOriginalEnv(current []byte, resolver placeholderResolver) []byte {
+	envFile := scanner.ParseBytes(current)
 	if resolver != nil {
 		for _, line := range envFile.Lines {
 			if line.Kind != scanner.KVLine {
@@ -204,7 +195,7 @@ func expectedOriginalEnv(current []byte, resolver placeholderResolver) ([]byte, 
 			}
 		}
 	}
-	return envFile.Bytes(), nil
+	return envFile.Bytes()
 }
 
 // renderUnifiedDiff produces a minimal unified diff between a and b.
