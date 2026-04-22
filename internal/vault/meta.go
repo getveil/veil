@@ -17,14 +17,14 @@ func ReadProjectID(root string) (string, error) {
 	path := config.VaultMetaFile(root)
 	data, err := os.ReadFile(path) // #nosec G304 -- path derived from project root
 	if err != nil {
-		return "", fmt.Errorf("reading vault.meta: %w", err)
+		return "", fmt.Errorf("vault.meta: %w", err)
 	}
 	var meta vaultMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return "", fmt.Errorf("parsing vault.meta: %w", err)
+		return "", fmt.Errorf("vault.meta: parse: %w", err)
 	}
 	if meta.ProjectID == "" {
-		return "", fmt.Errorf("vault.meta has empty project_id")
+		return "", fmt.Errorf("vault.meta: empty project_id")
 	}
 	return meta.ProjectID, nil
 }

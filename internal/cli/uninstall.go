@@ -367,19 +367,8 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	w := cmd.OutOrStdout()
 	ew := cmd.ErrOrStderr()
 
-	// Active-proxy guard.
-	live, err := activeProxyPIDs(root)
-	if err != nil {
-		return wrapErr("checking active proxies", err)
-	}
-	if len(live) > 0 && !force {
-		return formatCLIError(ew,
-			fmt.Sprintf("active proxy processes found (PIDs: %s); stop them or pass --force", formatPIDList(live)),
-			"Run `veil status` to identify, then `kill <pid>`.",
-		)
-	}
-
-	// Discover backup pairs.
+	// Discover backup pairs and state dir first — a clean project short-
+	// circuits with "already uninstalled" and doesn't need the proxy guard.
 	pairs, err := discoverBackups(root)
 	if err != nil {
 		return wrapErr("discovering backups", err)
@@ -393,6 +382,19 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		_, _ = fmt.Fprintln(w, "already uninstalled")
 		return nil
 	}
+
+	// Active-proxy guard: only meaningful when there is something to uninstall.
+	live, err := activeProxyPIDs(root)
+	if err != nil {
+		return wrapErr("checking active proxies", err)
+	}
+	if len(live) > 0 && !force {
+		return formatCLIError(ew,
+			fmt.Sprintf("active proxy processes found (PIDs: %s); stop them or pass --force", formatPIDList(live)),
+			"Run `veil status` to identify, then `kill <pid>`.",
+		)
+	}
+
 	if len(pairs) == 0 && !force {
 		return formatCLIError(ew,
 			"no .veil-backup files found, but .veil/ exists",
@@ -456,13 +458,18 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		return nil
 	}
 
-	// Execute restoration.
-	restored := 0
+	// Execute restoration. moved counts backup→original renames regardless of
+	// whether the original existed; materialized tracks the subset where no
+	// original was present (so users see that those files were newly placed).
+	moved, materialized := 0, 0
 	for _, pl := range plan {
 		if err := os.Rename(pl.pair.backup, pl.pair.original); err != nil {
 			return wrapErr(fmt.Sprintf("restoring %s", pl.pair.original), err)
 		}
-		restored++
+		moved++
+		if pl.status == classOriginalMissing {
+			materialized++
+		}
 	}
 
 	// Purge keystore entry (best-effort).
@@ -473,10 +480,10 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 					ui.Warnf(ew, "could not purge keystore entry: %v", delErr)
 				}
 			} else {
-				ui.Warnf(ew, "could not select keystore for purge: %v", err)
+				ui.Warnf(ew, "keystore purge skipped: %v", err)
 			}
 		} else {
-			ui.Warnf(ew, "could not read project ID: %v", err)
+			ui.Warnf(ew, "keystore purge skipped: %v", err)
 		}
 
 		if err := os.RemoveAll(stateDir); err != nil {
@@ -484,7 +491,13 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
-	_, _ = fmt.Fprintf(w, "\nRestored %d %s.\n", restored, plural(restored, "file", "files"))
+	if materialized > 0 {
+		_, _ = fmt.Fprintf(w, "\nMoved %d %s into place (%d newly materialized).\n",
+			moved, plural(moved, "backup", "backups"), materialized)
+	} else {
+		_, _ = fmt.Fprintf(w, "\nRestored %d %s from backup.\n",
+			moved, plural(moved, "file", "files"))
+	}
 	if stateExists {
 		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
 	}
