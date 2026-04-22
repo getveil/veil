@@ -10,7 +10,8 @@ var stripePrefixes = []string{
 
 func init() {
 	register(ProviderPattern{
-		Name: "stripe",
+		Name:     "stripe",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			for _, p := range stripePrefixes {
 				if strings.HasPrefix(value, p) {

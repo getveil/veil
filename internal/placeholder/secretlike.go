@@ -15,8 +15,8 @@ var secretNamePattern = regexp.MustCompile(`(?i)(key|secret|token|password|passw
 //   - The key name matches common secret-related patterns.
 //   - The value is long (>= 20 chars) with high Shannon entropy (>= 3.0 bits/char).
 func IsSecretLike(name, value string) bool {
-	// 1. Check provider patterns.
-	for _, p := range registry {
+	// 1. Check provider patterns (Priority-sorted).
+	for _, p := range DefaultRegistry().All() {
 		if p.Match(name, value) {
 			return true
 		}

@@ -60,8 +60,8 @@ func ExtractURLHost(value string) string {
 //  2. URL parsing — if the value is URL-shaped, extract the host
 //  3. Return nil (credential is inert until manually scoped)
 func HostsForCredential(name, value string) []string {
-	// 1. Check provider registry.
-	for _, p := range registry {
+	// 1. Check provider registry (Priority-sorted; hand-written before Format).
+	for _, p := range DefaultRegistry().All() {
 		if p.Match(name, value) && len(p.Hosts) > 0 {
 			hosts := make([]string, len(p.Hosts))
 			copy(hosts, p.Hosts)

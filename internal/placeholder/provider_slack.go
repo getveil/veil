@@ -6,7 +6,8 @@ var slackPrefixes = []string{"xoxb-", "xoxp-", "xoxs-", "xoxa-", "xoxr-"}
 
 func init() {
 	register(ProviderPattern{
-		Name: "slack",
+		Name:     "slack",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			for _, p := range slackPrefixes {
 				if strings.HasPrefix(value, p) {

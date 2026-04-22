@@ -4,7 +4,8 @@ import "strings"
 
 func init() {
 	register(ProviderPattern{
-		Name: "twilio",
+		Name:     "twilio",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "SK") && len(value) == 34 {
 				return true

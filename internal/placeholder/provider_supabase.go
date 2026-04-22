@@ -14,7 +14,8 @@ const jwtHeader = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 
 func init() {
 	register(ProviderPattern{
-		Name: "supabase",
+		Name:     "supabase",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			if strings.Contains(strings.ToUpper(name), "SUPABASE") {
 				return true

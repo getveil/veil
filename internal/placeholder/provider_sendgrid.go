@@ -4,7 +4,8 @@ import "strings"
 
 func init() {
 	register(ProviderPattern{
-		Name: "sendgrid",
+		Name:     "sendgrid",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "SG.") {
 				return true

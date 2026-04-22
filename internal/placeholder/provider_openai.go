@@ -4,7 +4,8 @@ import "strings"
 
 func init() {
 	register(ProviderPattern{
-		Name: "openai",
+		Name:     "openai",
+		Priority: PriorityHandwritten,
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "sk-proj-") {
 				return true

@@ -2,6 +2,7 @@ package placeholder
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -554,4 +555,125 @@ func TestDefaultRegistryMatchesPackageRegistry(t *testing.T) {
 			t.Fatalf("name mismatch: %q vs %q", got.Name, p.Name)
 		}
 	}
+}
+
+// TestPriority_HandwrittenBeforeFormat asserts that a hand-written provider
+// (PriorityHandwritten) is matched before a Format provider (PriorityFormat)
+// when both would match the same input, regardless of init-order / filename.
+func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
+	before := len(registry)
+	// Register the Format FIRST, then the hand-written. Without Priority
+	// sorting, first-registered wins. With Priority sorting, the
+	// hand-written entry must still be picked because its Priority is higher.
+	registerFormat(Format{
+		Name:     "fmtfoo",
+		Prefixes: []string{"foo_"},
+		Length:   20,
+		Charset:  "alphanumeric",
+	})
+	register(ProviderPattern{
+		Name:     "hwfoo",
+		Priority: PriorityHandwritten,
+		Match:    func(name, value string) bool { return strings.HasPrefix(value, "foo_") },
+		Generate: func(value string) string { return "HANDWRITTEN-WON" },
+	})
+	defer func() { registry = registry[:before] }()
+
+	r := DefaultRegistry()
+	p := r.Match("ANY", "foo_abcdefghij1234567890")
+	if p == nil {
+		t.Fatal("expected a match")
+	}
+	if p.Name != "hwfoo" {
+		t.Fatalf("expected hand-written hwfoo to win via Priority, got %q", p.Name)
+	}
+}
+
+// TestPriority_StableWithinTier asserts that providers registered within the
+// same Priority tier are matched in registration order (stable sort).
+func TestPriority_StableWithinTier(t *testing.T) {
+	before := len(registry)
+	register(ProviderPattern{
+		Name:     "tier1a",
+		Priority: PriorityFormat,
+		Match:    func(name, value string) bool { return value == "shared" },
+		Generate: func(value string) string { return "a" },
+	})
+	register(ProviderPattern{
+		Name:     "tier1b",
+		Priority: PriorityFormat,
+		Match:    func(name, value string) bool { return value == "shared" },
+		Generate: func(value string) string { return "b" },
+	})
+	defer func() { registry = registry[:before] }()
+
+	r := DefaultRegistry()
+	p := r.Match("ANY", "shared")
+	if p == nil {
+		t.Fatal("expected a match")
+	}
+	if p.Name != "tier1a" {
+		t.Fatalf("expected first-registered tier1a to win stable sort, got %q", p.Name)
+	}
+}
+
+// TestRegistryAll_ReturnsSortedSnapshot asserts Registry.All() returns the
+// patterns in Priority-descending order (higher first).
+func TestRegistryAll_ReturnsSortedSnapshot(t *testing.T) {
+	r := DefaultRegistry()
+	all := r.All()
+	if len(all) == 0 {
+		t.Fatal("All() returned empty slice")
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i-1].Priority < all[i].Priority {
+			t.Fatalf("All() not sorted descending by Priority: %q(%d) before %q(%d)",
+				all[i-1].Name, all[i-1].Priority, all[i].Name, all[i].Priority)
+		}
+	}
+}
+
+// TestDefaultRegistry_ConcurrentSortIsRaceFree runs many goroutines where
+// some iterate a wrapper's patterns while others call DefaultRegistry()
+// concurrently (which acquires the sort mutex). This is a regression test for
+// the data race pattern where a goroutine holding a wrapper iterates the
+// shared backing array while another goroutine inside DefaultRegistry() is
+// calling sort.SliceStable on the same array. The defensive-copy snapshot in
+// DefaultRegistry ensures each wrapper owns its own slice.
+//
+// Run under -race to verify. Without the defensive copy, -race would report
+// a DATA RACE between the iteration (Match/All/Names) and the concurrent
+// sort inside another goroutine's DefaultRegistry() call.
+func TestDefaultRegistry_ConcurrentSortIsRaceFree(t *testing.T) {
+	var wg sync.WaitGroup
+
+	// Half the goroutines grab a wrapper once and iterate it many times.
+	for i := 0; i < 25; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := DefaultRegistry()
+			for k := 0; k < 50; k++ {
+				_ = r.Match("ANY", "sk-proj-abcdefghijklmnopqrstuvwxyz")
+				_ = r.All()
+				_ = r.Names()
+			}
+		}()
+	}
+
+	// The other half keep calling DefaultRegistry (which re-enters the sort
+	// mutex) while the first half iterate — the exact interleaving that would
+	// race on the shared backing array without a defensive copy.
+	for i := 0; i < 25; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := 0; k < 50; k++ {
+				r := DefaultRegistry()
+				_ = r.Match("ANY", "github_pat_xxxxxxxxxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+			}
+		}()
+	}
+
+	wg.Wait()
 }
