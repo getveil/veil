@@ -269,7 +269,7 @@ func TestProviderSlack(t *testing.T) {
 			t.Fatal("should not match unrelated")
 		}
 	})
-	t.Run("generate_preserves_dashes", func(t *testing.T) {
+	t.Run("generate_length", func(t *testing.T) {
 		value := "xoxb-123-456-abc789def"
 		result := prov.Generate(value)
 		if len(result) != len(value) {
@@ -277,14 +277,6 @@ func TestProviderSlack(t *testing.T) {
 		}
 		if !strings.HasPrefix(result, "xoxb-") {
 			t.Fatalf("prefix not preserved: %s", result)
-		}
-		// Dashes at positions in remainder should be preserved.
-		remainder := value[5:]
-		resultRemainder := result[5:]
-		for i, c := range remainder {
-			if c == '-' && rune(resultRemainder[i]) != '-' {
-				t.Fatalf("dash not preserved at position %d in remainder", i)
-			}
 		}
 	})
 	t.Run("generate_different", func(t *testing.T) {

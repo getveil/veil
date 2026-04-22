@@ -29,6 +29,15 @@ func init() {
 	})
 
 	registerFormat(Format{
+		Name:     "slack",
+		Prefixes: []string{"xoxb-", "xoxp-", "xoxs-", "xoxa-", "xoxr-"},
+		KeyHints: []string{"SLACK"},
+		Length:   0,
+		Charset:  "alphanumeric",
+		Hosts:    []string{"slack.com", "api.slack.com", "files.slack.com"},
+	})
+
+	registerFormat(Format{
 		Name:     "google",
 		Prefixes: []string{"AIza"},
 		KeyHints: []string{"GOOGLE_API", "FIREBASE_API"},
