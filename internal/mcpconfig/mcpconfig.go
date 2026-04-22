@@ -97,7 +97,7 @@ func Parse(path string) (*ConfigFile, error) {
 	}
 	cfg, err := parseContent(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mcpconfig: parse %s: %w", path, err)
 	}
 	cfg.path = path
 	return cfg, nil
@@ -110,10 +110,11 @@ func ParseBytes(data []byte) (*ConfigFile, error) {
 }
 
 // parseContent contains the JSON parsing logic shared by Parse and ParseBytes.
+// Errors returned are bare (no "mcpconfig:" prefix) so callers can wrap with context.
 func parseContent(data []byte) (*ConfigFile, error) {
 	var topLevel map[string]json.RawMessage
 	if err := json.Unmarshal(data, &topLevel); err != nil {
-		return nil, fmt.Errorf("mcpconfig: parse: %w", err)
+		return nil, fmt.Errorf("parse: %w", err)
 	}
 
 	servers := make(map[string]*ServerConfig)
@@ -121,16 +122,16 @@ func parseContent(data []byte) (*ConfigFile, error) {
 	if raw, ok := topLevel["mcpServers"]; ok {
 		var rawServers map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &rawServers); err != nil {
-			return nil, fmt.Errorf("mcpconfig: parse mcpServers: %w", err)
+			return nil, fmt.Errorf("parse mcpServers: %w", err)
 		}
 		for name, rawServer := range rawServers {
 			sc := &ServerConfig{}
 			if err := json.Unmarshal(rawServer, sc); err != nil {
-				return nil, fmt.Errorf("mcpconfig: parse server %q: %w", name, err)
+				return nil, fmt.Errorf("parse server %q: %w", name, err)
 			}
 			var allFields map[string]json.RawMessage
 			if err := json.Unmarshal(rawServer, &allFields); err != nil {
-				return nil, fmt.Errorf("mcpconfig: parse server %q overflow: %w", name, err)
+				return nil, fmt.Errorf("parse server %q overflow: %w", name, err)
 			}
 			_, sc.hasEnv = allFields["env"]
 			delete(allFields, "command")
