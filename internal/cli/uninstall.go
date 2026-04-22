@@ -116,7 +116,10 @@ func discoverBackups(root string) ([]backupPair, error) {
 		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
 	}
 
-	mcpPath, _ := mcpconfigDiscover()
+	mcpPath, err := mcpconfigDiscover()
+	if err != nil {
+		return nil, fmt.Errorf("discovering MCP config: %w", err)
+	}
 	if mcpPath != "" {
 		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
 			pairs = append(pairs, backupPair{
