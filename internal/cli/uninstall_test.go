@@ -110,6 +110,22 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 	}
 }
 
+func TestDiscoverBackupsSkipsOriginalWithoutBackup(t *testing.T) {
+	root := t.TempDir()
+	// Original exists but backup does not — should be skipped.
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("KEY=value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 0 {
+		t.Errorf("expected 0 pairs (no backup present), got %d: %+v", len(pairs), pairs)
+	}
+}
+
 func TestDiscoverBackupsIncludesMCPWhenDiscoverable(t *testing.T) {
 	root := t.TempDir()
 	// Set up a fake MCP config + backup via the test env var.
@@ -498,10 +514,23 @@ func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 	}
 
 	cmd = NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes", "--force"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("uninstall --force failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Uninstall plan:") {
+		t.Errorf("expected stdout to contain 'Uninstall plan:', got: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".env.veil-backup")); !os.IsNotExist(err) {
+		t.Errorf("expected .env.veil-backup to be gone, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".env")); err != nil {
+		t.Errorf("expected .env to exist after restore, stat err: %v", err)
+	}
+	if _, err := os.Stat(config.ProjectStateDir(root)); !os.IsNotExist(err) {
+		t.Errorf("expected .veil/ to be removed, stat err: %v", err)
 	}
 }

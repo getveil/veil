@@ -114,9 +114,7 @@ func discoverBackups(root string) ([]backupPair, error) {
 	for _, name := range envCuratedNames {
 		orig := filepath.Join(root, name)
 		backup := orig + backupSuffix
-		_, origErr := os.Stat(orig)
-		_, backErr := os.Stat(backup)
-		if origErr != nil && backErr != nil {
+		if _, err := os.Stat(backup); err != nil {
 			continue
 		}
 		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
