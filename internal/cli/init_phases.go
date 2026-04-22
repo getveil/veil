@@ -116,6 +116,11 @@ type secretLine struct {
 // with placeholders. Returns (vaulted, scoped) counts for the file. The seen
 // set is shared across files so placeholder generation stays collision-free.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
+	if backupExists(envPath) && !force {
+		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
+		return 0, 0, nil
+	}
+
 	envFile, err := scanner.ParseFile(envPath)
 	if err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("parsing %s", envPath), err)

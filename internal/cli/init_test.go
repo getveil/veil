@@ -858,3 +858,55 @@ func TestInitForce_WipesVault(t *testing.T) {
 		t.Logf("note: %d creds found (may be from re-scanning placeholders)", len(creds))
 	}
 }
+
+func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed a backup with a sentinel so we can verify it's not overwritten.
+	backupPath := envPath + ".veil-backup"
+	sentinel := []byte("sentinel\n")
+	if err := os.WriteFile(backupPath, sentinel, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Backup must still contain the sentinel (unchanged).
+	got, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(sentinel) {
+		t.Errorf("backup overwritten; got %q, want %q", got, sentinel)
+	}
+
+	// .env must still contain the real token (file was skipped, not processed).
+	envContents, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Error(".env should have been skipped (real token still present)")
+	}
+
+	// Stderr should mention the skip.
+	if !strings.Contains(stderr.String(), "already has a backup") {
+		t.Errorf("expected 'already has a backup' warning on stderr, got: %s", stderr.String())
+	}
+}
