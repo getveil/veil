@@ -2,6 +2,15 @@ package placeholder
 
 func init() {
 	registerFormat(Format{
+		Name:     "openai",
+		Prefixes: []string{"sk-proj-"},
+		KeyHints: []string{"OPENAI"},
+		Length:   0, // preserve input length
+		Charset:  "alphanumeric",
+		Hosts:    []string{"api.openai.com"},
+	})
+
+	registerFormat(Format{
 		Name:     "google",
 		Prefixes: []string{"AIza"},
 		KeyHints: []string{"GOOGLE_API", "FIREBASE_API"},
