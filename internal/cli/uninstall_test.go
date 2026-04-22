@@ -62,3 +62,89 @@ func TestActiveProxyPIDsNoStateDir(t *testing.T) {
 		t.Errorf("expected no PIDs for missing state dir, got %v", live)
 	}
 }
+
+func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
+	root := t.TempDir()
+	// Valid pair: both original and backup exist.
+	envPath := filepath.Join(root, ".env")
+	envBackup := envPath + ".veil-backup"
+	if err := os.WriteFile(envPath, []byte("KEY=placeholder"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envBackup, []byte("KEY=original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Curated-name alternative: .env.local with only a backup (original deleted).
+	localBackup := filepath.Join(root, ".env.local.veil-backup")
+	if err := os.WriteFile(localBackup, []byte("FOO=bar"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Noise: a backup file with an unsupported name (should be ignored).
+	randomBackup := filepath.Join(root, "random.conf.veil-backup")
+	if err := os.WriteFile(randomBackup, []byte("zzz"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+
+	// Expect exactly two env pairs (the curated names), none for MCP.
+	byOriginal := make(map[string]bool)
+	for _, p := range pairs {
+		if p.kind == backupKindEnv {
+			byOriginal[p.original] = true
+		}
+	}
+	if !byOriginal[envPath] {
+		t.Errorf("missing pair for %s; got: %v", envPath, byOriginal)
+	}
+	if !byOriginal[filepath.Join(root, ".env.local")] {
+		t.Errorf("missing pair for .env.local; got: %v", byOriginal)
+	}
+	if byOriginal[filepath.Join(root, "random.conf")] {
+		t.Errorf("unexpected pair for non-curated file: random.conf")
+	}
+}
+
+func TestDiscoverBackupsIncludesMCPWhenDiscoverable(t *testing.T) {
+	root := t.TempDir()
+	// Set up a fake MCP config + backup via the test env var.
+	mcpDir := t.TempDir()
+	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcpPath+".veil-backup", []byte(`{"mcpServers":{"x":{}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+
+	found := false
+	for _, p := range pairs {
+		if p.kind == backupKindMCP && p.original == mcpPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected MCP pair in results; got: %+v", pairs)
+	}
+}
+
+func TestDiscoverBackupsEmpty(t *testing.T) {
+	root := t.TempDir()
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 0 {
+		t.Errorf("expected 0 pairs, got %v", pairs)
+	}
+}

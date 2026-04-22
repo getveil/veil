@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/mcpconfig"
 )
 
 // activeProxyPIDs returns the list of PIDs from proxy-*.pid files that
@@ -72,3 +73,62 @@ func formatPIDList(pids []int) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// backupKind classifies a backup pair by the kind of file it covers.
+type backupKind int
+
+const (
+	backupKindEnv backupKind = iota
+	backupKindMCP
+)
+
+// backupPair pairs an original file path with its backup. Either may be
+// missing on disk at discovery time; classification runs later.
+type backupPair struct {
+	original string
+	backup   string
+	kind     backupKind
+}
+
+// envCuratedNames mirrors scanner.curatedNames. Kept local to avoid
+// exporting scanner internals; the list changes rarely.
+var envCuratedNames = []string{
+	".env",
+	".env.local",
+	".env.development",
+	".env.production",
+}
+
+// discoverBackups returns every (original, backup) pair that uninstall
+// should consider. For .env files: iterates curatedNames, returns a pair
+// when either the original or the backup exists. For MCP: consults
+// mcpconfig.Discover() and returns a pair only if the MCP backup exists.
+func discoverBackups(root string) ([]backupPair, error) {
+	var pairs []backupPair
+	for _, name := range envCuratedNames {
+		orig := filepath.Join(root, name)
+		backup := orig + backupSuffix
+		_, origErr := os.Stat(orig)
+		_, backErr := os.Stat(backup)
+		if origErr != nil && backErr != nil {
+			continue
+		}
+		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
+	}
+
+	mcpPath, _ := mcpconfigDiscover()
+	if mcpPath != "" {
+		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
+			pairs = append(pairs, backupPair{
+				original: mcpPath,
+				backup:   mcpPath + backupSuffix,
+				kind:     backupKindMCP,
+			})
+		}
+	}
+	return pairs, nil
+}
+
+// mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
+// without importing the package into the uninstall_test package.
+var mcpconfigDiscover = func() (string, error) { return mcpconfig.Discover() }
