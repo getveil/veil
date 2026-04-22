@@ -95,29 +95,39 @@ func Parse(path string) (*ConfigFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mcpconfig: read %s: %w", path, err)
 	}
+	cfg, err := parseContent(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg.path = path
+	return cfg, nil
+}
 
-	// Parse top-level as raw messages to preserve unknown keys.
+// ParseBytes parses an MCP config from a byte slice. Behaves identically
+// to Parse modulo the I/O step. The returned ConfigFile has no path set.
+func ParseBytes(data []byte) (*ConfigFile, error) {
+	return parseContent(data)
+}
+
+// parseContent contains the JSON parsing logic shared by Parse and ParseBytes.
+func parseContent(data []byte) (*ConfigFile, error) {
 	var topLevel map[string]json.RawMessage
 	if err := json.Unmarshal(data, &topLevel); err != nil {
-		return nil, fmt.Errorf("mcpconfig: parse %s: %w", path, err)
+		return nil, fmt.Errorf("mcpconfig: parse: %w", err)
 	}
 
 	servers := make(map[string]*ServerConfig)
 
 	if raw, ok := topLevel["mcpServers"]; ok {
-		// Parse each server as raw message first, then decode known fields.
 		var rawServers map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &rawServers); err != nil {
 			return nil, fmt.Errorf("mcpconfig: parse mcpServers: %w", err)
 		}
-
 		for name, rawServer := range rawServers {
 			sc := &ServerConfig{}
 			if err := json.Unmarshal(rawServer, sc); err != nil {
 				return nil, fmt.Errorf("mcpconfig: parse server %q: %w", name, err)
 			}
-
-			// Capture overflow: all fields that aren't command/args/env.
 			var allFields map[string]json.RawMessage
 			if err := json.Unmarshal(rawServer, &allFields); err != nil {
 				return nil, fmt.Errorf("mcpconfig: parse server %q overflow: %w", name, err)
@@ -129,7 +139,6 @@ func Parse(path string) (*ConfigFile, error) {
 			if len(allFields) > 0 {
 				sc.overflow = allFields
 			}
-
 			if sc.Env == nil {
 				sc.Env = make(map[string]string)
 			}
@@ -138,7 +147,6 @@ func Parse(path string) (*ConfigFile, error) {
 	}
 
 	return &ConfigFile{
-		path:     path,
 		servers:  servers,
 		topLevel: topLevel,
 	}, nil
