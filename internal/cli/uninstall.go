@@ -14,6 +14,7 @@ import (
 	"github.com/8enji/veil/internal/mcpconfig"
 	"github.com/8enji/veil/internal/scanner"
 	"github.com/8enji/veil/internal/vault"
+	"github.com/spf13/cobra"
 )
 
 // activeProxyPIDs returns the list of PIDs from proxy-*.pid files that
@@ -331,4 +332,35 @@ func resolverFromVault(v *vault.Vault) placeholderResolver {
 		}
 	}
 	return resolver
+}
+
+func uninstallCmd() *cobra.Command {
+	var dryRun, yes, force bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Revert veil init: restore backups, wipe vault and state",
+		Long: `Restore every file veil init modified from its .veil-backup, remove the
+project vault, purge the keystore entry, and delete .veil/.
+
+After a successful uninstall, the project is in its pre-init state
+(modulo /.veil/ and *.veil-backup lines that remain in .gitignore).
+
+Flags:
+  --dry-run    Print the plan without making changes.
+  --yes        Skip the interactive confirmation.
+  --force      Proceed past "no backups" and "active proxy" guards.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUninstall(cmd, dryRun, yes, force)
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without making changes")
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the interactive confirmation")
+	cmd.Flags().BoolVar(&force, "force", false, "proceed past guards (no-backup, active-proxy)")
+	return cmd
+}
+
+// runUninstall is filled in by subsequent tasks. For now it returns a
+// not-implemented error so the command wires through the root registration.
+func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
+	return cliError("veil uninstall is not yet implemented", "")
 }
