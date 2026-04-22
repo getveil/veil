@@ -268,3 +268,50 @@ func emitDiff(sb *strings.Builder, a, b []string, t [][]int, i, j int) {
 		sb.WriteString("\n")
 	}
 }
+
+// classifyMCPPair compares the current MCP config file to its backup after
+// reverse-substituting placeholders with real values. Semantics mirror
+// classifyEnvPair but operate on the MCP JSON shape via mcpconfig.
+func classifyMCPPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
+	backupBytes, err := os.ReadFile(backup) // #nosec G304
+	if err != nil {
+		return 0, "", fmt.Errorf("read backup %s: %w", backup, err)
+	}
+	currentBytes, err := os.ReadFile(original) // #nosec G304
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return classOriginalMissing, "", nil
+		}
+		return 0, "", fmt.Errorf("read %s: %w", original, err)
+	}
+
+	expected, err := expectedOriginalMCP(currentBytes, resolver)
+	if err != nil {
+		return classModified, renderUnifiedDiff(backupBytes, currentBytes), nil
+	}
+
+	if bytes.Equal(expected, backupBytes) {
+		return classUnmodified, "", nil
+	}
+	return classModified, renderUnifiedDiff(backupBytes, expected), nil
+}
+
+// expectedOriginalMCP parses the current MCP config bytes, substitutes
+// placeholders with real values in every server's env map, and re-serializes
+// using mcpconfig's canonical formatting.
+func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, error) {
+	cfg, err := mcpconfig.ParseBytes(current)
+	if err != nil {
+		return nil, err
+	}
+	if resolver != nil {
+		for serverName, server := range cfg.Servers() {
+			for key, value := range server.Env {
+				if real, ok := resolver[value]; ok {
+					cfg.SetEnvValue(serverName, key, real)
+				}
+			}
+		}
+	}
+	return cfg.Bytes()
+}

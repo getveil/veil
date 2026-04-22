@@ -277,3 +277,77 @@ func TestRenderUnifiedDiffHasHeaders(t *testing.T) {
 		t.Errorf("expected diff to start with '--- backup' / '+++ current', got:\n%s", diff)
 	}
 }
+
+func TestClassifyMCPPairUnmodified(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "claude_desktop_config.json")
+	backup := orig + ".veil-backup"
+
+	// backupContent must be in Bytes()-formatted form (2-space indent) because
+	// expectedOriginalMCP re-serializes through cfg.Bytes(). The backup
+	// represents the file before Veil touched it; Veil's init also writes via
+	// Bytes(), so the user's pre-existing file must already be in that shape
+	// for the Unmodified case to match.
+	backupContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"real-value\"\n      }\n    }\n  }\n}\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	currentContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"ghp_veil_abc\"\n      }\n    }\n  }\n}\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := placeholderResolver{"ghp_veil_abc": "real-value"}
+
+	status, _, err := classifyMCPPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyMCPPair: %v", err)
+	}
+	if status != classUnmodified {
+		t.Errorf("status = %v, want classUnmodified", status)
+	}
+}
+
+func TestClassifyMCPPairModified(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "claude_desktop_config.json")
+	backup := orig + ".veil-backup"
+
+	// backupContent in Bytes()-formatted form (only server "x").
+	backupContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"real\"\n      }\n    }\n  }\n}\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Current has placeholder for TOKEN and a new server "y" added by the user.
+	currentContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"ghp_veil_abc\"\n      }\n    },\n    \"y\": {\n      \"command\": \"\",\n      \"env\": {\n        \"OTHER\": \"new\"\n      }\n    }\n  }\n}\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := placeholderResolver{"ghp_veil_abc": "real"}
+
+	status, _, err := classifyMCPPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyMCPPair: %v", err)
+	}
+	if status != classModified {
+		t.Errorf("status = %v, want classModified", status)
+	}
+}
+
+func TestClassifyMCPPairOriginalMissing(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "claude_desktop_config.json")
+	backup := orig + ".veil-backup"
+	if err := os.WriteFile(backup, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, _, err := classifyMCPPair(orig, backup, nil)
+	if err != nil {
+		t.Fatalf("classifyMCPPair: %v", err)
+	}
+	if status != classOriginalMissing {
+		t.Errorf("status = %v, want classOriginalMissing", status)
+	}
+}
