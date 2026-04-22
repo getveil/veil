@@ -67,26 +67,40 @@ func buildTestClient(t *testing.T, binDir string) string {
 
 // makeEnv constructs environment variables for veil CLI invocations.
 //
-// We keep the real HOME so the macOS keychain is accessible (the keyring
-// is tied to the login keychain, not HOME). The CA certificate is stored
-// under HOME too and is shared/idempotent. All project-specific state
-// lives under the --path directory, so tests are isolated via t.TempDir().
+// On Linux/CI we point HOME at t.TempDir() so the file-fallback keystore
+// is used instead of any ambient keyring — tests are hermetic and the
+// file-fallback path is exercised. All binary invocations in one test
+// share the same HOME (per-test, not per-invocation), so the file
+// keystore is visible across veil init / veil run / veil status.
+//
+// On macOS we keep the real HOME because go-keyring calls /usr/bin/security,
+// which resolves the login keychain via $HOME/Library/Keychains. Overriding
+// HOME makes the keychain unreachable (errSecInteractionNotAllowed / exit
+// 154), and AutoKeystore on darwin never falls back to file regardless.
+// macOS CI would need a separate env-var hook to force file-fallback; that's
+// a production change outside the scope of this test-only work. Keychain
+// entries keyed by unique project IDs don't collide between tests.
 //
 // We do NOT set VEIL_TEST_KEYSTORE=mem because e2e tests span multiple
-// processes (veil init, veil run, veil status, ...) that must share the
-// keystore.
-func makeEnv() []string {
-	env := os.Environ()
-	// Strip any leftover VEIL_TEST_KEYSTORE from the parent process
-	// (e.g. if `make test` sets it). We need the real keystore.
-	filtered := env[:0]
-	for _, kv := range env {
+// processes that must share the keystore via disk.
+func makeEnv(t *testing.T) []string {
+	t.Helper()
+	src := os.Environ()
+	out := make([]string, 0, len(src)+1)
+	overrideHome := runtime.GOOS != "darwin"
+	for _, kv := range src {
 		if strings.HasPrefix(kv, "VEIL_TEST_KEYSTORE=") {
 			continue
 		}
-		filtered = append(filtered, kv)
+		if overrideHome && strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		out = append(out, kv)
 	}
-	return filtered
+	if overrideHome {
+		out = append(out, "HOME="+t.TempDir())
+	}
+	return out
 }
 
 // assertFileExists fails the test if the given path does not exist.
@@ -104,7 +118,7 @@ func TestE2E_InitAndRun(t *testing.T) {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	// 1. Build the veil binary.
 	binDir := t.TempDir()
@@ -245,7 +259,7 @@ func TestE2E_EnvRoundTrip(t *testing.T) {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
@@ -366,7 +380,7 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	// 2. Build binaries.
 	binDir := t.TempDir()
@@ -511,7 +525,7 @@ func TestE2E_ProxyBodyInjection(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
@@ -624,7 +638,7 @@ func TestE2E_ProxyHeaderInjectionAuthorizedHost(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	env := makeEnv()
+	env := makeEnv(t)
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
 	clientBin := buildTestClient(t, binDir)
@@ -740,7 +754,7 @@ func TestE2E_ExitCodeAndEnvVars(t *testing.T) {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	env := makeEnv()
+	env := makeEnv(t)
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
 
@@ -798,7 +812,7 @@ func TestE2E_InitIdempotent(t *testing.T) {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
@@ -847,7 +861,7 @@ func TestE2E_DryRun(t *testing.T) {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	env := makeEnv()
+	env := makeEnv(t)
 
 	binDir := t.TempDir()
 	veilBin := buildVeil(t, binDir)
