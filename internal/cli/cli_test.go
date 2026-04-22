@@ -1430,3 +1430,35 @@ func TestLogShowsSuspectMarker(t *testing.T) {
 		t.Errorf("--json output missing suspect flag:\n%s", jsonOut.String())
 	}
 }
+
+func TestStatusShowsAuditHealthDegraded(t *testing.T) {
+	root := initProject(t)
+	dbPath := filepath.Join(root, ".veil", "audit.sqlite")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sidecar := dbPath + ".health"
+	contents := fmt.Sprintf("dropped=7\nlast_error_ms=%d\nlast_error=disk full\n", time.Now().UnixMilli())
+	if err := os.WriteFile(sidecar, []byte(contents), 0o600); err != nil {
+		t.Fatalf("seed health sidecar: %v", err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"status", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Audit subsystem reported issues") {
+		t.Errorf("status output missing audit-health warning:\n%s", output)
+	}
+	if !strings.Contains(output, "7 event(s) dropped") {
+		t.Errorf("status output missing dropped count:\n%s", output)
+	}
+	if !strings.Contains(output, "disk full") {
+		t.Errorf("status output missing last error message:\n%s", output)
+	}
+}

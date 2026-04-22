@@ -6,13 +6,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/8enji/veil/internal/ui"
 	_ "modernc.org/sqlite"
 )
+
+// pendingCap bounds the in-memory Injection buffer. ~160 bytes per row, so
+// 10k rows ≈ 1.6MB — enough to absorb a several-minute flush outage on a
+// normal workload while keeping a hard memory ceiling.
+const pendingCap = 10_000
 
 // Injection represents a single secret-injection event.
 type Injection struct {
@@ -41,6 +48,16 @@ type Store struct {
 	flush     chan struct{} // signal immediate flush
 	closeOnce sync.Once
 	closeErr  error
+	wg        sync.WaitGroup // tracks the flusher goroutine
+
+	// Backpressure / health (all guarded by mu).
+	dbPath          string
+	dropped         int
+	lastErr         string
+	lastErrTime     time.Time
+	warnedFullOnce  bool      // gate the buffer-full warning
+	warnedFlushOnce bool      // gate the flush-failure warning
+	warnWriter      io.Writer // destination for ui.Warnf; defaults to os.Stderr
 }
 
 const schemaDDL = `
@@ -91,40 +108,51 @@ func Open(dbPath string) (*Store, error) {
 	// modernc.org/sqlite does not honour _journal_mode= / _synchronous= DSN
 	// parameters; use _pragma= encoding instead.
 	dsn := "file:" + dbPath + "?_pragma=journal_mode%3DWAL&_pragma=synchronous%3DNORMAL"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("%w: sql.Open: %w", ErrAuditOpen, err)
-	}
-
-	if _, err := db.Exec(schemaDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w: ddl: %w", ErrAuditOpen, err)
-	}
-
-	if err := migrateToV2(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("%w: migrate v2: %w", ErrAuditOpen, err)
-	}
-
-	// Force WAL + SHM sidecar materialization by taking a write lock.
-	// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
-	// which forces SQLite to create the -wal/-shm files before the transaction
-	// body runs.
-	{
+	var db *sql.DB
+	// Wrap all file-creating operations in a tightened umask. SQLite creates
+	// the main DB at sql.Open time and the -wal/-shm sidecars when the first
+	// write transaction runs. Without this guard the sidecars briefly exist
+	// at 0644 before the subsequent Chmod tightens them.
+	if err := withRestrictiveUmask(func() error {
+		var openErr error
+		db, openErr = sql.Open("sqlite", dsn)
+		if openErr != nil {
+			return fmt.Errorf("sql.Open: %w", openErr)
+		}
+		if _, execErr := db.Exec(schemaDDL); execErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("ddl: %w", execErr)
+		}
+		if mErr := migrateToV2(db); mErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("migrate v2: %w", mErr)
+		}
+		// Force WAL + SHM sidecar materialization by taking a write lock.
+		// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
+		// which forces SQLite to create the -wal/-shm files before the
+		// transaction body runs.
 		tx, txErr := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
 		if txErr != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal begin: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal begin: %w", txErr)
 		}
 		if _, txErr = tx.Exec(`UPDATE schema_version SET v = v`); txErr != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal exec: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal exec: %w", txErr)
 		}
 		if txErr = tx.Commit(); txErr != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("%w: materialize wal commit: %w", ErrAuditOpen, txErr)
+			db = nil
+			return fmt.Errorf("materialize wal commit: %w", txErr)
 		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrAuditOpen, err)
 	}
 
 	// Chmod 0600 on db and sidecars. `-wal` may have been auto-checkpointed
@@ -143,19 +171,61 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{
-		db:    db,
-		done:  make(chan struct{}),
-		flush: make(chan struct{}, 1),
+		db:         db,
+		done:       make(chan struct{}),
+		flush:      make(chan struct{}, 1),
+		dbPath:     dbPath,
+		warnWriter: os.Stderr,
 	}
+	s.wg.Add(1)
 	go s.flusher()
 	return s, nil
+}
+
+// Health returns an in-memory snapshot of audit backpressure state. Safe to
+// call concurrently with Record and flushPending.
+func (s *Store) Health() Health {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Health{
+		Dropped:       s.dropped,
+		LastErrorTime: s.lastErrTime,
+		LastErrorMsg:  s.lastErr,
+	}
 }
 
 // Record appends an injection event to the pending buffer. It is safe for
 // concurrent use. When the buffer reaches 50 rows the flusher is signalled
 // to write immediately.
+//
+// URLPath and AgentCmd are passed through redactURLPath / redactAgentCmd
+// before enqueue so callers cannot accidentally persist query strings or
+// full argv into the audit DB. Build with `-tags audit_debug` to disable
+// redaction when diagnosing audit issues.
 func (s *Store) Record(inj Injection) {
+	inj.URLPath = redactURLPath(inj.URLPath)
+	inj.AgentCmd = redactAgentCmd(inj.AgentCmd)
+
 	s.mu.Lock()
+	if len(s.pending) >= pendingCap {
+		s.dropped++
+		warnNow := !s.warnedFullOnce
+		s.warnedFullOnce = true
+		dbPath := s.dbPath
+		warn := s.warnWriter
+		snapshot := Health{
+			Dropped:       s.dropped,
+			LastErrorTime: s.lastErrTime,
+			LastErrorMsg:  s.lastErr,
+		}
+		s.mu.Unlock()
+
+		if warnNow {
+			ui.Warnf(warn, "audit buffer full; dropping events (cap=%d)", pendingCap)
+		}
+		_ = writeHealthSidecar(dbPath, snapshot)
+		return
+	}
 	s.pending = append(s.pending, inj)
 	n := len(s.pending)
 	s.mu.Unlock()
@@ -170,11 +240,23 @@ func (s *Store) Record(inj Injection) {
 
 // Close stops the background flusher, flushes remaining rows, and closes
 // the database. Close is idempotent; subsequent calls return the original
-// result without side effects.
+// result without side effects. Close blocks until the flusher goroutine has
+// exited, so any in-flight flushPending transaction completes before the
+// database handle is closed.
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		s.flushPending()
+		s.wg.Wait()      // flusher has observed done and returned
+		s.flushPending() // drain anything enqueued after the last tick
+
+		s.mu.Lock()
+		healthy := s.dropped == 0 && s.lastErr == ""
+		dbPath := s.dbPath
+		s.mu.Unlock()
+		if healthy {
+			_ = clearHealthSidecar(dbPath)
+		}
+
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
@@ -182,6 +264,7 @@ func (s *Store) Close() error {
 
 // flusher runs in a goroutine, periodically writing pending rows.
 func (s *Store) flusher() {
+	defer s.wg.Done()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -198,7 +281,9 @@ func (s *Store) flusher() {
 }
 
 // flushPending swaps the pending buffer and inserts all rows in a single
-// transaction.
+// transaction. On failure, the batch is requeued up to pendingCap and
+// the flush failure is recorded on the Store / persisted to the health
+// sidecar.
 func (s *Store) flushPending() {
 	s.mu.Lock()
 	if len(s.pending) == 0 {
@@ -209,30 +294,46 @@ func (s *Store) flushPending() {
 	s.pending = nil
 	s.mu.Unlock()
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		// Put them back so they aren't lost.
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
+	if err := s.writeBatch(batch); err != nil {
+		s.recordFlushFailure(batch, err)
 		return
 	}
 
+	s.mu.Lock()
+	hadError := s.lastErr != ""
+	if hadError {
+		s.lastErr = ""
+		s.lastErrTime = time.Time{}
+	}
+	dropped := s.dropped
+	dbPath := s.dbPath
+	s.mu.Unlock()
+
+	if hadError && dropped == 0 {
+		_ = clearHealthSidecar(dbPath)
+	} else if hadError {
+		_ = writeHealthSidecar(dbPath, Health{Dropped: dropped})
+	}
+}
+
+// writeBatch inserts the batch in a single transaction. Returns the first
+// error encountered; on success returns nil.
+func (s *Store) writeBatch(batch []Injection) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("%w: begin: %w", ErrAuditWrite, err)
+	}
 	stmt, err := tx.Prepare(insertSQL)
 	if err != nil {
 		_ = tx.Rollback()
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
-		return
+		return fmt.Errorf("%w: prepare: %w", ErrAuditWrite, err)
 	}
-
 	for _, inj := range batch {
 		suspect := 0
 		if inj.SuspectFlag {
 			suspect = 1
 		}
-		_, err := stmt.Exec(
+		if _, err := stmt.Exec(
 			inj.Timestamp.UnixMilli(),
 			inj.RequestID,
 			inj.Host,
@@ -247,22 +348,53 @@ func (s *Store) flushPending() {
 			inj.Location,
 			suspect,
 			inj.AuthSignal,
-		)
-		if err != nil {
+		); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
-			s.mu.Lock()
-			s.pending = append(batch, s.pending...)
-			s.mu.Unlock()
-			return
+			return fmt.Errorf("%w: exec: %w", ErrAuditWrite, err)
 		}
 	}
 	_ = stmt.Close()
 	if err := tx.Commit(); err != nil {
-		s.mu.Lock()
-		s.pending = append(batch, s.pending...)
-		s.mu.Unlock()
+		return fmt.Errorf("%w: commit: %w", ErrAuditWrite, err)
 	}
+	return nil
+}
+
+// recordFlushFailure re-queues the batch (respecting pendingCap) and records
+// the error for veil status to surface. The first failure emits a ui.Warnf
+// so the user sees it in the current session; subsequent failures are
+// silent (the sidecar remains the durable signal).
+func (s *Store) recordFlushFailure(batch []Injection, err error) {
+	s.mu.Lock()
+	room := pendingCap - len(s.pending)
+	if room < 0 {
+		room = 0
+	}
+	if room >= len(batch) {
+		s.pending = append(batch, s.pending...)
+	} else {
+		keep := batch[len(batch)-room:]
+		s.pending = append(keep, s.pending...)
+		s.dropped += len(batch) - room
+	}
+	s.lastErr = err.Error()
+	s.lastErrTime = time.Now().UTC()
+	firstWarn := !s.warnedFlushOnce
+	s.warnedFlushOnce = true
+	snapshot := Health{
+		Dropped:       s.dropped,
+		LastErrorTime: s.lastErrTime,
+		LastErrorMsg:  s.lastErr,
+	}
+	dbPath := s.dbPath
+	warn := s.warnWriter
+	s.mu.Unlock()
+
+	if firstWarn {
+		ui.Warnf(warn, "audit flush failed: %v", err)
+	}
+	_ = writeHealthSidecar(dbPath, snapshot)
 }
 
 // migrateToV2 adds the suspect_flag and auth_signal columns to pre-existing

@@ -3,7 +3,9 @@ package audit
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,6 +179,13 @@ func TestSummary(t *testing.T) {
 	blockedInj2.BytesAfter = 0
 	s.Record(blockedInj2)
 
+	// Add a suspect row — must NOT count toward total, hosts, or last.
+	suspect := makeInjection("suspect.example.com", "susp-key", base.Add(7*time.Second))
+	suspect.Location = "mismatch_suspected"
+	suspect.SuspectFlag = true
+	suspect.AuthSignal = "authorization_header"
+	s.Record(suspect)
+
 	s.flushPending()
 
 	total, blocked, hostList, last, err := s.Summary(base)
@@ -185,19 +194,24 @@ func TestSummary(t *testing.T) {
 	}
 
 	if total != 3 {
-		t.Errorf("total = %d, want 3", total)
+		t.Errorf("total = %d, want 3 (suspect row must be excluded)", total)
 	}
 	if blocked != 2 {
 		t.Errorf("blocked = %d, want 2", blocked)
 	}
 	if len(hostList) != 3 {
-		t.Errorf("hosts = %v, want 3 distinct", hostList)
+		t.Errorf("hosts = %v, want 3 distinct (suspect host must be excluded)", hostList)
+	}
+	for _, h := range hostList {
+		if h == "suspect.example.com" {
+			t.Errorf("suspect host leaked into hostList: %v", hostList)
+		}
 	}
 	if last == nil {
 		t.Fatal("lastInjection is nil")
 	}
 	if last.Host != "api.cohere.com" {
-		t.Errorf("last host = %q, want api.cohere.com", last.Host)
+		t.Errorf("last host = %q, want api.cohere.com (suspect row must be excluded)", last.Host)
 	}
 }
 
@@ -492,6 +506,121 @@ func TestRecordAndQuerySuspectFields(t *testing.T) {
 	}
 }
 
+func TestRecordRedactsURLPathQuery(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp:      time.Now(),
+		RequestID:      "req-url-1",
+		Host:           "api.example.com",
+		Method:         "GET",
+		URLPath:        "/v1/thing?token=sk_live_ABCDEFGHIJ&lang=en",
+		CredentialID:   "c1",
+		CredentialName: "k",
+		Location:       "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].URLPath != "/v1/thing" {
+		t.Errorf("URLPath = %q, want %q — query string must be stripped at record time",
+			rows[0].URLPath, "/v1/thing")
+	}
+}
+
+func TestRecordRedactsURLPathPreservesPathOnly(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp: time.Now(), RequestID: "req-p-1",
+		Host: "api.example.com", Method: "GET",
+		URLPath: "/v1/thing", Location: "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if rows[0].URLPath != "/v1/thing" {
+		t.Errorf("URLPath = %q, want %q", rows[0].URLPath, "/v1/thing")
+	}
+}
+
+func TestRecordRedactsAgentCmdArgv(t *testing.T) {
+	s := openTestStore(t)
+
+	s.Record(Injection{
+		Timestamp:      time.Now(),
+		RequestID:      "req-argv-1",
+		Host:           "api.example.com",
+		Method:         "GET",
+		URLPath:        "/x",
+		CredentialID:   "c1",
+		CredentialName: "k",
+		AgentCmd:       "curl -H Authorization: Bearer sk_live_SECRETSECRETSECRET",
+		Location:       "header",
+	})
+	s.flushPending()
+
+	rows, err := s.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].AgentCmd != "curl" {
+		t.Errorf("AgentCmd = %q, want %q — argv[1:] must be stripped", rows[0].AgentCmd, "curl")
+	}
+}
+
+func TestCloseWaitsForFlusher(t *testing.T) {
+	// Verify that Close() synchronises with the flusher goroutine and no
+	// rows are lost when close-and-flush interleave. Each iteration writes
+	// exactly 200 rows past the 50-row flush threshold, closes the store,
+	// then re-opens the DB and counts. If the flusher raced db.Close,
+	// tx.Commit in the flusher's flushPending would fail and rows would be
+	// silently lost (the old code re-queued into a pending buffer that
+	// dies with the process).
+	const rowsPerIter = 200
+	for i := 0; i < 30; i++ {
+		dbPath := filepath.Join(t.TempDir(), "audit.db")
+		s, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open iter %d: %v", i, err)
+		}
+		base := time.Now()
+		for j := 0; j < rowsPerIter; j++ {
+			s.Record(makeInjection("close.example.com", "close-key", base.Add(time.Duration(j)*time.Millisecond)))
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close iter %d: %v", i, err)
+		}
+
+		// Re-open and count.
+		s2, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("re-Open iter %d: %v", i, err)
+		}
+		rows, err := s2.Query(Filter{Limit: rowsPerIter + 10})
+		if err != nil {
+			t.Fatalf("Query iter %d: %v", i, err)
+		}
+		if len(rows) != rowsPerIter {
+			t.Errorf("iter %d: got %d rows, want %d (flusher raced db.Close and lost rows)",
+				i, len(rows), rowsPerIter)
+		}
+		_ = s2.Close()
+	}
+}
+
 func TestQueryCombinedFilters(t *testing.T) {
 	s := openTestStore(t)
 
@@ -527,5 +656,113 @@ func TestQueryCombinedFilters(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Errorf("combined host+cred+since filter: got %d rows, want 1", len(rows))
+	}
+}
+
+// captureWarn captures ui.Warnf output for inspection.
+type captureWarn struct{ buf strings.Builder }
+
+func (c *captureWarn) Write(p []byte) (int, error) { return c.buf.Write(p) }
+
+func TestPendingCapBoundsMemory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	warn := &captureWarn{}
+	s.mu.Lock()
+	s.warnWriter = warn
+	s.mu.Unlock()
+
+	// Close the underlying DB handle so flush writes fail. We avoid Close()
+	// because it tears down the flusher goroutine.
+	_ = s.db.Close()
+
+	base := time.Now()
+	const extras = 1_000
+	for i := 0; i < pendingCap+extras; i++ {
+		s.Record(makeInjection("bp.example.com", "bp-key", base.Add(time.Duration(i)*time.Millisecond)))
+	}
+
+	s.mu.Lock()
+	pending := len(s.pending)
+	dropped := s.dropped
+	warnOutput := warn.buf.String()
+	s.mu.Unlock()
+
+	if pending > pendingCap {
+		t.Errorf("pending = %d, want <= %d", pending, pendingCap)
+	}
+	if dropped < extras {
+		t.Errorf("dropped = %d, want at least %d", dropped, extras)
+	}
+	if !strings.Contains(warnOutput, "audit buffer full") {
+		t.Errorf("expected ui.Warnf for full buffer, got %q", warnOutput)
+	}
+
+	// Tear down the flusher goroutine without re-closing s.db.
+	close(s.done)
+	s.wg.Wait()
+}
+
+func TestHealthReflectsDrops(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = s.db.Close()
+	s.mu.Lock()
+	s.warnWriter = &captureWarn{}
+	s.mu.Unlock()
+
+	base := time.Now()
+	for i := 0; i < pendingCap+5; i++ {
+		s.Record(makeInjection("h.example.com", "k", base.Add(time.Duration(i)*time.Millisecond)))
+	}
+
+	h := s.Health()
+	if h.Dropped < 5 {
+		t.Errorf("Health.Dropped = %d, want >= 5", h.Dropped)
+	}
+	if !h.Degraded() {
+		t.Error("Health.Degraded() = false, want true after drops")
+	}
+
+	persisted, err := ReadHealth(dbPath)
+	if err != nil {
+		t.Fatalf("ReadHealth: %v", err)
+	}
+	if persisted.Dropped < 5 {
+		t.Errorf("persisted.Dropped = %d, want >= 5", persisted.Dropped)
+	}
+
+	close(s.done)
+	s.wg.Wait()
+}
+
+func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	// Pre-create a stale sidecar that should be cleared on a clean close.
+	sidecar := dbPath + ".health"
+	if err := os.MkdirAll(filepath.Dir(sidecar), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(sidecar, []byte("dropped=42\n"), 0o600); err != nil {
+		t.Fatalf("write stale sidecar: %v", err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.Record(makeInjection("ok.example.com", "k", time.Now()))
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("health sidecar should have been removed on clean close, stat err=%v", err)
 	}
 }
