@@ -76,7 +76,7 @@ Veil ships as a single Go binary with no background daemon, no cloud dependency,
 | Audit | `internal/audit` | SQLite-backed injection log. WAL mode, batched writes, v2 schema with `suspect_flag` and `auth_signal` columns for the mismatch detector. |
 | Scanner | `internal/scanner` | `.env` file discovery (curated basenames; `.example` / `.sample` excluded). |
 | MCP config | `internal/mcpconfig` | Parses MCP server configs and extracts embedded credentials for migration to the vault. |
-| Runner | `internal/runner` | Agent process lifecycle — spawn with proxy + CA env vars, forward signals, reclaim foreground tty, clean session temp dir. |
+| Runner | `internal/runner` | Agent process lifecycle — spawn with proxy + CA env vars, generate per-session PKCS12 truststore for JVM children (exposed via `JAVA_TOOL_OPTIONS`), forward signals, reclaim foreground tty, clean session temp dir. |
 | CA | `internal/proxy/ca.go` + `leaf.go` | Root CA generation, persistent on-disk; per-host leaf certs signed on demand and cached in memory. |
 
 ## Lifecycle of a request
