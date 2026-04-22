@@ -142,3 +142,15 @@ func BuildJavaTruststoreIn(sessionDir string, bundlePEM []byte) (string, error) 
 	}
 	return path, nil
 }
+
+// JavaToolOptionsFlags returns the JVM -D flags that point JAVA_TOOL_OPTIONS
+// at a Veil per-session PKCS12 truststore. The password matches the one
+// BuildJavaTruststoreIn used to encode the file — keeping both in this
+// package ensures they stay in sync.
+func JavaToolOptionsFlags(p12Path string) string {
+	return fmt.Sprintf(
+		"-Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=%s",
+		p12Path,
+		javaTruststorePassword,
+	)
+}

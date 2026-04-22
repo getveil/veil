@@ -247,10 +247,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 		stripped = append(stripped, kv)
 	}
 
-	veilJavaFlags := fmt.Sprintf(
-		"-Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit",
-		javaTruststorePath,
-	)
+	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath)
 	javaToolOpts := veilJavaFlags
 	for _, kv := range environ {
 		k, v, ok := strings.Cut(kv, "=")
