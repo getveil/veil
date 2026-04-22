@@ -85,8 +85,18 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
 
-	// 5. Start proxy.
-	server, err := proxy.New(ca, vlt, auditStore, os.Getpid(), cfg.Command)
+	// 4. Resolve the child command to a realpath before touching the proxy
+	// or spawning anything — this is the forensic anchor for audit rows and
+	// the banner. A shadow binary in a writable PATH dir is a real threat for
+	// a tool whose promise is "the agent never sees real tokens".
+	resolvedCmd, err := resolveAgentCommand(cfg.Command)
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent command: %w", err)
+	}
+
+	// 5. Start proxy. Use resolvedCmd so every audit row records the binary
+	// that actually ran, not whatever token the user typed on the CLI.
+	server, err := proxy.New(ca, vlt, auditStore, os.Getpid(), resolvedCmd)
 	if err != nil {
 		return nil, fmt.Errorf("create proxy: %w", err)
 	}
@@ -107,18 +117,27 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	credCount := len(vlt.List())
 	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
 		ui.Success.Sprint("veil"), credCount)
+	fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Muted.Sprint("agent:"), ui.Muted.Sprint(resolvedCmd))
 	fmt.Fprintln(os.Stderr, ui.Muted.Sprint("───────────────────────────────────────"))
 	if warning := formatStartupWarning(credCount); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
 	}
 
-	// 6. Build child env: strip existing proxy vars and inject ours.
+	// 6. Build child env: strip existing proxy vars and inject ours, and
+	// remove any shell-exported var whose name matches a vault credential
+	// (SEC-1). Announce the strip loudly so the user knows their shell was
+	// intervened on — this is the single most important guarantee in the
+	// product ("the agent never sees real tokens").
 	proxyURL := "http://" + server.Addr()
-	env := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts)
+	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, vlt.Names())
+	if len(strippedVault) > 0 {
+		printStrippedEnvWarning(os.Stderr, strippedVault)
+	}
 
-	// 7. Exec child.
+	// 7. Exec child using the resolved realpath so we cannot race with a
+	// PATH change between resolve and exec.
 	ttyFd := stdinTTYFd()
-	child := exec.CommandContext(ctx, cfg.Command, cfg.Args...) //nolint:gosec // G204: command is explicitly provided by the user via CLI
+	child := exec.CommandContext(ctx, resolvedCmd, cfg.Args...) //nolint:gosec // G204: command is explicitly provided by the user via CLI and resolved upfront
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
@@ -186,11 +205,26 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	return &Result{ExitCode: 0}, nil
 }
 
-// buildChildEnv takes the current env, strips proxy-related and CA-related vars,
-// and adds the proxy vars pointing to proxyURL and CA vars pointing to bundlePath.
-// skipHosts are appended to the default NO_PROXY list.
-func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string) []string {
+// buildChildEnv takes the current env, strips proxy-related, CA-related, and
+// vault-managed credential vars, and adds the proxy vars pointing to proxyURL
+// and CA vars pointing to bundlePath. skipHosts are appended to the default
+// NO_PROXY list. vaultNames is the set of credential names loaded from the
+// vault; any env var whose key matches (case-insensitively) is removed so the
+// child process cannot observe the real secret that the user exported in
+// their shell. The names of env vars actually stripped because of the vault
+// match are returned (using the original casing from the environment), so the
+// caller can surface a startup warning.
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts, vaultNames []string) ([]string, []string) {
+	vaultSet := make(map[string]struct{}, len(vaultNames))
+	for _, n := range vaultNames {
+		if n == "" {
+			continue
+		}
+		vaultSet[strings.ToUpper(n)] = struct{}{}
+	}
+
 	stripped := make([]string, 0, len(environ))
+	strippedVault := make([]string, 0)
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -198,6 +232,10 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 			continue
 		}
 		if isProxyEnvKey(key) || isCAEnvKey(key) {
+			continue
+		}
+		if _, hit := vaultSet[strings.ToUpper(key)]; hit {
+			strippedVault = append(strippedVault, key)
 			continue
 		}
 		stripped = append(stripped, kv)
@@ -208,7 +246,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 		noProxy = noProxy + "," + strings.Join(skipHosts, ",")
 	}
 
-	return append(stripped,
+	env := append(stripped,
 		"HTTP_PROXY="+proxyURL,
 		"HTTPS_PROXY="+proxyURL,
 		"http_proxy="+proxyURL,
@@ -221,6 +259,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
 	)
+	return env, strippedVault
 }
 
 // isProxyEnvKey returns true if the given key is a proxy-related environment
@@ -254,6 +293,54 @@ func isCAEnvKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// resolveAgentCommand resolves cmd to an absolute, symlink-free path. Bare
+// names are looked up on PATH; anything containing a separator is made
+// absolute relative to the current working directory. The result is then
+// passed through filepath.EvalSymlinks so a symlinked binary is recorded in
+// the audit trail by its true path. This is SEC-23 forensics support: when
+// the product promise is "the agent never sees real tokens", a later
+// investigation needs to know exactly which binary ran, not which PATH entry
+// was first on that day.
+func resolveAgentCommand(cmd string) (string, error) {
+	if cmd == "" {
+		return "", fmt.Errorf("empty command")
+	}
+	resolved, err := exec.LookPath(cmd)
+	if err != nil {
+		return "", fmt.Errorf("resolve command %q: %w", cmd, err)
+	}
+	if !filepath.IsAbs(resolved) {
+		abs, absErr := filepath.Abs(resolved)
+		if absErr != nil {
+			return "", fmt.Errorf("absolute path for %q: %w", cmd, absErr)
+		}
+		resolved = abs
+	}
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", fmt.Errorf("eval symlinks for %q: %w", cmd, err)
+	}
+	return real, nil
+}
+
+// printStrippedEnvWarning announces that one or more shell-exported env vars
+// whose names matched a vault credential have been removed from the child
+// environment. This has to be impossible to miss: it is the product's single
+// biggest failure mode if it goes silent. Format:
+//
+//	! stripped N credential(s) from agent environment (sourced from your shell):
+//	    NAME_1
+//	    NAME_2
+//	  the agent will see Veil's placeholders instead.
+func printStrippedEnvWarning(w *os.File, names []string) {
+	fmt.Fprintf(w, "  %s stripped %d credential(s) from agent environment (sourced from your shell):\n",
+		ui.Warning.Sprint("!"), len(names))
+	for _, n := range names {
+		fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
+	}
+	fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("the agent will see Veil's placeholders instead."))
 }
 
 // formatStartupWarning returns a warning message if credCount is zero, or empty string otherwise.
