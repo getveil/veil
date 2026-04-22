@@ -228,7 +228,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 			stripped = append(stripped, kv)
 			continue
 		}
-		if isProxyEnvKey(key) || isCAEnvKey(key) {
+		if isProxyEnvKey(key) || isCAEnvKey(key) || strings.EqualFold(key, "JAVA_TOOL_OPTIONS") {
 			continue
 		}
 		if _, hit := vaultSet[strings.ToUpper(key)]; hit {
@@ -236,6 +236,24 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 			continue
 		}
 		stripped = append(stripped, kv)
+	}
+
+	veilJavaFlags := fmt.Sprintf(
+		"-Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit",
+		javaTruststorePath,
+	)
+	javaToolOpts := veilJavaFlags
+	for _, kv := range environ {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(k, "JAVA_TOOL_OPTIONS") {
+			if existing := strings.TrimSpace(v); existing != "" {
+				javaToolOpts = existing + " " + veilJavaFlags
+			}
+			break
+		}
 	}
 
 	noProxy := "localhost,127.0.0.1,::1"
@@ -256,6 +274,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
 		"CARGO_HTTP_CAINFO="+bundlePath,
+		"JAVA_TOOL_OPTIONS="+javaToolOpts,
 	)
 	return env, strippedVault
 }

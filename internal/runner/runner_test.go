@@ -546,6 +546,79 @@ func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestBuildChildEnv_InjectsJavaToolOptions verifies that buildChildEnv emits
+// JAVA_TOOL_OPTIONS pointing at the per-session PKCS12 truststore when no
+// pre-existing value is set. Veil's flags include the truststore path, type,
+// and the conventional "changeit" password.
+func TestBuildChildEnv_InjectsJavaToolOptions(t *testing.T) {
+	base := []string{"PATH=/usr/bin"}
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+
+	var got string
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "JAVA_TOOL_OPTIONS" {
+			got = v
+			break
+		}
+	}
+	if got == "" {
+		t.Fatal("JAVA_TOOL_OPTIONS not set in child env")
+	}
+	want := "-Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	if got != want {
+		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q", got, want)
+	}
+}
+
+// TestBuildChildEnv_MergesJavaToolOptions verifies that a pre-existing
+// JAVA_TOOL_OPTIONS value is preserved, with Veil's flags appended AFTER the
+// user's. Later -D flags win for the same Java system property, so Veil's
+// truststore override is effective even if the user set their own.
+func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"JAVA_TOOL_OPTIONS=-Xmx2g -Dfoo=bar",
+	}
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+
+	var got string
+	count := 0
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "JAVA_TOOL_OPTIONS" {
+			got = v
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("JAVA_TOOL_OPTIONS set %d times, want exactly 1", count)
+	}
+	want := "-Xmx2g -Dfoo=bar -Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	if got != want {
+		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q", got, want)
+	}
+}
+
+// TestBuildChildEnv_EmptyJavaToolOptionsTreatedAsUnset verifies that an
+// environment with JAVA_TOOL_OPTIONS set to the empty string is treated
+// identically to one with the var unset — no leading whitespace, no
+// pathological concatenation.
+func TestBuildChildEnv_EmptyJavaToolOptionsTreatedAsUnset(t *testing.T) {
+	base := []string{"JAVA_TOOL_OPTIONS="}
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+
+	var got string
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "JAVA_TOOL_OPTIONS" {
+			got = v
+			break
+		}
+	}
+	want := "-Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	if got != want {
+		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q (no leading space)", got, want)
+	}
+}
+
 // TestResolveAgentCommand_BareNameResolvesRealpath verifies that a bare
 // command name is resolved to a realpath via LookPath+EvalSymlinks. This is
 // SEC-23: we need a forensic record of which binary was actually executed so
