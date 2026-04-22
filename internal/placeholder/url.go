@@ -84,7 +84,11 @@ func tryURL(value string) (string, bool) {
 		return "", false
 	}
 
-	fake := charClassFake(rawPassword)
+	// Sentinel is embedded into the fake password body so the proxy can
+	// detect a leaked URL placeholder with a single substring scan. The
+	// password portion is entirely randomized, so overwriting the first
+	// 4 bytes is safe.
+	fake := sentinelize(charClassFake(rawPassword), 0)
 
 	// Replace the password in the original string.
 	passwordStart := authStart + colonIdx + 1

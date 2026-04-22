@@ -17,7 +17,16 @@ func ShouldInjectBody(contentType string) bool {
 	switch ct {
 	case "application/json",
 		"application/x-www-form-urlencoded",
-		"application/xml":
+		"application/xml",
+		// SEC-3: common secret-bearing payload types that were previously
+		// forwarded without placeholder injection. YAML/TOML carry API
+		// tokens in CI/CD configs; NDJSON ships auth rows in streaming
+		// exports; GraphQL POSTs pass bearer tokens in variables.
+		"application/yaml",
+		"application/x-yaml",
+		"application/toml",
+		"application/x-ndjson",
+		"application/graphql":
 		return true
 	}
 	if strings.HasPrefix(ct, "text/") {

@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -111,17 +112,9 @@ func (inj *Injector) ProcessRequest(
 	newURL = rawURL
 	if matcher != nil {
 		matched := matchedPatterns(matcher, []byte(rawURL), patterns)
-		for _, ph := range matched {
-			cred := creds[ph]
-			if hostAuthorized(cred, host) {
-				before := len(newURL)
-				newURL = strings.ReplaceAll(newURL, ph, cred.Real)
-				after := len(newURL)
-				injections = append(injections, makeInjection(cred, "url", before, after))
-			} else {
-				injections = append(injections, makeInjection(cred, "blocked", 0, 0))
-			}
-		}
+		var evs []audit.Injection
+		newURL, evs = applyMatched(rawURL, matched, creds, host, "url", makeInjection)
+		injections = append(injections, evs...)
 	}
 
 	// --- Header scanning ---
@@ -146,17 +139,12 @@ func (inj *Injector) ProcessRequest(
 		for name, values := range newHeader {
 			for i, v := range values {
 				matched := matchedPatterns(matcher, []byte(v), patterns)
-				for _, ph := range matched {
-					cred := creds[ph]
-					if hostAuthorized(cred, host) {
-						before := len(values[i])
-						values[i] = strings.ReplaceAll(values[i], ph, cred.Real)
-						after := len(values[i])
-						injections = append(injections, makeInjection(cred, "header", before, after))
-					} else {
-						injections = append(injections, makeInjection(cred, "blocked", 0, 0))
-					}
+				if len(matched) == 0 {
+					continue
 				}
+				out, evs := applyMatched(v, matched, creds, host, "header", makeInjection)
+				values[i] = out
+				injections = append(injections, evs...)
 			}
 			newHeader[name] = values
 		}
@@ -167,19 +155,9 @@ func (inj *Injector) ProcessRequest(
 	if matcher != nil && len(body) > 0 && len(body) <= inj.bodyCap {
 		matched := matchedPatterns(matcher, body, patterns)
 		if len(matched) > 0 {
-			s := string(body)
-			for _, ph := range matched {
-				cred := creds[ph]
-				if hostAuthorized(cred, host) {
-					before := len(s)
-					s = strings.ReplaceAll(s, ph, cred.Real)
-					after := len(s)
-					injections = append(injections, makeInjection(cred, "body", before, after))
-				} else {
-					injections = append(injections, makeInjection(cred, "blocked", 0, 0))
-				}
-			}
-			newBody = []byte(s)
+			out, evs := applyMatched(string(body), matched, creds, host, "body", makeInjection)
+			newBody = []byte(out)
+			injections = append(injections, evs...)
 		}
 	}
 
@@ -266,6 +244,93 @@ func matchedPatterns(matcher *ahocorasick.Matcher, input []byte, patterns []stri
 		}
 	}
 	return result
+}
+
+// applyMatched rewrites input in a single pass, replacing each host-authorized
+// placeholder in matched with its real value. Overlapping matches at the same
+// start are resolved by longest-wins; matches that fall inside an already-
+// applied replacement are skipped. Emits one audit injection per distinct
+// matched placeholder: `location` for authorized swaps, "blocked" otherwise.
+//
+// SEC-7: the previous implementation called strings.ReplaceAll per matched
+// placeholder in non-deterministic map-iteration order. Because each call
+// operated on the output of the previous call, a real value that contained
+// another credential's placeholder pattern would be corrupted when that
+// credential's replacement ran afterward. The single-pass rewriter only ever
+// indexes into the original input, so rewritten bytes are never re-scanned.
+func applyMatched(
+	input string,
+	matched []string,
+	creds map[string]*vault.Credential,
+	host string,
+	location string,
+	makeInjection func(*vault.Credential, string, int, int) audit.Injection,
+) (string, []audit.Injection) {
+	if len(matched) == 0 {
+		return input, nil
+	}
+
+	type site struct {
+		start  int
+		length int
+		real   string
+	}
+	var sites []site
+	for _, ph := range matched {
+		cred := creds[ph]
+		if !hostAuthorized(cred, host) {
+			continue
+		}
+		phLen := len(ph)
+		offset := 0
+		for {
+			idx := strings.Index(input[offset:], ph)
+			if idx < 0 {
+				break
+			}
+			sites = append(sites, site{
+				start:  offset + idx,
+				length: phLen,
+				real:   cred.Real,
+			})
+			offset = offset + idx + phLen
+		}
+	}
+
+	// Longest match at the same start wins; otherwise earliest start first.
+	sort.Slice(sites, func(i, j int) bool {
+		if sites[i].start != sites[j].start {
+			return sites[i].start < sites[j].start
+		}
+		return sites[i].length > sites[j].length
+	})
+
+	var b strings.Builder
+	b.Grow(len(input))
+	cursor := 0
+	for _, s := range sites {
+		if s.start < cursor {
+			continue
+		}
+		b.WriteString(input[cursor:s.start])
+		b.WriteString(s.real)
+		cursor = s.start + s.length
+	}
+	b.WriteString(input[cursor:])
+	output := b.String()
+
+	before := len(input)
+	after := len(output)
+	events := make([]audit.Injection, 0, len(matched))
+	for _, ph := range matched {
+		cred := creds[ph]
+		if hostAuthorized(cred, host) {
+			events = append(events, makeInjection(cred, location, before, after))
+		} else {
+			events = append(events, makeInjection(cred, "blocked", 0, 0))
+		}
+	}
+	return output, events
 }
 
 // anyNonBlocked reports whether at least one injection is a real swap (not a

@@ -20,6 +20,14 @@ func TestShouldInjectBody(t *testing.T) {
 		{"application/xml", true},
 		{"application/ld+json", true},
 		{"application/atom+xml", true},
+		// SEC-3: these real-world secret-bearing payloads were previously
+		// silently forwarded without placeholder scanning.
+		{"application/yaml", true},
+		{"application/x-yaml", true},
+		{"application/toml", true},
+		{"application/x-ndjson", true},
+		{"application/graphql", true},
+		{"application/graphql+json", true},
 		{"application/octet-stream", false},
 		{"image/jpeg", false},
 		{"video/mp4", false},

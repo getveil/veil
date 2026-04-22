@@ -16,6 +16,49 @@ import (
 // for deterministic output.
 var rng io.Reader = rand.Reader
 
+// Sentinel is a short, high-entropy-but-rare substring embedded into every
+// generated placeholder so the proxy's fail-closed guard can detect a leaked
+// placeholder with a single bytes.Contains scan.
+//
+// Design decisions:
+//   - "VEIL" (4 uppercase ASCII letters) is short enough to fit into even the
+//     most constrained placeholder body (32 hex chars for Twilio/Datadog; 16
+//     upper-alnum for AWS access-key IDs) and long enough that a collision
+//     with random content of a real secret is vanishingly unlikely
+//     (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex bodies where VEIL is
+//     not a valid character at all — the whole string would have to bear the
+//     sentinel, which cannot happen for a hex secret).
+//   - Placement: immediately after the provider prefix. Tokens like
+//     "sk_live_VEIL_<N random>" remain structurally valid (VEIL is
+//     alphanumeric) and preserve total length; the sentinel sits in the
+//     random portion where it is easy for the proxy to detect but indistinct
+//     to a casual observer.
+//   - Charset impact: VEIL is valid for alphanumeric, upper-alphanumeric,
+//     and base64-ish charsets, so most providers are undisturbed. For hex
+//     bodies (Twilio, Postmark, Datadog) VEIL introduces non-hex characters;
+//     this is deliberate — the audit explicitly endorses trading slight
+//     shape-conformance for guaranteed detectability, and a leaked
+//     sentinel-bearing token is easier to catch than a plausible
+//     sentinel-free one.
+const Sentinel = "VEIL"
+
+// sentinelize overwrites len(Sentinel) bytes of s starting at offset with
+// Sentinel. If s is too short to host the sentinel at that offset, Sentinel
+// is appended instead so callers always receive a sentinel-bearing output
+// (detectability is the strong invariant; exact-length preservation is the
+// weak one).
+func sentinelize(s string, offset int) string {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset+len(Sentinel) > len(s) {
+		return s + Sentinel
+	}
+	b := []byte(s)
+	copy(b[offset:], Sentinel)
+	return string(b)
+}
+
 // Set is a set of placeholder strings used for collision detection.
 type Set map[string]struct{}
 
@@ -48,6 +91,10 @@ func Generate(name, value string, existing Set) (string, error) {
 
 // generateOnce produces a single candidate placeholder without collision
 // checks. Exposed for tests; callers should prefer Generate.
+//
+// The URL and provider branches each embed Sentinel themselves so they can
+// choose a branch-appropriate offset. The charclass fallback has no provider
+// prefix, so we sentinelize at offset 0 here.
 func generateOnce(name, value string) (string, error) {
 	if ph, ok := tryURL(value); ok {
 		return ph, nil
@@ -57,7 +104,7 @@ func generateOnce(name, value string) (string, error) {
 			return p.Generate(value), nil
 		}
 	}
-	return charClassFake(value), nil
+	return sentinelize(charClassFake(value), 0), nil
 }
 
 // GenerateOnceForTest exposes generateOnce for tests. Production callers

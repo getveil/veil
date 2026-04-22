@@ -28,7 +28,7 @@ func init() {
 				}
 			}
 			rest := len(value) - len(prefix)
-			return prefix + randAlphanumeric(rest)
+			return sentinelize(prefix+randAlphanumeric(rest), len(prefix))
 		},
 		Hosts: []string{"api.stripe.com", "files.stripe.com"},
 	})

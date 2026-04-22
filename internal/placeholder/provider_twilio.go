@@ -13,11 +13,13 @@ func init() {
 		},
 		Generate: func(value string) string {
 			if strings.HasPrefix(value, "SK") {
-				// API Key SID: SK + 32 hex chars.
-				return "SK" + randFromAlphabet(32, "0123456789abcdef")
+				// API Key SID: SK + 32 hex chars (sentinel displaces 4 hex chars;
+				// the hex shape is intentionally traded for detectability per the
+				// Sentinel design in engine.go).
+				return sentinelize("SK"+randFromAlphabet(32, "0123456789abcdef"), 2)
 			}
 			// Auth token: 32 hex chars, no prefix.
-			return randFromAlphabet(32, "0123456789abcdef")
+			return sentinelize(randFromAlphabet(32, "0123456789abcdef"), 0)
 		},
 		Hosts: []string{"api.twilio.com"},
 	})
