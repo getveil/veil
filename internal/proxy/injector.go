@@ -136,6 +136,33 @@ func (inj *Injector) ProcessRequest(
 		injections = append(injections, s)
 	}
 
+	// --- AWS SigV4 signer ---
+	// Run the SigV4 re-signer between the Basic pre-pass and the literal
+	// header scan. This ensures the SDK-supplied placeholder AKID is
+	// rewritten and the Authorization signature is recomputed before the
+	// Aho-Corasick header pass would otherwise blindly substitute the
+	// placeholder bytes (producing a malformed Authorization header).
+	shim := &http.Request{
+		Method: method,
+		Header: newHeader,
+	}
+	if u, err := url.Parse(newURL); err == nil {
+		shim.URL = u
+	} else {
+		shim.URL = &url.URL{}
+	}
+	awsInjs, _ := signAWSSigV4(shim, body, creds, host)
+	for _, s := range awsInjs {
+		s.RequestID = requestID
+		s.Method = method
+		s.URLPath = urlPath
+		s.AgentPID = inj.agentPID
+		s.AgentCmd = inj.agentCmd
+		injections = append(injections, s)
+	}
+	// signAWSSigV4 may have mutated shim.Header; persist those changes.
+	newHeader = shim.Header
+
 	if matcher != nil {
 		for name, values := range newHeader {
 			for i, v := range values {

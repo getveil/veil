@@ -625,3 +625,48 @@ func TestProcessRequestDetectorSilentOnUncredentialedHost(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
+	cred := &vault.Credential{
+		ID:                        "c1",
+		Name:                      "aws-prod",
+		Scheme:                    "aws",
+		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+		AWSAccessKeyID:            "AKIDEXAMPLE",
+		AWSAccessKeyIDPlaceholder: "AKIAPHEXAMPLE12345",
+		AllowedHosts:              []string{"*.amazonaws.com"},
+	}
+	pmap := map[string]*vault.Credential{
+		"AKIAPHEXAMPLE12345": cred, // placeholder -> cred
+	}
+	inj := NewInjector(pmap, nil, 0, "")
+
+	hdr := http.Header{}
+	hdr.Set("Host", "example.amazonaws.com")
+	hdr.Set("X-Amz-Date", "20150830T123600Z")
+	hdr.Set("Authorization",
+		"AWS4-HMAC-SHA256 "+
+			"Credential=AKIAPHEXAMPLE12345/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host;x-amz-date, "+
+			"Signature=ignored")
+
+	_, newHeader, _, injections := inj.ProcessRequest("req-1", "GET",
+		"https://example.amazonaws.com/", hdr, nil)
+
+	got := newHeader.Get("Authorization")
+	if !strings.Contains(got, "Credential=AKIDEXAMPLE/") {
+		t.Errorf("AccessKeyID not rewritten: %s", got)
+	}
+	if !strings.Contains(got, "Signature=") || strings.Contains(got, "Signature=ignored") {
+		t.Errorf("Signature not recomputed: %s", got)
+	}
+	sawResign := false
+	for _, i := range injections {
+		if i.Location == LocationAWSSigV4Resigned {
+			sawResign = true
+		}
+	}
+	if !sawResign {
+		t.Errorf("no aws_sigv4_resigned injection; got %+v", injections)
+	}
+}
