@@ -522,6 +522,12 @@ func promptForSecret(cmd *cobra.Command, name string) (string, error) {
 
 // syncPlaceholderInEnvFiles replaces oldPh with newPh in all .env files under root.
 // Returns the number of files updated.
+//
+// The replacement operates on the DECODED value of each KV line (via the
+// scanner's parser), so multi-line placeholders (e.g. GitHub App RSA PEMs)
+// are re-escaped correctly on write. A raw strings.ReplaceAll on the file
+// bytes would both fail to match escaped multi-line values and, if it did
+// match, inject literal newlines into the .env.
 func syncPlaceholderInEnvFiles(root, oldPh, newPh string) int {
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
@@ -529,16 +535,27 @@ func syncPlaceholderInEnvFiles(root, oldPh, newPh string) int {
 	}
 	var count int
 	for _, path := range envPaths {
-		data, err := os.ReadFile(path) // #nosec G304
+		ef, err := scanner.ParseFile(path)
 		if err != nil {
 			continue
 		}
-		content := string(data)
-		if !strings.Contains(content, oldPh) {
+		changed := false
+		for _, line := range ef.Lines {
+			if line.Kind != scanner.KVLine {
+				continue
+			}
+			if !strings.Contains(line.Value, oldPh) {
+				continue
+			}
+			updated := strings.ReplaceAll(line.Value, oldPh, newPh)
+			if ef.SetValue(line.Key, updated) {
+				changed = true
+			}
+		}
+		if !changed {
 			continue
 		}
-		updated := strings.ReplaceAll(content, oldPh, newPh)
-		if err := atomicWriteFile(path, []byte(updated)); err != nil {
+		if err := atomicWriteFile(path, ef.Bytes()); err != nil {
 			continue
 		}
 		count++

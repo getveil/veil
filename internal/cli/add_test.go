@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/8enji/veil/internal/scanner"
 )
 
 // TestAdd_ValueFlag_WarnsShellHistory verifies that using --value emits a
@@ -336,6 +338,123 @@ func TestAddCmd_SchemeGitHubApp_MultiLinePEMEnvRoundTrip(t *testing.T) {
 	// OPENAI_API_KEY only); first-time add does not sync to .env.
 	raw, _ := os.ReadFile(filepath.Join(root, ".env"))
 	_ = raw
+}
+
+// TestAddCmd_SchemeGitHubApp_ForceEnvRoundTrip verifies that `veil add --force`
+// on an existing github_app credential correctly rewrites a multi-line PEM
+// placeholder inside a .env file. Previously syncPlaceholderInEnvFiles used a
+// raw strings.ReplaceAll which injected literal newlines into the .env,
+// making it unparseable.
+func TestAddCmd_SchemeGitHubApp_ForceEnvRoundTrip(t *testing.T) {
+	root := initProject(t)
+	pemA := testRSAKeyPEM(t)
+	pemB := testRSAKeyPEM(t)
+
+	// First add: introduces the credential with placeholder A.
+	{
+		cmd := NewRoot("test")
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetIn(strings.NewReader(pemA))
+		cmd.SetArgs([]string{
+			"add", "--path", root, "GITHUB_APP_PRIVATE_KEY",
+			"--scheme", "github_app",
+			"--github-app-id", "123456",
+			"--host", "api.github.com",
+			"--value-stdin",
+		})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("initial add: %v", err)
+		}
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credA, _ := v.Get("GITHUB_APP_PRIVATE_KEY")
+	oldPh := credA.Placeholder
+	if !strings.HasPrefix(oldPh, "-----BEGIN RSA PRIVATE KEY-----") {
+		t.Fatalf("old placeholder not a PEM: %.80q", oldPh)
+	}
+
+	// Write placeholder A into the .env as a properly-quoted multi-line value
+	// using the scanner's canonical encoding. This mirrors what `veil init`
+	// produces for a multi-line secret.
+	envPath := filepath.Join(root, ".env")
+	envBefore, err := scanner.ParseFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appended := string(envBefore.Bytes())
+	if !strings.HasSuffix(appended, "\n") {
+		appended += "\n"
+	}
+	// Use the scanner's encode path to get a canonical double-quoted form.
+	tmp := scanner.ParseBytes([]byte("GITHUB_APP_PRIVATE_KEY=\n"))
+	tmp.SetValue("GITHUB_APP_PRIVATE_KEY", oldPh)
+	appended += string(tmp.Bytes())
+	if err := os.WriteFile(envPath, []byte(appended), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: parse back now, expect the key to decode to oldPh.
+	if ef, err := scanner.ParseFile(envPath); err != nil {
+		t.Fatalf("env parse before --force: %v", err)
+	} else if got, ok := ef.Lookup("GITHUB_APP_PRIVATE_KEY"); !ok {
+		t.Fatal("key not found before --force")
+	} else if got != oldPh {
+		t.Fatalf(".env round-trip BEFORE --force failed:\n got=%q\nwant=%q", got, oldPh)
+	}
+
+	// Second add with --force: rotates the placeholder from A to B. The
+	// sync must rewrite the .env value using proper escaping.
+	{
+		cmd := NewRoot("test")
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetIn(strings.NewReader(pemB))
+		cmd.SetArgs([]string{
+			"add", "--path", root, "GITHUB_APP_PRIVATE_KEY",
+			"--scheme", "github_app",
+			"--github-app-id", "123456",
+			"--host", "api.github.com",
+			"--value-stdin",
+			"--force",
+		})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("--force add: %v", err)
+		}
+	}
+
+	v2, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credB, _ := v2.Get("GITHUB_APP_PRIVATE_KEY")
+	newPh := credB.Placeholder
+	if newPh == oldPh {
+		t.Fatal("placeholder did not rotate after --force")
+	}
+
+	// The .env must still parse, and its value must decode to the new placeholder
+	// byte-identically. Raw bytes must contain \n escapes (no raw newlines inside
+	// the quoted value).
+	efAfter, err := scanner.ParseFile(envPath)
+	if err != nil {
+		t.Fatalf("env parse after --force: %v (.env may have been written with raw newlines)", err)
+	}
+	got, ok := efAfter.Lookup("GITHUB_APP_PRIVATE_KEY")
+	if !ok {
+		t.Fatal("GITHUB_APP_PRIVATE_KEY missing from .env after --force")
+	}
+	if got != newPh {
+		t.Errorf(".env round-trip AFTER --force failed\n got=%q\nwant=%q", got, newPh)
+	}
+	raw, _ := os.ReadFile(envPath)
+	if !strings.Contains(string(raw), `\n`) {
+		t.Errorf("expected \\n-escaped form in .env after sync; raw bytes:\n%s", raw)
+	}
 }
 
 func TestAddCmd_SchemeGitHubApp_RejectsNonPEM(t *testing.T) {
