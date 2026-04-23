@@ -2,7 +2,11 @@ package proxy
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/8enji/veil/internal/vault"
 )
 
 func TestCanonicalURI(t *testing.T) {
@@ -109,5 +113,86 @@ func TestCanonicalHeaders(t *testing.T) {
 	want := "host:s3.amazonaws.com\nx-amz-date:20150830T123600Z\ncontent-type:application/json\n"
 	if got != want {
 		t.Errorf("canonicalHeaders mismatch:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// From AWS SigV4 test suite "get-vanilla":
+// https://github.com/aws-samples/sigv4-test-suite
+func TestSignAWSSigV4_GetVanilla(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	akid := "AKIDEXAMPLE"
+	date := "20150830T123600Z"
+
+	req, _ := http.NewRequest("GET", "https://example.amazonaws.com/", nil)
+	req.Header.Set("Host", "example.amazonaws.com")
+	req.Header.Set("X-Amz-Date", date)
+	// Initial Authorization uses a placeholder signature; signer replaces it.
+	req.Header.Set("Authorization",
+		"AWS4-HMAC-SHA256 "+
+			"Credential="+akid+"/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host;x-amz-date, "+
+			"Signature=ignored")
+
+	cred := &vault.Credential{
+		Scheme:                    "aws",
+		AWSAccessKeyID:            akid,
+		AWSAccessKeyIDPlaceholder: akid,
+		Real:                      secret,
+		Placeholder:               "VeilPH",
+		AllowedHosts:              []string{"*.amazonaws.com"},
+	}
+	body := []byte{}
+	injections, outcome := signAWSSigV4(req, body, map[string]*vault.Credential{akid: cred}, "example.amazonaws.com")
+	if outcome != LocationAWSSigV4Resigned {
+		t.Fatalf("outcome = %q, want aws_sigv4_resigned", outcome)
+	}
+	got := req.Header.Get("Authorization")
+	wantSig := "5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"
+	if !strings.Contains(got, "Signature="+wantSig) {
+		t.Errorf("signature mismatch.\n got=%s\n want suffix=Signature=%s", got, wantSig)
+	}
+	if len(injections) != 1 || injections[0].Location != LocationAWSSigV4Resigned {
+		t.Errorf("injections = %+v", injections)
+	}
+}
+
+func TestSignAWSSigV4_UnknownKeyFailsClosed(t *testing.T) {
+	req, _ := http.NewRequest("GET", "https://example.amazonaws.com/", nil)
+	req.Header.Set("Host", "example.amazonaws.com")
+	req.Header.Set("X-Amz-Date", "20150830T123600Z")
+	req.Header.Set("Authorization",
+		"AWS4-HMAC-SHA256 Credential=AKIAUNKNOWN/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host, Signature=xx")
+
+	cred := &vault.Credential{
+		Scheme:                    "aws",
+		AWSAccessKeyID:            "AKIAREAL",
+		AWSAccessKeyIDPlaceholder: "AKIAOTHER",
+		Real:                      "secret",
+		AllowedHosts:              []string{"*.amazonaws.com"},
+	}
+	inj, outcome := signAWSSigV4(req, nil, map[string]*vault.Credential{"AKIAOTHER": cred}, "example.amazonaws.com")
+	if outcome != LocationSignerFailed {
+		t.Fatalf("outcome = %q, want signer_failed", outcome)
+	}
+	if inj[0].SignerError != SignerErrUnknownAccessKeyID {
+		t.Errorf("SignerError = %q", inj[0].SignerError)
+	}
+}
+
+func TestSignAWSSigV4_NoCredentialForHost_Unmediated(t *testing.T) {
+	req, _ := http.NewRequest("GET", "https://example.amazonaws.com/", nil)
+	req.Header.Set("Host", "example.amazonaws.com")
+	req.Header.Set("X-Amz-Date", "20150830T123600Z")
+	req.Header.Set("Authorization",
+		"AWS4-HMAC-SHA256 Credential=AKIANO/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host, Signature=xx")
+	// Empty credential map: nothing covers this host.
+	inj, outcome := signAWSSigV4(req, nil, map[string]*vault.Credential{}, "example.amazonaws.com")
+	if outcome != LocationSchemeUnmediated {
+		t.Errorf("outcome = %q, want scheme_unmediated", outcome)
+	}
+	if len(inj) != 0 {
+		t.Errorf("expected no injections for unmediated, got %+v", inj)
 	}
 }
