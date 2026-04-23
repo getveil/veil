@@ -47,6 +47,10 @@ veil add --key GITHUB_TOKEN --value ghp_abc123
 # View audit logs
 veil log
 veil log --today
+
+# Reverse it - restore original .env/MCP files, wipe vault and state
+veil uninstall              # prompts with diff before touching anything
+veil uninstall --dry-run    # preview the plan without changes
 ```
 
 ## What it supports

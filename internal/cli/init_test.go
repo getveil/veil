@@ -871,3 +871,159 @@ func TestInitForce_WipesVault(t *testing.T) {
 		t.Logf("note: %d creds found (may be from re-scanning placeholders)", len(creds))
 	}
 }
+
+func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed a backup with a sentinel so we can verify it's not overwritten.
+	backupPath := envPath + ".veil-backup"
+	sentinel := []byte("sentinel\n")
+	if err := os.WriteFile(backupPath, sentinel, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Backup must still contain the sentinel (unchanged).
+	got, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(sentinel) {
+		t.Errorf("backup overwritten; got %q, want %q", got, sentinel)
+	}
+
+	// .env must still contain the real token (file was skipped, not processed).
+	envContents, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Error(".env should have been skipped (real token still present)")
+	}
+
+	// Stderr should mention the skip.
+	if !strings.Contains(stderr.String(), "already has a backup") {
+		t.Errorf("expected 'already has a backup' warning on stderr, got: %s", stderr.String())
+	}
+}
+
+func TestInitEnvCreatesBackupBeforeRewrite(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(tmpDir, ".env")
+	original := []byte("# header\nGITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\nLOG_LEVEL=debug\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Backup must exist and contain the exact original bytes.
+	backup, err := os.ReadFile(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Errorf("backup content mismatch\ngot:  %q\nwant: %q", backup, original)
+	}
+
+	// Backup permission must be 0600.
+	info, err := os.Stat(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("backup mode = %o, want 0600", mode)
+	}
+
+	// .env must no longer contain the real token (placeholder substitution
+	// happened).
+	envContents, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Error("real token leaked into .env after init")
+	}
+}
+
+func TestAppendGitignoreAddsVeilBackupPattern(t *testing.T) {
+	dir := t.TempDir()
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	appendGitignore(dir)
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "/.veil/") {
+		t.Errorf(".gitignore should contain /.veil/, got: %q", content)
+	}
+	if !strings.Contains(content, "*.veil-backup") {
+		t.Errorf(".gitignore should contain *.veil-backup, got: %q", content)
+	}
+	if !strings.Contains(content, "node_modules/") {
+		t.Error(".gitignore lost original content")
+	}
+}
+
+func TestAppendGitignoreIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	initial := "node_modules/\n/.veil/\n*.veil-backup\n"
+	if err := os.WriteFile(gitignorePath, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	appendGitignore(dir)
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != initial {
+		t.Errorf("expected .gitignore unchanged, got: %q", data)
+	}
+}
+
+func TestAppendGitignoreNoOpWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	// No .gitignore present.
+	appendGitignore(dir)
+	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
+		t.Error("appendGitignore should not create .gitignore when absent")
+	}
+}

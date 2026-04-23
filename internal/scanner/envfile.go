@@ -50,13 +50,22 @@ type EnvFile struct {
 
 // ParseFile reads and parses the .env file at path.
 func ParseFile(path string) (*EnvFile, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return nil, err
 	}
+	f := parseContent(string(data))
+	f.Path = path
+	return f, nil
+}
 
-	content := string(data)
+// ParseBytes parses an .env file from a byte slice. Behaves identically
+// to ParseFile modulo the I/O step.
+func ParseBytes(data []byte) *EnvFile {
+	return parseContent(string(data))
+}
 
+func parseContent(content string) *EnvFile {
 	// Split into lines. We handle the trailing newline carefully:
 	// if the file ends with \n, the last split element will be empty
 	// and we should NOT include it as a line (it's the terminator, not
@@ -65,13 +74,12 @@ func ParseFile(path string) (*EnvFile, error) {
 	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
 		rawLines = rawLines[:len(rawLines)-1]
 	}
-
-	f := &EnvFile{Path: path}
+	f := &EnvFile{}
 	f.trailingNewline = len(content) > 0 && content[len(content)-1] == '\n'
 	for _, raw := range rawLines {
 		f.Lines = append(f.Lines, parseLine(raw))
 	}
-	return f, nil
+	return f
 }
 
 // parseLine parses a single line of .env content.
