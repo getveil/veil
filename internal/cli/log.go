@@ -93,14 +93,15 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		enc := json.NewEncoder(w)
 		for _, r := range rows {
 			_ = enc.Encode(logEntry{
-				Timestamp:  r.Timestamp.Format(time.RFC3339),
-				Host:       r.Host,
-				Method:     r.Method,
-				Path:       r.URLPath,
-				Credential: r.CredentialName,
-				Location:   r.Location,
-				Suspect:    r.SuspectFlag,
-				AuthSignal: r.AuthSignal,
+				Timestamp:   r.Timestamp.Format(time.RFC3339),
+				Host:        r.Host,
+				Method:      r.Method,
+				Path:        r.URLPath,
+				Credential:  r.CredentialName,
+				Location:    r.Location,
+				Suspect:     r.SuspectFlag,
+				AuthSignal:  r.AuthSignal,
+				SignerError: r.SignerError,
 			})
 		}
 		return nil
@@ -204,14 +205,15 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 
 // logEntry is the JSON representation of an audit log row.
 type logEntry struct {
-	Timestamp  string `json:"timestamp"`
-	Host       string `json:"host"`
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	Credential string `json:"credential"`
-	Location   string `json:"location"`
-	Suspect    bool   `json:"suspect"`
-	AuthSignal string `json:"auth_signal,omitempty"`
+	Timestamp   string `json:"timestamp"`
+	Host        string `json:"host"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Credential  string `json:"credential"`
+	Location    string `json:"location"`
+	Suspect     bool   `json:"suspect"`
+	AuthSignal  string `json:"auth_signal,omitempty"`
+	SignerError string `json:"signer_error,omitempty"`
 }
 
 // parseSince parses a --since value as either a Go duration (with 'd' suffix
