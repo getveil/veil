@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
 	"path/filepath"
@@ -668,5 +671,48 @@ func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
 	}
 	if !sawResign {
 		t.Errorf("no aws_sigv4_resigned injection; got %+v", injections)
+	}
+}
+
+func TestProcessRequest_WiresGitHubAppSigner(t *testing.T) {
+	realKey, realPEM := genPEM(t)
+	placeholderKey, placeholderPEM := genPEM(t)
+	cred := &vault.Credential{
+		ID:           "c1",
+		Name:         "gh-app",
+		Scheme:       "github_app",
+		Real:         realPEM,
+		Placeholder:  placeholderPEM,
+		GitHubAppID:  999,
+		AllowedHosts: []string{"api.github.com"},
+	}
+	pmap := map[string]*vault.Credential{placeholderPEM: cred}
+	inj := NewInjector(pmap, nil, 0, "")
+
+	jwt := signJWT(t, placeholderKey, 999)
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+jwt)
+
+	_, newHeader, _, injections := inj.ProcessRequest("req-2", "POST",
+		"https://api.github.com/app/installations", hdr, nil)
+
+	newJWT := strings.TrimPrefix(newHeader.Get("Authorization"), "Bearer ")
+	parts := strings.Split(newJWT, ".")
+	if len(parts) != 3 {
+		t.Fatalf("bad JWT: %s", newJWT)
+	}
+	sig, _ := base64URLDecode(parts[2])
+	h := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(&realKey.PublicKey, crypto.SHA256, h[:], sig); err != nil {
+		t.Errorf("new JWT does not verify with real key: %v", err)
+	}
+	sawResign := false
+	for _, i := range injections {
+		if i.Location == LocationGitHubAppJWTResigned {
+			sawResign = true
+		}
+	}
+	if !sawResign {
+		t.Errorf("no github_app_jwt_resigned injection")
 	}
 }
