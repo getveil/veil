@@ -17,7 +17,23 @@ This document describes what Veil protects against, what it does *not* protect a
 - **Non-HTTP exfiltration.** Veil only mediates `HTTP_PROXY` / `HTTPS_PROXY` traffic. An agent that opens a raw TCP connection, sends DNS queries with data embedded in names, or uses any other channel is out of scope.
 - **Agent direct vault reads.** If the agent runs tools (shell, file read) it may open `.veil/vault.bin` directly. The vault is encrypted, but the master key is obtainable via the OS keyring by any process running as the same user.
 - **System CA trust store compromise.** Veil installs its root CA into the user's trust store. Any process (not just the agent) running as that user will trust certificates signed by Veil's CA.
-- **Secrets consumed by keyed cryptography.** Credentials that an agent combines with request bytes via HMAC, asymmetric signing, or a similar keyed transform (AWS SigV4, GitHub App JWTs, webhook HMAC signatures) never appear in the outgoing request in a form Veil can match. The placeholder reaches Veil unchanged; the request fails upstream with 401/403. Veil's transform-mismatch detector emits a diagnostic WARN when this happens on a credentialed host, but it is a signal, not enforcement — the real secret still exists wherever the agent read it from, and a malicious agent could exfiltrate it before signing.
+- **Secrets consumed by keyed cryptography (unmediated schemes).** Credentials that an agent combines with request bytes via HMAC, asymmetric signing, or a similar keyed transform (e.g. webhook HMAC signatures, mTLS handshakes) never appear in the outgoing request in a form Veil can match. The placeholder reaches Veil unchanged; the request fails upstream with 401/403. Veil's transform-mismatch detector emits a diagnostic WARN when this happens on a credentialed host, but it is a signal, not enforcement — the real secret still exists wherever the agent read it from, and a malicious agent could exfiltrate it before signing. AWS SigV4 and GitHub App JWT are no longer in this category — see "Class 2 (keyed cryptography)" below.
+
+## Class 2 (keyed cryptography)
+
+Veil mediates AWS SigV4 and GitHub App JWT signatures at the proxy. For each
+mediated scheme, the request is blocked with 502 if the scheme is recognized,
+Veil owns the host, but signing cannot complete (see `SignerError` in the
+audit log).
+
+Scoped gaps:
+- The fail-closed sentinel check in `detectLeak` cannot fire on a leaked RSA
+  private key PEM, because the placeholder PEM cannot embed the sentinel
+  without breaking PEM parsing. JWT-signature-based identification is the
+  primary mediation mechanism.
+- GitHub App installation tokens (`ghs_…`) returned in response bodies are
+  not mediated; the agent holds a short-lived real token for up to an hour.
+  This is a Class 3 (offline exchange) problem and out of scope.
 
 ## Deployment notes for hardened setups
 

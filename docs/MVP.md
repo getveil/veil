@@ -16,7 +16,7 @@ The free tier described in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §7 is this bi
 
 Mapped to the four outcomes in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §2.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files and MCP configs into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). Keyed-crypto schemes — AWS SigV4, GitHub App JWT, HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files and MCP configs into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). **AWS SigV4** (including STS session-token credentials) and **GitHub Apps** (api.github.com and GitHub Enterprise Server) are also mediated end-to-end: Veil re-signs the request at the proxy with the real SecretAccessKey or RSA private key. The remaining keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -62,7 +62,7 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 |---|---|---|
 | Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement | Kernel enforcement — [`ARCHITECTURE.md`](ARCHITECTURE.md) Part II |
 | HTTP/2 (gRPC), QUIC, raw TCP, SSH | Proxy is HTTP/1.1 CONNECT only | Per-protocol handlers / kernel interception — Part II |
-| AWS SigV4, GitHub App JWT, HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. |
+| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. AWS SigV4 and GitHub App JWT are now re-signed natively (see §2). |
 | mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural — see [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
 | Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | By design — decompression risk exceeds the gap |
