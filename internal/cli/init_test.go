@@ -1027,3 +1027,88 @@ func TestAppendGitignoreNoOpWhenMissing(t *testing.T) {
 		t.Error("appendGitignore should not create .gitignore when absent")
 	}
 }
+
+func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPexample\n" +
+		"DATABASE_URL=postgres://u:pw@h/db\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+
+	awsCred, ok := v.Get("AWS_ACCESS_KEY_ID")
+	if !ok {
+		t.Fatalf("vault missing AWS_ACCESS_KEY_ID; names = %v", v.Names())
+	}
+	if awsCred.Scheme != "aws" {
+		t.Errorf("Scheme = %q, want aws", awsCred.Scheme)
+	}
+	if awsCred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AWSAccessKeyID = %q", awsCred.AWSAccessKeyID)
+	}
+	if awsCred.Real != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+		t.Errorf("Real (secret access key) = %q", awsCred.Real)
+	}
+	if awsCred.AWSSessionToken != "FwoGZXIvYXdzEJr//////////wEaDPexample" {
+		t.Errorf("AWSSessionToken = %q", awsCred.AWSSessionToken)
+	}
+	if awsCred.AWSAccessKeyIDPlaceholder == "" {
+		t.Error("AWSAccessKeyIDPlaceholder is empty")
+	}
+	if awsCred.AWSSessionTokenPlaceholder == "" {
+		t.Error("AWSSessionTokenPlaceholder is empty")
+	}
+	if len(awsCred.AllowedHosts) != 1 || awsCred.AllowedHosts[0] != "*.amazonaws.com" {
+		t.Errorf("AllowedHosts = %v, want [*.amazonaws.com]", awsCred.AllowedHosts)
+	}
+
+	for _, name := range []string{"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		if _, found := v.Get(name); found {
+			t.Errorf("unexpected bearer credential %q in vault (should be absorbed into aws group)", name)
+		}
+	}
+
+	if _, ok := v.Get("DATABASE_URL"); !ok {
+		t.Error("vault missing DATABASE_URL")
+	}
+
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envStr := string(envData)
+	for _, real := range []string{
+		"AKIAIOSFODNN7EXAMPLE",
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"FwoGZXIvYXdzEJr//////////wEaDPexample",
+	} {
+		if strings.Contains(envStr, real) {
+			t.Errorf(".env still contains real value %q:\n%s", real, envStr)
+		}
+	}
+}

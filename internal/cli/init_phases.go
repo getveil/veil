@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/8enji/veil/internal/cli/correlate"
 	"github.com/8enji/veil/internal/config"
 	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/proxy"
@@ -144,18 +145,36 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		return 0, 0, nil
 	}
 
-	selectedKeys := selectEnvKeys(in, w, root, envPath, secrets, interactive)
-	if len(selectedKeys) == 0 {
+	// Correlate multi-value schemes (e.g., AWS triples) before prompting so
+	// the user sees grouped rows and members cannot be split individually.
+	cands := make([]correlate.Candidate, len(secrets))
+	for i, s := range secrets {
+		cands[i] = correlate.Candidate{Key: s.key, Value: s.value}
+	}
+	groups, remaining := correlate.DetectAll(cands)
+	remainingSecrets := filterSecretsByRemaining(secrets, remaining)
+
+	selectedGroups, selectedSecrets := selectEnvKeys(in, w, root, envPath, groups, remainingSecrets, interactive)
+	if len(selectedGroups) == 0 && len(selectedSecrets) == 0 {
 		return 0, 0, nil
 	}
 
 	var vaulted, scoped int
 	fileChanged := false
-	for _, s := range secrets {
-		if !selectedKeys[s.key] {
-			continue
-		}
 
+	for _, g := range selectedGroups {
+		n, s, changed, err := vaultAWSGroup(cmd, v, seen, envFile, g, dryRun)
+		if err != nil {
+			return vaulted, scoped, err
+		}
+		vaulted += n
+		scoped += s
+		if changed {
+			fileChanged = true
+		}
+	}
+
+	for _, s := range selectedSecrets {
 		ph, err := placeholder.Generate(s.key, s.value, seen)
 		if err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), err)
@@ -205,42 +224,165 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	return vaulted, scoped, nil
 }
 
-// selectEnvKeys returns the set of secret keys the user chose to vault. In
-// non-interactive mode all keys are selected. Callers that receive an empty
-// map should skip the file.
-func selectEnvKeys(in io.Reader, w io.Writer, root, envPath string, secrets []secretLine, interactive bool) map[string]bool {
-	selected := make(map[string]bool, len(secrets))
+// selectEnvKeys returns the groups and bearer secrets the user chose to
+// vault. In non-interactive mode everything is selected. Callers that
+// receive two empty slices should skip the file.
+func selectEnvKeys(
+	in io.Reader, w io.Writer, root, envPath string,
+	groups []correlate.Group, secrets []secretLine, interactive bool,
+) (selectedGroups []correlate.Group, selectedSecrets []secretLine) {
 	if !interactive {
-		for _, s := range secrets {
-			selected[s.key] = true
-		}
-		return selected
+		return groups, secrets
 	}
 
 	rel, _ := filepath.Rel(root, envPath)
 	if rel == "" {
 		rel = filepath.Base(envPath)
 	}
-	_, _ = fmt.Fprintf(w, "\nDetected %d %s in %s:\n", len(secrets), plural(len(secrets), "secret", "secrets"), rel)
-	names := make([]string, len(secrets))
-	for i, s := range secrets {
-		_, _ = fmt.Fprintf(w, "  %-24s %s\n", s.key, ui.Muted.Sprint(redactValue(s.value)))
-		names[i] = s.key
+
+	total := len(secrets)
+	for _, g := range groups {
+		total += len(g.Members)
+	}
+	header := fmt.Sprintf("\nDetected %d %s in %s", total, plural(total, "secret", "secrets"), rel)
+	switch len(groups) {
+	case 0:
+		header += ":"
+	case 1:
+		header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+	default:
+		header += fmt.Sprintf(" (%d AWS credentials):", len(groups))
+	}
+	_, _ = fmt.Fprintln(w, header)
+
+	var names []string
+	for _, g := range groups {
+		label := fmt.Sprintf("[aws] %s", g.Name)
+		for i, m := range g.Members {
+			key := m.Key
+			if i == 0 {
+				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "[aws]", key, ui.Muted.Sprint(redactValue(m.Value)))
+			} else {
+				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", key, ui.Muted.Sprint(redactValue(m.Value)))
+			}
+		}
+		names = append(names, label)
+	}
+	for _, s := range secrets {
+		_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", s.key, ui.Muted.Sprint(redactValue(s.value)))
+		names = append(names, s.key)
 	}
 	_, _ = fmt.Fprintln(w)
+
 	switch promptYNS(in, w, "Vault all?") {
 	case choiceYes:
-		for _, s := range secrets {
-			selected[s.key] = true
-		}
+		return groups, secrets
 	case choiceNo:
-		return nil
+		return nil, nil
 	case choiceSelect:
-		for _, name := range promptMultiSelect(in, w, names) {
-			selected[name] = true
+		picked := make(map[string]bool)
+		for _, n := range promptMultiSelect(in, w, names) {
+			picked[n] = true
+		}
+		for _, g := range groups {
+			if picked[fmt.Sprintf("[aws] %s", g.Name)] {
+				selectedGroups = append(selectedGroups, g)
+			}
+		}
+		for _, s := range secrets {
+			if picked[s.key] {
+				selectedSecrets = append(selectedSecrets, s)
+			}
+		}
+		return selectedGroups, selectedSecrets
+	}
+	return nil, nil
+}
+
+// filterSecretsByRemaining keeps secretLine entries whose key is still in
+// the remaining (un-correlated) candidate set, preserving the original
+// file-order of secrets so dry-run and prompt output stay stable.
+func filterSecretsByRemaining(secrets []secretLine, remaining []correlate.Candidate) []secretLine {
+	keep := make(map[string]struct{}, len(remaining))
+	for _, c := range remaining {
+		keep[c.Key] = struct{}{}
+	}
+	out := secrets[:0:0]
+	for _, s := range secrets {
+		if _, ok := keep[s.key]; ok {
+			out = append(out, s)
 		}
 	}
-	return selected
+	return out
+}
+
+// vaultAWSGroup writes one Scheme:"aws" credential for g, rewrites the
+// three (or two) source env-var placeholders in envFile, and reports
+// (vaulted, scoped, fileChanged). An AWS group counts as one credential
+// regardless of member count, matching what the user sees in `veil list`.
+func vaultAWSGroup(
+	cmd *cobra.Command, v *vault.Vault, seen placeholder.Set,
+	envFile *scanner.EnvFile, g correlate.Group, dryRun bool,
+) (vaulted, scoped int, fileChanged bool, err error) {
+	w := cmd.OutOrStdout()
+
+	secretPh, err := placeholder.Generate(g.Name, g.AWS.SecretKey, seen)
+	if err != nil {
+		return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
+	}
+	seen[secretPh] = struct{}{}
+
+	akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
+	seen[akIDPh] = struct{}{}
+
+	var sessPh string
+	if g.AWS.SessionToken != "" {
+		sessPh, err = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
+		if err != nil {
+			return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), err)
+		}
+		seen[sessPh] = struct{}{}
+	}
+
+	cred := &vault.Credential{
+		ID:                         vault.NewID(),
+		Name:                       g.Name,
+		Real:                       g.AWS.SecretKey,
+		Placeholder:                secretPh,
+		Source:                     "init",
+		AllowedHosts:               []string{"*.amazonaws.com"},
+		CreatedAt:                  time.Now(),
+		Scheme:                     "aws",
+		AWSAccessKeyID:             g.AWS.AccessKeyID,
+		AWSAccessKeyIDPlaceholder:  akIDPh,
+		AWSSessionToken:            g.AWS.SessionToken,
+		AWSSessionTokenPlaceholder: sessPh,
+	}
+	if err := v.Add(cred); err != nil {
+		if errors.Is(err, vault.ErrDuplicateCredential) {
+			ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", g.Name)
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
+	}
+
+	if dryRun {
+		ui.Dimf(w, "  would vault (aws): %s", g.Name)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, akIDPh)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, secretPh)
+		if g.AWS.SessionToken != "" {
+			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, sessPh)
+		}
+	} else {
+		envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
+		envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
+		if g.AWS.SessionTokenVar != "" {
+			envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
+		}
+		fileChanged = true
+	}
+
+	return 1, 1, fileChanged, nil
 }
 
 // promptSkipHostsPhase asks the user to seed the skip-host list after vaulting.
