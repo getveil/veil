@@ -1,6 +1,12 @@
 package placeholder
 
-import "strings"
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"strings"
+)
 
 var githubPrefixes = []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"}
 
@@ -41,4 +47,22 @@ func init() {
 		},
 		Hosts: []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com", "ghcr.io"},
 	})
+}
+
+// GenerateGitHubAppPrivateKey produces a fresh RSA 2048 keypair encoded as
+// a PKCS#1 PEM string. Used as the placeholder for GitHub App credentials:
+// the SDK loads this PEM and signs a JWT locally; the proxy detects the
+// JWT via its `iss` claim and re-signs with the real vaulted PEM.
+//
+// The placeholder itself does not embed the placeholder.Sentinel — RSA PEM
+// bytes cannot carry the sentinel without breaking PEM parsing. See
+// THREAT_MODEL.md for the scoped detectLeak gap.
+func GenerateGitHubAppPrivateKey() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	der := x509.MarshalPKCS1PrivateKey(key)
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
+	return string(pem.EncodeToMemory(block)), nil
 }

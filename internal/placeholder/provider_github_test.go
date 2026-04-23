@@ -1,6 +1,8 @@
 package placeholder
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"strings"
 	"testing"
 )
@@ -77,4 +79,33 @@ func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestGenerateGitHubAppPrivateKey_IsValidRSAPEM(t *testing.T) {
+	p, err := GenerateGitHubAppPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(p, "-----BEGIN RSA PRIVATE KEY-----") {
+		t.Errorf("missing PKCS#1 PEM header: %s", p[:80])
+	}
+	block, _ := pem.Decode([]byte(p))
+	if block == nil {
+		t.Fatal("pem.Decode returned nil")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if key.N.BitLen() != 2048 {
+		t.Errorf("key bit length = %d, want 2048", key.N.BitLen())
+	}
+}
+
+func TestGenerateGitHubAppPrivateKey_FreshEachCall(t *testing.T) {
+	a, _ := GenerateGitHubAppPrivateKey()
+	b, _ := GenerateGitHubAppPrivateKey()
+	if a == b {
+		t.Error("two calls returned the same PEM (keygen deterministic?)")
+	}
 }
