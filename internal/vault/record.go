@@ -19,6 +19,20 @@ type Credential struct {
 	Username            string    `json:"username,omitempty"`
 	UsernamePlaceholder string    `json:"username_placeholder,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
+
+	// Scheme is a discriminator: "", "basic", "aws", "github_app".
+	// Empty means bearer; "basic" is implied when Username != "".
+	Scheme string `json:"scheme,omitempty"`
+
+	// AWS SigV4 fields (Scheme == "aws").
+	AWSAccessKeyID             string `json:"aws_access_key_id,omitempty"`
+	AWSAccessKeyIDPlaceholder  string `json:"aws_access_key_id_placeholder,omitempty"`
+	AWSSessionToken            string `json:"aws_session_token,omitempty"`
+	AWSSessionTokenPlaceholder string `json:"aws_session_token_placeholder,omitempty"`
+
+	// GitHub App JWT fields (Scheme == "github_app").
+	GitHubAppID          int64 `json:"github_app_id,omitempty"`
+	GitHubInstallationID int64 `json:"github_installation_id,omitempty"`
 }
 
 // String returns a redacted representation that never leaks secret material.
@@ -27,12 +41,18 @@ func (c *Credential) String() string {
 }
 
 // Zero clears sensitive fields. Best-effort for MVP since Go strings are
-// immutable; the previous backing memory remains until GC.
+// immutable; the previous backing memory remains until GC. IDs that are not
+// secret (e.g. GitHubAppID) are not cleared.
 func (c *Credential) Zero() {
 	c.Real = ""
 	c.Placeholder = ""
 	c.Username = ""
 	c.UsernamePlaceholder = ""
+	c.AWSAccessKeyID = ""
+	c.AWSAccessKeyIDPlaceholder = ""
+	c.AWSSessionToken = ""
+	c.AWSSessionTokenPlaceholder = ""
+	c.Scheme = ""
 }
 
 // NewID generates a ULID suitable for use as a credential identifier.
