@@ -431,25 +431,6 @@ func validateRSAPEM(value string) error {
 	return fmt.Errorf("not an RSA private key (PKCS#1 or PKCS#8)")
 }
 
-// generateAWSAccessKeyIDPlaceholder asks the AWS provider for a placeholder
-// of the given access key ID, retrying up to a small budget to avoid
-// collisions with already-issued placeholders.
-func generateAWSAccessKeyIDPlaceholder(realAKID string, existing placeholder.Set) string {
-	p, ok := placeholder.DefaultRegistry().Get("aws")
-	if !ok {
-		// Should never happen: aws provider is registered at init.
-		return realAKID
-	}
-	for i := 0; i < 10; i++ {
-		cand := p.Generate(realAKID)
-		if _, clash := existing[cand]; !clash {
-			return cand
-		}
-	}
-	// Fallback: shouldn't happen with 16-char random bodies.
-	return p.Generate(realAKID)
-}
-
 // readCredentialValue returns the secret value for the add command.
 // Precedence: explicit --value flag → --value-stdin (drain stdin) →
 // interactive prompt. The interactive path uses term.ReadPassword when the
