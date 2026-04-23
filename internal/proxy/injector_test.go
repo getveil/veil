@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
 	"path/filepath"
@@ -623,5 +626,93 @@ func TestProcessRequestDetectorSilentOnUncredentialedHost(t *testing.T) {
 		if i.SuspectFlag {
 			t.Errorf("detector fired on uncredentialed host: %+v", i)
 		}
+	}
+}
+
+func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
+	cred := &vault.Credential{
+		ID:                        "c1",
+		Name:                      "aws-prod",
+		Scheme:                    "aws",
+		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+		AWSAccessKeyID:            "AKIDEXAMPLE",
+		AWSAccessKeyIDPlaceholder: "AKIAPHEXAMPLE12345",
+		AllowedHosts:              []string{"*.amazonaws.com"},
+	}
+	pmap := map[string]*vault.Credential{
+		"AKIAPHEXAMPLE12345": cred, // placeholder -> cred
+	}
+	inj := NewInjector(pmap, nil, 0, "")
+
+	hdr := http.Header{}
+	hdr.Set("Host", "example.amazonaws.com")
+	hdr.Set("X-Amz-Date", "20150830T123600Z")
+	hdr.Set("Authorization",
+		"AWS4-HMAC-SHA256 "+
+			"Credential=AKIAPHEXAMPLE12345/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host;x-amz-date, "+
+			"Signature=ignored")
+
+	_, newHeader, _, injections := inj.ProcessRequest("req-1", "GET",
+		"https://example.amazonaws.com/", hdr, nil)
+
+	got := newHeader.Get("Authorization")
+	if !strings.Contains(got, "Credential=AKIDEXAMPLE/") {
+		t.Errorf("AccessKeyID not rewritten: %s", got)
+	}
+	if !strings.Contains(got, "Signature=") || strings.Contains(got, "Signature=ignored") {
+		t.Errorf("Signature not recomputed: %s", got)
+	}
+	sawResign := false
+	for _, i := range injections {
+		if i.Location == LocationAWSSigV4Resigned {
+			sawResign = true
+		}
+	}
+	if !sawResign {
+		t.Errorf("no aws_sigv4_resigned injection; got %+v", injections)
+	}
+}
+
+func TestProcessRequest_WiresGitHubAppSigner(t *testing.T) {
+	realKey, realPEM := genPEM(t)
+	placeholderKey, placeholderPEM := genPEM(t)
+	cred := &vault.Credential{
+		ID:           "c1",
+		Name:         "gh-app",
+		Scheme:       "github_app",
+		Real:         realPEM,
+		Placeholder:  placeholderPEM,
+		GitHubAppID:  999,
+		AllowedHosts: []string{"api.github.com"},
+	}
+	pmap := map[string]*vault.Credential{placeholderPEM: cred}
+	inj := NewInjector(pmap, nil, 0, "")
+
+	jwt := signJWT(t, placeholderKey, 999)
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+jwt)
+
+	_, newHeader, _, injections := inj.ProcessRequest("req-2", "POST",
+		"https://api.github.com/app/installations", hdr, nil)
+
+	newJWT := strings.TrimPrefix(newHeader.Get("Authorization"), "Bearer ")
+	parts := strings.Split(newJWT, ".")
+	if len(parts) != 3 {
+		t.Fatalf("bad JWT: %s", newJWT)
+	}
+	sig, _ := base64URLDecode(parts[2])
+	h := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if err := rsa.VerifyPKCS1v15(&realKey.PublicKey, crypto.SHA256, h[:], sig); err != nil {
+		t.Errorf("new JWT does not verify with real key: %v", err)
+	}
+	sawResign := false
+	for _, i := range injections {
+		if i.Location == LocationGitHubAppJWTResigned {
+			sawResign = true
+		}
+	}
+	if !sawResign {
+		t.Errorf("no github_app_jwt_resigned injection")
 	}
 }

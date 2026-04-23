@@ -108,6 +108,21 @@ When the agent issues an HTTPS request:
 8. **Forward.** Proxy re-encrypts and forwards the request upstream.
 9. Agent receives the response unchanged.
 
+## Signer functions
+
+Beyond literal placeholder substitution, two signer functions re-sign requests
+whose Authorization header uses keyed cryptography:
+
+- `signAWSSigV4` — recognises `AWS4-HMAC-SHA256` headers and re-signs with the
+  real SecretAccessKey.
+- `signGitHubAppJWT` — recognises RS256 JWTs with an integer `iss` claim and
+  re-signs with the real RSA private key.
+
+Each signer returns one of three outcomes: `…_resigned` (sign and forward),
+`scheme_unmediated` (forward unchanged — no vaulted credential covers this
+host), or `signer_failed` (fail-closed 502 with `X-Veil-Error` and a
+`SignerError` audit row, queryable via `veil log --signer-failed`).
+
 ## Credential store
 
 The vault is **per-project** (keyed by project root path, `vault.meta` on disk records the project ID). The stored blob is sealed with a 32-byte master key generated at `veil init` time via `crypto/rand` and held by the keystore — it is never written to disk in clear text.
@@ -137,7 +152,7 @@ This schema is the dataset referenced in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) 
 
 Mapped to the four-outcome framing in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §2:
 
-- **Agents don't hold credentials.** Static substitution. `veil init` migrates secrets out of `.env` / MCP configs into the vault, replaces them with format-aware placeholders. The proxy rewrites placeholders on outbound requests. HTTP Bearer and HTTP Basic are both end-to-end. Keyed-crypto schemes (AWS SigV4, GitHub App JWT, HMAC webhook signatures, mTLS client certs) are **surfaced** by the transform-mismatch detector rather than silently failing.
+- **Agents don't hold credentials.** Static substitution. `veil init` migrates secrets out of `.env` / MCP configs into the vault, replaces them with format-aware placeholders. The proxy rewrites placeholders on outbound requests. HTTP Bearer and HTTP Basic are both end-to-end. **AWS SigV4** (including STS session tokens) and **GitHub App JWT** are mediated end-to-end via dedicated signer functions (see "Signer functions" above). Remaining keyed-crypto schemes (HMAC webhook signatures, mTLS client certs) are **surfaced** by the transform-mismatch detector rather than silently failing.
 - **Agents can only do what you've authorized.** Host-scoping is the current authorization primitive — credentials fire only for hosts on their `AllowedHosts` list (derived automatically by provider match, URL parsing, or manual configuration, see `internal/placeholder/hosts.go`). Not yet a declarative policy language.
 - **Every action is on the record.** Local SQLite as described above. Queryable via `veil log`.
 - **Same rules everywhere.** macOS and Linux. Any agent or tool respecting `HTTP_PROXY` / `HTTPS_PROXY`. Tested with Claude Code, Cursor, Copilot, `curl`, `gh`, `npm`, `pip`, `docker push`. Subprocesses of the agent inherit the proxy env vars — MCP server subprocesses, test runners, deploy scripts are all covered.
@@ -162,8 +177,7 @@ HTTP/HTTPS traffic from any tool that respects `HTTP_PROXY` / `HTTPS_PROXY`:
 | SSH | Does not use HTTP proxy env vars | Kernel interception — Part II |
 | QUIC / UDP | UDP bypasses TCP proxy | Kernel interception — Part II |
 | mTLS / client certificates | Credential used in TLS handshake, never at HTTP layer | Architectural constraint of the proxy model — see [findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) Class 4 |
-| AWS SigV4 (HMAC-signed requests) | Credential used as signing key, never appears on wire | **Surfaced by mismatch detector**; native signing — Part II |
-| GitHub App JWTs, webhook HMAC signatures | Same as SigV4 (keyed-crypto, Class 2) | **Surfaced by mismatch detector**; native signing — Part II |
+| HMAC webhook signatures | Credential used as signing key, never appears on wire (keyed-crypto, Class 2) | **Surfaced by mismatch detector**; native signing — Part II. AWS SigV4 and GitHub App JWT are now re-signed by dedicated signer functions (see "Signer functions" above). |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret is traded for a bearer token *before* the request we see | Ephemeral brokering — Part II |
 | Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | By design — decompression risks exceed the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in future release |
@@ -180,7 +194,7 @@ The MVP in Part I is the *primitive*. Part II is how that primitive expands into
 ## Credential plane
 
 - **Next — OAuth 2.1 ephemeral brokering.** Tokens minted at call-time by the proxy against an upstream issuer, scoped per-operation, cached for the operation's lifetime, never persisted to the agent. MCP is standardizing on OAuth 2.1, which makes this the natural first target. Seam: the current injection point (`Injector.ProcessRequest`) gains an ephemeral-resolution branch ahead of the literal-match path.
-- **Horizon — native signer adapters.** AWS SigV4, GitHub App JWT, HMAC webhook signing, mTLS client-cert presentation. The proxy re-signs the request with the real credential after reconstructing the canonical form. Seam is the same transformation point as injection — "match a placeholder" becomes the narrow case of a broader "recognize a credential-shaped request, apply the correct transform." See [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) for the class-1/2/3 taxonomy this work follows.
+- **Horizon — additional signer adapters.** HMAC webhook signing, mTLS client-cert presentation. The proxy re-signs the request with the real credential after reconstructing the canonical form. Seam is the same transformation point as injection — "match a placeholder" becomes the narrow case of a broader "recognize a credential-shaped request, apply the correct transform." AWS SigV4 and GitHub App JWT now ship via this seam (see "Signer functions" in Part I). See [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) for the class-1/2/3 taxonomy this work follows.
 - **Horizon — external backing stores.** HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault. Plugs into the existing `Keystore` interface (`internal/vault/keystore.go`). The Keychain and age-file backends are two of N; no other component changes.
 
 ## Policy plane

@@ -198,32 +198,43 @@ func (v *Vault) Credentials() []*Credential {
 }
 
 // PlaceholderSet returns the set of currently-used placeholder strings
-// (both secret and username placeholders), suitable for passing to
-// placeholder.Generate to prevent collisions.
+// across all schemes, suitable for passing to placeholder.Generate to
+// prevent collisions.
 func (v *Vault) PlaceholderSet() placeholder.Set {
-	out := make(placeholder.Set, len(v.credentials)*2)
+	out := make(placeholder.Set, len(v.credentials)*4)
 	for _, c := range v.credentials {
-		out[c.Placeholder] = struct{}{}
-		if c.UsernamePlaceholder != "" {
-			out[c.UsernamePlaceholder] = struct{}{}
-		}
+		addPlaceholders(out, c, func(s string) { out[s] = struct{}{} })
 	}
 	return out
 }
 
 // PlaceholderMap returns a map from placeholder value to credential, used by
-// the injector to swap placeholders back to real secrets. For Basic credentials
-// both the secret placeholder and the username placeholder map to the same
-// credential record.
+// the injector to swap placeholders back to real secrets. For multi-field
+// credentials (basic, aws) every placeholder maps back to the same record.
 func (v *Vault) PlaceholderMap() map[string]*Credential {
-	m := make(map[string]*Credential, len(v.credentials)*2)
+	m := make(map[string]*Credential, len(v.credentials)*4)
 	for _, c := range v.credentials {
-		m[c.Placeholder] = c
-		if c.UsernamePlaceholder != "" {
-			m[c.UsernamePlaceholder] = c
-		}
+		c := c
+		addPlaceholders(nil, c, func(s string) { m[s] = c })
 	}
 	return m
+}
+
+// addPlaceholders calls emit for each non-empty placeholder string on c.
+// The set argument is unused (retained for symmetry); callers pass nil.
+func addPlaceholders(_ placeholder.Set, c *Credential, emit func(string)) {
+	if c.Placeholder != "" {
+		emit(c.Placeholder)
+	}
+	if c.UsernamePlaceholder != "" {
+		emit(c.UsernamePlaceholder)
+	}
+	if c.AWSAccessKeyIDPlaceholder != "" {
+		emit(c.AWSAccessKeyIDPlaceholder)
+	}
+	if c.AWSSessionTokenPlaceholder != "" {
+		emit(c.AWSSessionTokenPlaceholder)
+	}
 }
 
 // ProjectID returns the vault's project identifier.

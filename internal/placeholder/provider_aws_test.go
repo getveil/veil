@@ -54,3 +54,35 @@ func TestProviderAWS(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerateAWSSessionToken_LengthAndSentinel(t *testing.T) {
+	real := "FwoGZXIvYXdzEBYaDG" + strings.Repeat("A", 400)
+	ph, err := GenerateAWSSessionToken(real, Set{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ph) != len(real) {
+		t.Errorf("length = %d, want %d", len(ph), len(real))
+	}
+	if !strings.Contains(ph, Sentinel) {
+		t.Errorf("placeholder missing sentinel")
+	}
+}
+
+func TestGenerateAWSSessionToken_CollisionRetry(t *testing.T) {
+	real := strings.Repeat("x", 200)
+	// Seed the Set with the first expected output so Generate must retry.
+	// Since randomness is entropy-seeded, just smoke-test uniqueness across
+	// 5 calls rather than trying to force a known collision.
+	seen := Set{}
+	for i := 0; i < 5; i++ {
+		ph, err := GenerateAWSSessionToken(real, seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, dup := seen[ph]; dup {
+			t.Fatalf("duplicate placeholder on iteration %d: %q", i, ph)
+		}
+		seen[ph] = struct{}{}
+	}
+}

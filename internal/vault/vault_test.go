@@ -649,6 +649,142 @@ func TestPlaceholderSetIncludesUsernamePlaceholder(t *testing.T) {
 	}
 }
 
+func TestPlaceholderMap_IncludesAWSFields(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+	v, err := CreateVault(dir, "pid", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := &Credential{
+		ID:                         NewID(),
+		Name:                       "aws-prod",
+		Real:                       "real-secret",
+		Placeholder:                "VeilAWSSecret",
+		Scheme:                     "aws",
+		AWSAccessKeyID:             "AKIAREAL",
+		AWSAccessKeyIDPlaceholder:  "AKIAPH",
+		AWSSessionToken:            "realtok",
+		AWSSessionTokenPlaceholder: "VeilSess",
+		AllowedHosts:               []string{"*.amazonaws.com"},
+		CreatedAt:                  time.Now(),
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatal(err)
+	}
+	pm := v.PlaceholderMap()
+	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
+		if pm[ph] == nil {
+			t.Errorf("PlaceholderMap missing %q", ph)
+		}
+	}
+
+	set := v.PlaceholderSet()
+	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
+		if _, ok := set[ph]; !ok {
+			t.Errorf("PlaceholderSet missing %q", ph)
+		}
+	}
+}
+
+func TestCredential_AWSFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+	v, err := CreateVault(dir, "pid", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orig := &Credential{
+		ID:                         NewID(),
+		Name:                       "aws-prod",
+		Real:                       "real-secret-key",
+		Placeholder:                "VeilAWSSecretVEIL",
+		Scheme:                     "aws",
+		AWSAccessKeyID:             "AKIAIOSFODNN7EXAMPLE",
+		AWSAccessKeyIDPlaceholder:  "AKIAVEIL3X9Z2Y1W8VQR",
+		AWSSessionToken:            "FwoGZXIv...realtoken",
+		AWSSessionTokenPlaceholder: "VeilAWSSessTok",
+		AllowedHosts:               []string{"*.amazonaws.com"},
+		CreatedAt:                  time.Now(),
+	}
+	if err := v.Add(orig); err != nil {
+		t.Fatal(err)
+	}
+
+	v2, err := Open(dir, ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := v2.Get("aws-prod")
+	if !ok {
+		t.Fatal("credential not found after reload")
+	}
+	if got.Scheme != "aws" || got.AWSAccessKeyID != orig.AWSAccessKeyID ||
+		got.AWSAccessKeyIDPlaceholder != orig.AWSAccessKeyIDPlaceholder ||
+		got.AWSSessionToken != orig.AWSSessionToken ||
+		got.AWSSessionTokenPlaceholder != orig.AWSSessionTokenPlaceholder {
+		t.Fatalf("aws fields not preserved: %+v", got)
+	}
+}
+
+func TestCredential_GitHubAppFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+	v, err := CreateVault(dir, "pid", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pem := "-----BEGIN RSA PRIVATE KEY-----\nMIIEogIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----\n"
+	placeholder := "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----\n"
+	orig := &Credential{
+		ID:                   NewID(),
+		Name:                 "gh-app",
+		Real:                 pem,
+		Placeholder:          placeholder,
+		Scheme:               "github_app",
+		GitHubAppID:          123456,
+		GitHubInstallationID: 789012,
+		AllowedHosts:         []string{"api.github.com"},
+		CreatedAt:            time.Now(),
+	}
+	if err := v.Add(orig); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := Open(dir, ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v2.Get("gh-app")
+	if got.Real != pem || got.Placeholder != placeholder ||
+		got.GitHubAppID != 123456 || got.GitHubInstallationID != 789012 {
+		t.Fatalf("github app fields not preserved: %+v", got)
+	}
+}
+
+func TestCredential_Zero_ClearsAWSFields(t *testing.T) {
+	c := &Credential{
+		Scheme:                     "aws",
+		Real:                       "secret",
+		Placeholder:                "ph",
+		AWSAccessKeyID:             "AKIA",
+		AWSAccessKeyIDPlaceholder:  "AKIAPH",
+		AWSSessionToken:            "tok",
+		AWSSessionTokenPlaceholder: "tokph",
+		GitHubAppID:                1234,
+	}
+	c.Zero()
+	if c.AWSAccessKeyID != "" || c.AWSAccessKeyIDPlaceholder != "" ||
+		c.AWSSessionToken != "" || c.AWSSessionTokenPlaceholder != "" ||
+		c.Scheme != "" {
+		t.Fatalf("Zero did not clear aws/scheme: %+v", c)
+	}
+	if c.GitHubAppID != 1234 {
+		t.Errorf("Zero cleared non-secret GitHubAppID")
+	}
+}
+
 func TestCredentialJSONBackwardCompat(t *testing.T) {
 	// Old on-disk format had no Username / UsernamePlaceholder fields.
 	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`

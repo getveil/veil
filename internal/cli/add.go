@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bufio"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,47 +31,80 @@ var (
 	}
 )
 
+// awsAccessKeyIDRegex matches AWS static and temporary access key IDs.
+// AKIA = long-term user/role; ASIA = STS-issued short-term.
+var awsAccessKeyIDRegex = regexp.MustCompile(`^(AKIA|ASIA)[A-Z0-9]{16}$`)
+
+// addOpts bundles the flag-backed inputs accepted by `veil add`. Passing a
+// struct (rather than a growing positional parameter list) keeps the
+// signature stable as new credential schemes are added.
+type addOpts struct {
+	force                bool
+	hosts                []string
+	value                string
+	valueStdin           bool
+	username             string
+	scheme               string
+	awsAccessKeyID       string
+	awsSessionTokenFile  string
+	awsSessionTokenStdin bool
+	githubAppID          int64
+	githubInstallationID int64
+}
+
 func addCmd() *cobra.Command {
-	var force bool
-	var hosts []string
-	var value string
-	var valueStdin bool
-	var username string
+	var opts addOpts
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a secret to the vault",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdd(cmd, args[0], force, hosts, value, valueStdin, username)
+			return runAdd(cmd, args[0], opts)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing credential")
-	cmd.Flags().StringArrayVar(&hosts, "host", nil, "allowed destination host (repeatable)")
-	cmd.Flags().StringVar(&value, "value", "", "secret value (UNSAFE: saved to shell history; prefer --value-stdin)")
-	cmd.Flags().BoolVar(&valueStdin, "value-stdin", false, "read secret from stdin without a prompt")
-	cmd.Flags().StringVar(&username, "user", "", "username for HTTP Basic credentials")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing credential")
+	cmd.Flags().StringArrayVar(&opts.hosts, "host", nil, "allowed destination host (repeatable)")
+	cmd.Flags().StringVar(&opts.value, "value", "", "secret value (UNSAFE: saved to shell history; prefer --value-stdin)")
+	cmd.Flags().BoolVar(&opts.valueStdin, "value-stdin", false, "read secret from stdin without a prompt")
+	cmd.Flags().StringVar(&opts.username, "user", "", "username for HTTP Basic credentials")
+	cmd.Flags().StringVar(&opts.scheme, "scheme", "", "credential scheme: aws, github_app (default: bearer or basic)")
+	cmd.Flags().StringVar(&opts.awsAccessKeyID, "aws-access-key-id", "", "AWS access key ID (required for --scheme aws)")
+	cmd.Flags().StringVar(&opts.awsSessionTokenFile, "aws-session-token-file", "", "path to a file containing an AWS session token")
+	cmd.Flags().BoolVar(&opts.awsSessionTokenStdin, "aws-session-token-stdin", false, "read AWS session token from stdin (mutually exclusive with --value-stdin)")
+	cmd.Flags().Int64Var(&opts.githubAppID, "github-app-id", 0, "GitHub App ID (required for --scheme github_app)")
+	cmd.Flags().Int64Var(&opts.githubInstallationID, "github-installation-id", 0, "GitHub App installation ID (optional)")
 	cmd.MarkFlagsMutuallyExclusive("value", "value-stdin")
+	cmd.MarkFlagsMutuallyExclusive("aws-session-token-file", "aws-session-token-stdin")
+	cmd.MarkFlagsMutuallyExclusive("value-stdin", "aws-session-token-stdin")
 	return cmd
 }
 
-func runAdd(cmd *cobra.Command, name string, force bool, hosts []string, flagValue string, valueStdin bool, username string) error {
+func runAdd(cmd *cobra.Command, name string, opts addOpts) error {
 	return withVault(cmd, func(root string, v *vault.Vault) error {
-		return runAddInVault(cmd, root, v, name, force, hosts, flagValue, valueStdin, username)
+		return runAddInVault(cmd, root, v, name, opts)
 	})
 }
 
-func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string, force bool, hosts []string, flagValue string, valueStdin bool, username string) error {
+func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string, opts addOpts) error {
 	// Validate --user flag.
 	userFlagSet := cmd.Flags().Changed("user")
-	if userFlagSet && username == "" {
+	if userFlagSet && opts.username == "" {
 		return cliError("--user cannot be empty", "")
 	}
-	if username != "" && strings.Contains(username, ":") {
+	if opts.username != "" && strings.Contains(opts.username, ":") {
 		return cliError("username cannot contain ':' (RFC 7617)", "")
 	}
-	isBasic := username != ""
 
-	value, err := readCredentialValue(cmd, name, flagValue, valueStdin)
+	if opts.scheme == "aws" {
+		return runAddAWS(cmd, root, v, name, opts)
+	}
+	if opts.scheme == "github_app" {
+		return runAddGitHubApp(cmd, root, v, name, opts)
+	}
+
+	isBasic := opts.username != ""
+
+	value, err := readCredentialValue(cmd, name, opts.value, opts.valueStdin)
 	if err != nil {
 		return err
 	}
@@ -87,21 +123,21 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 	if isBasic {
 		existing := v.PlaceholderSet()
 		existing[ph] = struct{}{}
-		userPh, err = placeholder.Generate(name+"_USER", username, existing)
+		userPh, err = placeholder.Generate(name+"_USER", opts.username, existing)
 		if err != nil {
 			return cliError(fmt.Sprintf("generating username placeholder: %v", err), "")
 		}
 	}
 
 	// Resolve allowed hosts: --host flags if provided, otherwise auto-detect.
-	allowedHosts := hosts
+	allowedHosts := opts.hosts
 	if len(allowedHosts) == 0 {
 		allowedHosts = placeholder.HostsForCredential(name, value)
 	}
 
 	// Handle --force: delete existing credential, capture old placeholders for .env sync.
 	var oldPlaceholder, oldUsernamePlaceholder string
-	if force {
+	if opts.force {
 		if existing, found := v.Get(name); found {
 			oldPlaceholder = existing.Placeholder
 			oldUsernamePlaceholder = existing.UsernamePlaceholder
@@ -119,7 +155,7 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 		CreatedAt:    time.Now(),
 	}
 	if isBasic {
-		cred.Username = username
+		cred.Username = opts.username
 		cred.UsernamePlaceholder = userPh
 	}
 	if err := v.Add(cred); err != nil {
@@ -161,6 +197,257 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 	}
 
 	return nil
+}
+
+// runAddAWS handles the `--scheme aws` branch. It generates an AKID-shaped
+// placeholder for the access key (so SDKs scope a SigV4 Credential= string
+// around it), a base64-ish placeholder for the secret, and — if supplied —
+// a long base64-ish placeholder for a session token. All three go into the
+// same Credential record; the proxy re-signs on the way out using the real
+// values.
+func runAddAWS(cmd *cobra.Command, root string, v *vault.Vault, name string, opts addOpts) error {
+	if opts.username != "" {
+		return cliError("--user is not valid with --scheme aws", "")
+	}
+	if opts.awsAccessKeyID == "" {
+		return cliError("--aws-access-key-id is required for --scheme aws", "")
+	}
+	if !awsAccessKeyIDRegex.MatchString(opts.awsAccessKeyID) {
+		return cliError("access key ID must match AKIA|ASIA + 16 upper-alphanumeric", "")
+	}
+
+	secret, err := readCredentialValue(cmd, name, opts.value, opts.valueStdin)
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return cliError("no value provided", "")
+	}
+
+	// Secret access key placeholder.
+	secretPh, err := placeholder.Generate(name, secret, v.PlaceholderSet())
+	if err != nil {
+		return cliErrorf("generating placeholder: %v", err)
+	}
+
+	// Access key ID placeholder (AKIA-prefixed).
+	existing := v.PlaceholderSet()
+	existing[secretPh] = struct{}{}
+	akIDPh := generateAWSAccessKeyIDPlaceholder(opts.awsAccessKeyID, existing)
+	existing[akIDPh] = struct{}{}
+
+	// Optional session token.
+	var sessTok, sessPh string
+	if opts.awsSessionTokenFile != "" {
+		b, readErr := os.ReadFile(opts.awsSessionTokenFile) // #nosec G304
+		if readErr != nil {
+			return cliErrorf("read session token: %v", readErr)
+		}
+		sessTok = strings.TrimRight(string(b), "\r\n")
+	} else if opts.awsSessionTokenStdin {
+		sessTok, err = readAllStdin(cmd.InOrStdin())
+		if err != nil {
+			return err
+		}
+	}
+	if sessTok != "" {
+		sessPh, err = placeholder.GenerateAWSSessionToken(sessTok, existing)
+		if err != nil {
+			return cliErrorf("generating session token placeholder: %v", err)
+		}
+	}
+
+	// Resolve allowed hosts: --host flags if provided, otherwise default to AWS.
+	allowedHosts := opts.hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = []string{"*.amazonaws.com"}
+	}
+
+	// --force: collect old placeholders so .env files can be rewritten.
+	var oldPhs []string
+	if opts.force {
+		if prev, found := v.Get(name); found {
+			if prev.Placeholder != "" {
+				oldPhs = append(oldPhs, prev.Placeholder)
+			}
+			if prev.AWSAccessKeyIDPlaceholder != "" {
+				oldPhs = append(oldPhs, prev.AWSAccessKeyIDPlaceholder)
+			}
+			if prev.AWSSessionTokenPlaceholder != "" {
+				oldPhs = append(oldPhs, prev.AWSSessionTokenPlaceholder)
+			}
+			_, _ = v.Delete(name)
+		}
+	}
+
+	cred := &vault.Credential{
+		ID:                         vault.NewID(),
+		Name:                       name,
+		Real:                       secret,
+		Placeholder:                secretPh,
+		Source:                     "manual",
+		AllowedHosts:               allowedHosts,
+		CreatedAt:                  time.Now(),
+		Scheme:                     "aws",
+		AWSAccessKeyID:             opts.awsAccessKeyID,
+		AWSAccessKeyIDPlaceholder:  akIDPh,
+		AWSSessionToken:            sessTok,
+		AWSSessionTokenPlaceholder: sessPh,
+	}
+	if err := v.Add(cred); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
+		}
+		return cliErrorf("adding credential: %v", err)
+	}
+
+	// Pair old placeholders with new for .env sync. When the user adds a
+	// session token for the first time, the new set has one extra entry
+	// that no old entry matches — that's fine; the loop stops at the
+	// shorter length.
+	newPhs := []string{secretPh, akIDPh}
+	if sessPh != "" {
+		newPhs = append(newPhs, sessPh)
+	}
+	w := cmd.OutOrStdout()
+	for i, oldPh := range oldPhs {
+		if i >= len(newPhs) {
+			break
+		}
+		if oldPh == newPhs[i] {
+			continue
+		}
+		updated := syncPlaceholderInEnvFiles(root, oldPh, newPhs[i])
+		if updated > 0 {
+			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
+		}
+	}
+
+	ui.Step(w, fmt.Sprintf("Added %s to vault (aws)", name))
+	_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Access key placeholder:"), akIDPh)
+	_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Secret placeholder:"), secretPh)
+	if sessPh != "" {
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Session token placeholder:"), sessPh)
+	}
+	if len(allowedHosts) > 0 {
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
+	}
+	return nil
+}
+
+// runAddGitHubApp handles the `--scheme github_app` branch. The real value
+// on stdin (or --value) is an RSA PEM private key belonging to a GitHub App;
+// the stored placeholder is a fresh RSA 2048 PEM, so the SDK can load it
+// and sign JWTs locally. The proxy detects the resulting JWT by its `iss`
+// claim and re-signs with the real key before forwarding.
+func runAddGitHubApp(cmd *cobra.Command, root string, v *vault.Vault, name string, opts addOpts) error {
+	if opts.username != "" {
+		return cliError("--user is not valid with --scheme github_app", "")
+	}
+	if opts.githubAppID <= 0 {
+		return cliError("--github-app-id must be > 0 for --scheme github_app", "")
+	}
+
+	value, err := readCredentialValue(cmd, name, opts.value, opts.valueStdin)
+	if err != nil {
+		return err
+	}
+	if value == "" {
+		return cliError("no value provided", "")
+	}
+	if err := validateRSAPEM(value); err != nil {
+		return cliErrorf("--value must be an RSA PEM private key: %v", err)
+	}
+
+	placeholderPEM, err := placeholder.GenerateGitHubAppPrivateKey()
+	if err != nil {
+		return cliErrorf("generating placeholder key: %v", err)
+	}
+
+	// Resolve allowed hosts: --host flags if provided, otherwise default to api.github.com.
+	allowedHosts := opts.hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = []string{"api.github.com"}
+	}
+
+	// --force: capture old placeholder for .env sync.
+	var oldPh string
+	if opts.force {
+		if prev, found := v.Get(name); found {
+			oldPh = prev.Placeholder
+			_, _ = v.Delete(name)
+		}
+	}
+
+	cred := &vault.Credential{
+		ID:                   vault.NewID(),
+		Name:                 name,
+		Real:                 value,
+		Placeholder:          placeholderPEM,
+		Source:               "manual",
+		AllowedHosts:         allowedHosts,
+		CreatedAt:            time.Now(),
+		Scheme:               "github_app",
+		GitHubAppID:          opts.githubAppID,
+		GitHubInstallationID: opts.githubInstallationID,
+	}
+	if err := v.Add(cred); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
+		}
+		return cliErrorf("adding credential: %v", err)
+	}
+
+	w := cmd.OutOrStdout()
+	if oldPh != "" && oldPh != cred.Placeholder {
+		updated := syncPlaceholderInEnvFiles(root, oldPh, cred.Placeholder)
+		if updated > 0 {
+			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
+		}
+	}
+
+	ui.Step(w, fmt.Sprintf("Added %s to vault (github_app)", name))
+	_, _ = fmt.Fprintf(w, "    %s %d\n", ui.Muted.Sprint("App ID:"), opts.githubAppID)
+	_, _ = fmt.Fprintf(w, "    %s <generated RSA PEM — %d bytes>\n", ui.Muted.Sprint("Private key placeholder:"), len(placeholderPEM))
+	if len(allowedHosts) > 0 {
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
+	}
+	return nil
+}
+
+// validateRSAPEM returns nil iff `value` decodes as a PEM block that
+// contains either a PKCS#1 or PKCS#8-wrapped RSA private key.
+func validateRSAPEM(value string) error {
+	block, _ := pem.Decode([]byte(value))
+	if block == nil {
+		return fmt.Errorf("no PEM block found")
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return nil
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		return nil
+	}
+	return fmt.Errorf("not an RSA private key (PKCS#1 or PKCS#8)")
+}
+
+// generateAWSAccessKeyIDPlaceholder asks the AWS provider for a placeholder
+// of the given access key ID, retrying up to a small budget to avoid
+// collisions with already-issued placeholders.
+func generateAWSAccessKeyIDPlaceholder(realAKID string, existing placeholder.Set) string {
+	p, ok := placeholder.DefaultRegistry().Get("aws")
+	if !ok {
+		// Should never happen: aws provider is registered at init.
+		return realAKID
+	}
+	for i := 0; i < 10; i++ {
+		cand := p.Generate(realAKID)
+		if _, clash := existing[cand]; !clash {
+			return cand
+		}
+	}
+	// Fallback: shouldn't happen with 16-char random bodies.
+	return p.Generate(realAKID)
 }
 
 // readCredentialValue returns the secret value for the add command.

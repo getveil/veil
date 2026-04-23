@@ -766,3 +766,34 @@ func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
 		t.Fatalf("health sidecar should have been removed on clean close, stat err=%v", err)
 	}
 }
+
+func TestInjection_SignerErrorRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	s.Record(Injection{
+		Timestamp:   time.Now(),
+		RequestID:   "req-1",
+		Host:        "s3.amazonaws.com",
+		Method:      "GET",
+		URLPath:     "/",
+		Location:    "signer_failed",
+		SignerError: "unknown_access_key_id",
+	})
+	s.DrainForTest()
+
+	rows, err := s.Query(Filter{Limit: 10, IncludeBlocked: true, IncludeSuspect: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].SignerError != "unknown_access_key_id" {
+		t.Errorf("SignerError = %q, want unknown_access_key_id", rows[0].SignerError)
+	}
+}

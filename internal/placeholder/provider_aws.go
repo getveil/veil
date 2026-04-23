@@ -2,6 +2,19 @@ package placeholder
 
 import "strings"
 
+// GenerateAWSSessionToken produces a placeholder for an AWS STS session token.
+// Session tokens are long base64-ish strings (~300-800 bytes). Length is
+// preserved; Sentinel is embedded near the start.
+func GenerateAWSSessionToken(value string, existing Set) (string, error) {
+	for attempt := 0; attempt < maxCollisionRetries; attempt++ {
+		candidate := sentinelize(randBase64ish(len(value)), 0)
+		if _, ok := existing[candidate]; !ok {
+			return candidate, nil
+		}
+	}
+	return "", ErrCollisionUnresolvable
+}
+
 func init() {
 	register(ProviderPattern{
 		Name:     "aws",

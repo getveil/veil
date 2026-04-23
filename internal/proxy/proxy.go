@@ -147,8 +147,25 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 
 		requestID := ulid.Make().String()
 
-		newURL, newHeader, newBody, _ := inj.ProcessRequest(
+		newURL, newHeader, newBody, injections := inj.ProcessRequest(
 			requestID, req.Method, req.URL.String(), req.Header, body)
+
+		// --- Fail-closed signer guard ---
+		// If any signer (AWS SigV4, GitHub App JWT, …) emitted a
+		// signer_failed injection, we must not forward the request: the
+		// placeholder credentials the SDK computed its signature against
+		// are about to go on the wire, or the AKID/AppID points to an
+		// identity we don't own. The 502 surfaces the error class to the
+		// caller via X-Veil-Error so agents can diagnose without parsing
+		// the audit log. The audit row was already recorded by the
+		// injector.
+		if sf := firstSignerFailure(injections); sf != nil {
+			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — signer failed (%s)", req.Host, sf.SignerError)
+			resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
+				fmt.Sprintf("veil: signer failed (%s); request blocked (see audit log)", sf.SignerError))
+			resp.Header.Set("X-Veil-Error", sf.SignerError)
+			return req, resp
+		}
 
 		// --- Fail-closed sentinel guard ---
 		// Scan the final outbound bytes (URL, every header value, and body)
