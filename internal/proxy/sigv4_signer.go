@@ -127,6 +127,64 @@ func canonicalHeaders(hdr http.Header, signedHeaders []string) string {
 	return b.String()
 }
 
+// sigV4Auth is the parsed form of an AWS4-HMAC-SHA256 Authorization header.
+type sigV4Auth struct {
+	AccessKeyID   string
+	Date          string
+	Region        string
+	Service       string
+	SignedHeaders []string
+	Signature     string
+}
+
+// parseSigV4Authorization parses an "AWS4-HMAC-SHA256 …" header value.
+func parseSigV4Authorization(value string) (sigV4Auth, error) {
+	const prefix = "AWS4-HMAC-SHA256 "
+	if !strings.HasPrefix(value, prefix) {
+		return sigV4Auth{}, fmt.Errorf("not a SigV4 header")
+	}
+	rest := value[len(prefix):]
+
+	var (
+		cred    string
+		signed  string
+		sig     string
+		haveAll = 0
+	)
+	for _, part := range strings.Split(rest, ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "Credential":
+			cred = kv[1]
+			haveAll++
+		case "SignedHeaders":
+			signed = kv[1]
+			haveAll++
+		case "Signature":
+			sig = kv[1]
+			haveAll++
+		}
+	}
+	if haveAll != 3 {
+		return sigV4Auth{}, fmt.Errorf("authorization missing Credential/SignedHeaders/Signature")
+	}
+	parts := strings.Split(cred, "/")
+	if len(parts) != 5 || parts[4] != "aws4_request" {
+		return sigV4Auth{}, fmt.Errorf("malformed Credential scope: %q", cred)
+	}
+	return sigV4Auth{
+		AccessKeyID:   parts[0],
+		Date:          parts[1],
+		Region:        parts[2],
+		Service:       parts[3],
+		SignedHeaders: strings.Split(signed, ";"),
+		Signature:     sig,
+	}, nil
+}
+
 // deriveSigningKey computes kSigning per SigV4 spec:
 //
 //	kSecret  = "AWS4" + secret

@@ -46,6 +46,43 @@ func TestCanonicalQueryString(t *testing.T) {
 	}
 }
 
+func TestParseSigV4Authorization(t *testing.T) {
+	value := "AWS4-HMAC-SHA256 " +
+		"Credential=AKIAIOSFODNN7EXAMPLE/20150830/us-east-1/iam/aws4_request, " +
+		"SignedHeaders=content-type;host;x-amz-date, " +
+		"Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
+	got, err := parseSigV4Authorization(value)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AccessKeyID = %q", got.AccessKeyID)
+	}
+	if got.Date != "20150830" || got.Region != "us-east-1" || got.Service != "iam" {
+		t.Errorf("scope wrong: %+v", got)
+	}
+	if len(got.SignedHeaders) != 3 || got.SignedHeaders[0] != "content-type" {
+		t.Errorf("SignedHeaders = %v", got.SignedHeaders)
+	}
+	if got.Signature == "" {
+		t.Error("Signature empty")
+	}
+}
+
+func TestParseSigV4Authorization_Malformed(t *testing.T) {
+	cases := []string{
+		"",
+		"Bearer foo",
+		"AWS4-HMAC-SHA256 Credential=missing-slashes",
+		"AWS4-HMAC-SHA256 SignedHeaders=host, Signature=xx", // no Credential
+	}
+	for _, c := range cases {
+		if _, err := parseSigV4Authorization(c); err == nil {
+			t.Errorf("expected error for %q", c)
+		}
+	}
+}
+
 // AWS SigV4 signing-key derivation test vector, published at:
 // https://docs.aws.amazon.com/general/latest/gr/signature-v4-examples.html
 func TestDeriveSigningKey_PublishedVector(t *testing.T) {
