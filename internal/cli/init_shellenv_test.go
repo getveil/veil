@@ -196,3 +196,112 @@ func TestInit_ShellOnlyProject(t *testing.T) {
 		t.Errorf("vaulted value = %q, want sk-abc-highentropy-1234567890", c.Real)
 	}
 }
+
+func TestInit_CorrelatesAWSTripleFromShellEnv(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_SESSION_TOKEN", "FwoGZXIvYXdzEJr//////////wEaDPshell")
+
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	ks, err := buildKeystore()
+	if err != nil {
+		t.Fatalf("buildKeystore: %v", err)
+	}
+	v, err := vault.Open(tmp, ks)
+	if err != nil {
+		t.Fatalf("vault.Open: %v", err)
+	}
+
+	awsCred, ok := v.Get("AWS_ACCESS_KEY_ID")
+	if !ok {
+		t.Fatalf("vault missing AWS_ACCESS_KEY_ID; names = %v", v.Names())
+	}
+	if awsCred.Scheme != "aws" {
+		t.Errorf("Scheme = %q, want aws", awsCred.Scheme)
+	}
+	if awsCred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AWSAccessKeyID = %q", awsCred.AWSAccessKeyID)
+	}
+	if awsCred.Real != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+		t.Errorf("Real = %q", awsCred.Real)
+	}
+	if awsCred.AWSSessionToken != "FwoGZXIvYXdzEJr//////////wEaDPshell" {
+		t.Errorf("AWSSessionToken = %q", awsCred.AWSSessionToken)
+	}
+
+	for _, name := range []string{"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		if _, found := v.Get(name); found {
+			t.Errorf("unexpected bearer credential %q in vault", name)
+		}
+	}
+}
+
+func TestInit_ShellAWSWithSameNameInVaultDropsWholeGroup(t *testing.T) {
+	// Regression guard for the "orphan sibling" scenario: .env already
+	// vaulted AWS_ACCESS_KEY_ID as an aws-scheme credential; shell exports
+	// the same triple. The post-correlation name filter must drop the
+	// whole shell group — not drop only the ID and then vault the two
+	// siblings as redundant bearer credentials.
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_SESSION_TOKEN", "FwoGZXIvYXdzEJr//////////wEaDPshell")
+
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPshell\n"
+	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	ks, err := buildKeystore()
+	if err != nil {
+		t.Fatalf("buildKeystore: %v", err)
+	}
+	v, err := vault.Open(tmp, ks)
+	if err != nil {
+		t.Fatalf("vault.Open: %v", err)
+	}
+
+	names := v.Names()
+	if len(names) != 1 || names[0] != "AWS_ACCESS_KEY_ID" {
+		t.Fatalf("vault names = %v, want [AWS_ACCESS_KEY_ID] exactly", names)
+	}
+	for _, leaked := range []string{"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		if _, ok := v.Get(leaked); ok {
+			t.Errorf("leaked bearer credential %q in vault (orphan sibling)", leaked)
+		}
+	}
+}

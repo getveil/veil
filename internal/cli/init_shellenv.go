@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/8enji/veil/internal/cli/correlate"
 	"github.com/8enji/veil/internal/placeholder"
 	"github.com/8enji/veil/internal/scanner"
 	"github.com/8enji/veil/internal/ui"
@@ -30,52 +31,77 @@ func nonEmptyShellCandidates(candidates []scanner.EnvironCandidate) []scanner.En
 
 // processShellEnv presents shell-exported secret-like candidates, prompts the
 // user (interactive) or accepts-all (non-interactive), and vaults the
-// selected entries. Candidates whose name already exists in the vault are
-// skipped silently — typically because they were already captured from a .env
-// or MCP config earlier in the same init run. Returns (vaulted, scoped).
-//
-// `interactive` mirrors the convention used by processEnvFile / processMCPConfig:
-// when false, all candidates are vaulted (matching the --yes / non-TTY path).
+// selected entries. Correlates AWS triples before the "already in vault"
+// filter so an existing aws-scheme credential named AWS_ACCESS_KEY_ID drops
+// the whole would-be-duplicate shell group instead of leaking orphan
+// siblings as redundant bearer credentials.
 func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
-	// Filter out anything already in the vault (prior phase captured it) and
-	// anything with an empty value (placeholder.Generate rejects empty, and
-	// an empty export can't meaningfully be a secret even if the name matches
-	// a secret-like pattern like USE_STAGING_OAUTH="").
-	filtered := make([]scanner.EnvironCandidate, 0, len(candidates))
+	// Drop empty-valued candidates first (placeholder.Generate rejects empty).
+	// We do NOT drop vault-duplicate names here — that check moves
+	// post-correlation below.
+	nonEmpty := make([]correlate.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		if c.Value == "" {
 			continue
 		}
-		if _, exists := v.Get(c.Name); exists {
-			continue
-		}
-		filtered = append(filtered, c)
+		nonEmpty = append(nonEmpty, correlate.Candidate{Key: c.Name, Value: c.Value})
 	}
-	if len(filtered) == 0 {
+	if len(nonEmpty) == 0 {
 		return 0, 0, nil
 	}
 
-	selected := selectShellEnvKeys(in, w, filtered, interactive)
-	if len(selected) == 0 {
+	groups, remaining := correlate.DetectAll(nonEmpty)
+
+	// Now drop groups whose name is already in the vault, and drop loose
+	// candidates whose key is already in the vault. Applying the name
+	// filter AFTER correlation ensures we drop the whole AWS group cleanly
+	// when the .env phase has already vaulted it — no orphan siblings
+	// leaking through as bearer credentials.
+	filteredGroups := make([]correlate.Group, 0, len(groups))
+	for _, g := range groups {
+		if _, exists := v.Get(g.Name); exists {
+			continue
+		}
+		filteredGroups = append(filteredGroups, g)
+	}
+	filteredRemaining := make([]correlate.Candidate, 0, len(remaining))
+	for _, c := range remaining {
+		if _, exists := v.Get(c.Key); exists {
+			continue
+		}
+		filteredRemaining = append(filteredRemaining, c)
+	}
+	if len(filteredGroups) == 0 && len(filteredRemaining) == 0 {
+		return 0, 0, nil
+	}
+
+	selectedGroups, selectedRemaining := selectShellEnvKeys(in, w, filteredGroups, filteredRemaining, interactive)
+	if len(selectedGroups) == 0 && len(selectedRemaining) == 0 {
 		return 0, 0, nil
 	}
 
 	seen := v.PlaceholderSet()
 	var vaulted, scoped int
-	for _, c := range filtered {
-		if !selected[c.Name] {
-			continue
-		}
 
-		ph, err := placeholder.Generate(c.Name, c.Value, seen)
+	for _, g := range selectedGroups {
+		n, s, err := vaultShellAWSGroup(w, v, seen, g, dryRun)
 		if err != nil {
-			return vaulted, scoped, wrapErr(fmt.Sprintf("generating placeholder for %s", c.Name), err)
+			return vaulted, scoped, err
+		}
+		vaulted += n
+		scoped += s
+	}
+
+	for _, c := range selectedRemaining {
+		ph, err := placeholder.Generate(c.Key, c.Value, seen)
+		if err != nil {
+			return vaulted, scoped, wrapErr(fmt.Sprintf("generating placeholder for %s", c.Key), err)
 		}
 
-		credHosts := placeholder.HostsForCredential(c.Name, c.Value)
+		credHosts := placeholder.HostsForCredential(c.Key, c.Value)
 		cred := &vault.Credential{
 			ID:           vault.NewID(),
-			Name:         c.Name,
+			Name:         c.Key,
 			Real:         c.Value,
 			Placeholder:  ph,
 			Source:       "init",
@@ -84,10 +110,10 @@ func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []sca
 		}
 		if err := v.Add(cred); err != nil {
 			if errors.Is(err, vault.ErrDuplicateCredential) {
-				ui.Warnf(w, "duplicate key %q, skipping", c.Name)
+				ui.Warnf(w, "duplicate key %q, skipping", c.Key)
 				continue
 			}
-			return vaulted, scoped, wrapErr(fmt.Sprintf("vaulting %s", c.Name), err)
+			return vaulted, scoped, wrapErr(fmt.Sprintf("vaulting %s", c.Key), err)
 		}
 		seen[ph] = struct{}{}
 
@@ -97,46 +123,135 @@ func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []sca
 		}
 
 		if dryRun {
-			ui.Dimf(w, "  would vault: %s -> %s (from shell)", c.Name, ph)
+			ui.Dimf(w, "  would vault: %s -> %s (from shell)", c.Key, ph)
 		}
 	}
 	return vaulted, scoped, nil
 }
 
-// selectShellEnvKeys returns the set of candidate names the user chose to
-// vault. In non-interactive mode all names are selected.
-func selectShellEnvKeys(in io.Reader, w io.Writer, candidates []scanner.EnvironCandidate, interactive bool) map[string]bool {
-	selected := make(map[string]bool, len(candidates))
-	if !interactive {
-		for _, c := range candidates {
-			selected[c.Name] = true
+// vaultShellAWSGroup writes one Scheme:"aws" credential for g. Unlike the
+// .env flow there is no file to rewrite — the user's shell export remains
+// unchanged; init only vaults.
+func vaultShellAWSGroup(
+	w io.Writer, v *vault.Vault, seen placeholder.Set,
+	g correlate.Group, dryRun bool,
+) (vaulted, scoped int, err error) {
+	secretPh, err := placeholder.Generate(g.Name, g.AWS.SecretKey, seen)
+	if err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
+	}
+	seen[secretPh] = struct{}{}
+
+	akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
+	seen[akIDPh] = struct{}{}
+
+	var sessPh string
+	if g.AWS.SessionToken != "" {
+		sessPh, err = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
+		if err != nil {
+			return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), err)
 		}
-		return selected
+		seen[sessPh] = struct{}{}
 	}
 
-	_, _ = fmt.Fprintf(w, "\nDetected %d shell-exported %s:\n",
-		len(candidates), plural(len(candidates), "secret", "secrets"))
+	cred := &vault.Credential{
+		ID:                         vault.NewID(),
+		Name:                       g.Name,
+		Real:                       g.AWS.SecretKey,
+		Placeholder:                secretPh,
+		Source:                     "init",
+		AllowedHosts:               []string{"*.amazonaws.com"},
+		CreatedAt:                  time.Now(),
+		Scheme:                     "aws",
+		AWSAccessKeyID:             g.AWS.AccessKeyID,
+		AWSAccessKeyIDPlaceholder:  akIDPh,
+		AWSSessionToken:            g.AWS.SessionToken,
+		AWSSessionTokenPlaceholder: sessPh,
+	}
+	if err := v.Add(cred); err != nil {
+		if errors.Is(err, vault.ErrDuplicateCredential) {
+			ui.Warnf(w, "duplicate key %q, skipping", g.Name)
+			return 0, 0, nil
+		}
+		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
+	}
+
+	if dryRun {
+		ui.Dimf(w, "  would vault (aws): %s (from shell)", g.Name)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, akIDPh)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, secretPh)
+		if g.AWS.SessionToken != "" {
+			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, sessPh)
+		}
+	}
+	return 1, 1, nil
+}
+
+// selectShellEnvKeys returns the groups and bearer candidates the user chose
+// to vault. In non-interactive mode everything is selected.
+func selectShellEnvKeys(
+	in io.Reader, w io.Writer,
+	groups []correlate.Group, remaining []correlate.Candidate, interactive bool,
+) (selectedGroups []correlate.Group, selectedRemaining []correlate.Candidate) {
+	if !interactive {
+		return groups, remaining
+	}
+
+	total := len(remaining)
+	for _, g := range groups {
+		total += len(g.Members)
+	}
+	header := fmt.Sprintf("\nDetected %d shell-exported %s", total, plural(total, "secret", "secrets"))
+	switch len(groups) {
+	case 0:
+		header += ":"
+	case 1:
+		header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+	default:
+		header += fmt.Sprintf(" (%d AWS credentials):", len(groups))
+	}
+	_, _ = fmt.Fprintln(w, header)
 	ui.Dim(w, "(these are in your current shell environment, not in any .env file)")
-	names := make([]string, len(candidates))
-	for i, c := range candidates {
-		_, _ = fmt.Fprintf(w, "  %-32s %s\n", c.Name, ui.Muted.Sprint(redactValue(c.Value)))
-		names[i] = c.Name
+
+	var names []string
+	for _, g := range groups {
+		label := fmt.Sprintf("[aws] %s", g.Name)
+		for i, m := range g.Members {
+			if i == 0 {
+				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "[aws]", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
+			} else {
+				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
+			}
+		}
+		names = append(names, label)
+	}
+	for _, c := range remaining {
+		_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", c.Key, ui.Muted.Sprint(redactValue(c.Value)))
+		names = append(names, c.Key)
 	}
 	_, _ = fmt.Fprintln(w)
+
 	switch promptYNS(in, w, "Vault all?") {
 	case choiceYes:
-		for _, c := range candidates {
-			selected[c.Name] = true
-		}
+		return groups, remaining
 	case choiceNo:
-		// Return the already-allocated empty map (not nil) for consistency
-		// with sibling selectors; callers only check len() either way but
-		// returning nil is a foot-gun.
-		return selected
+		return nil, nil
 	case choiceSelect:
-		for _, name := range promptMultiSelect(in, w, names) {
-			selected[name] = true
+		picked := make(map[string]bool)
+		for _, n := range promptMultiSelect(in, w, names) {
+			picked[n] = true
 		}
+		for _, g := range groups {
+			if picked[fmt.Sprintf("[aws] %s", g.Name)] {
+				selectedGroups = append(selectedGroups, g)
+			}
+		}
+		for _, c := range remaining {
+			if picked[c.Key] {
+				selectedRemaining = append(selectedRemaining, c)
+			}
+		}
+		return selectedGroups, selectedRemaining
 	}
-	return selected
+	return nil, nil
 }
