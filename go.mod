@@ -12,7 +12,9 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.43.0
+	golang.org/x/term v0.42.0
 	modernc.org/sqlite v1.48.2
+	software.sslmate.com/src/go-pkcs12 v0.7.1
 )
 
 require (
@@ -28,7 +30,6 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/term v0.42.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

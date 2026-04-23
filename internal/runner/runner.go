@@ -81,6 +81,15 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
 
+	bundlePEM, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return nil, fmt.Errorf("read ca bundle: %w", err)
+	}
+	javaTruststorePath, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
+	if err != nil {
+		return nil, fmt.Errorf("build java truststore: %w", err)
+	}
+
 	// 4. Resolve the child command to a realpath before touching the proxy
 	// or spawning anything — this is the forensic anchor for audit rows and
 	// the banner. A shadow binary in a writable PATH dir is a real threat for
@@ -130,7 +139,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	for _, c := range creds {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
-	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, cfg.SkipHosts, entries)
+	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -234,17 +243,15 @@ type vaultEntry struct {
 	Placeholder string
 }
 
-// buildChildEnv takes the current env, strips proxy-related, CA-related, and
-// vault-managed credential vars, and adds the proxy vars pointing to proxyURL
-// and CA vars pointing to bundlePath. skipHosts are appended to the default
-// NO_PROXY list. vaultEntries is the set of credentials loaded from the vault;
-// any env var whose key matches (case-insensitively) has its real value
-// stripped and replaced with the credential's placeholder, so the child
-// process cannot observe the real secret that the user exported in their
-// shell. The names of env vars actually stripped because of the vault match
-// are returned (using the original casing from the environment), so the
-// caller can surface a startup warning.
-func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string) {
+// NO_PROXY list. javaTruststorePath is the per-session PKCS12 that JVM
+// children use via JAVA_TOOL_OPTIONS. vaultEntries is the set of credentials
+// loaded from the vault; any env var whose key matches (case-insensitively)
+// has its real value stripped and replaced with the credential's placeholder,
+// so the child process cannot observe the real secret that the user exported
+// in their shell. The names of env vars actually stripped because of the
+// vault match are returned (using the original casing from the environment),
+// so the caller can surface a startup warning.
+func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -262,7 +269,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 			stripped = append(stripped, kv)
 			continue
 		}
-		if isProxyEnvKey(key) || isCAEnvKey(key) {
+		if isProxyEnvKey(key) || isCAEnvKey(key) || strings.EqualFold(key, "JAVA_TOOL_OPTIONS") {
 			continue
 		}
 		if ph, hit := vaultMap[strings.ToUpper(key)]; hit {
@@ -271,6 +278,21 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 			continue
 		}
 		stripped = append(stripped, kv)
+	}
+
+	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath)
+	javaToolOpts := veilJavaFlags
+	for _, kv := range environ {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(k, "JAVA_TOOL_OPTIONS") {
+			if existing := strings.TrimSpace(v); existing != "" {
+				javaToolOpts = existing + " " + veilJavaFlags
+			}
+			break
+		}
 	}
 
 	noProxy := "localhost,127.0.0.1,::1"
@@ -290,6 +312,8 @@ func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []st
 		"CURL_CA_BUNDLE="+bundlePath,
 		"REQUESTS_CA_BUNDLE="+bundlePath,
 		"HTTPLIB2_CA_CERTS="+bundlePath,
+		"CARGO_HTTP_CAINFO="+bundlePath,
+		"JAVA_TOOL_OPTIONS="+javaToolOpts,
 	)
 	// Append re-injected placeholders last for readability. The proxy/CA
 	// filter above skips any name matching isProxyEnvKey/isCAEnvKey before
