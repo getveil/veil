@@ -34,6 +34,7 @@ type Row struct {
 	Location       string
 	SuspectFlag    bool
 	AuthSignal     string
+	SignerError    string
 }
 
 // Query returns injection rows matching the given filter, ordered by
@@ -92,7 +93,7 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 			&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,
 			&r.URLPath, &r.CredentialID, &r.CredentialName,
 			&r.AgentPID, &r.AgentCmd, &r.BytesBefore, &r.BytesAfter,
-			&r.Location, &suspectInt, &r.AuthSignal,
+			&r.Location, &suspectInt, &r.AuthSignal, &r.SignerError,
 		); err != nil {
 			return nil, err
 		}
@@ -103,7 +104,7 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 	return result, rows.Err()
 }
 
-const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal FROM injections"
+const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal, signer_error FROM injections"
 
 // buildSelectQuery constructs the full SELECT statement from static clause fragments.
 // All clause strings are hardcoded column comparisons (e.g. "ts >= ?"), never user input.

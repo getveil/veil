@@ -37,6 +37,7 @@ type Injection struct {
 	Location       string // "header", "body", "url", "blocked", or "mismatch_suspected"
 	SuspectFlag    bool
 	AuthSignal     string
+	SignerError    string // empty unless Location == "signer_failed"
 }
 
 // Store persists injection events to a SQLite database with batched writes.
@@ -77,7 +78,8 @@ CREATE TABLE IF NOT EXISTS injections (
   bytes_after     INTEGER NOT NULL,
   location        TEXT NOT NULL,
   suspect_flag    INTEGER NOT NULL DEFAULT 0,
-  auth_signal     TEXT NOT NULL DEFAULT ''
+  auth_signal     TEXT NOT NULL DEFAULT '',
+  signer_error    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_inj_ts   ON injections(ts);
 CREATE INDEX IF NOT EXISTS idx_inj_host ON injections(host);
@@ -89,8 +91,9 @@ INSERT OR IGNORE INTO schema_version VALUES (1);
 const insertSQL = `INSERT INTO injections (
   ts, request_id, host, method, url_path,
   credential_id, credential_name, agent_pid, agent_cmd,
-  bytes_before, bytes_after, location, suspect_flag, auth_signal
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  bytes_before, bytes_after, location, suspect_flag, auth_signal,
+  signer_error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Open opens (or creates) the SQLite database at dbPath and starts the
 // background flush goroutine. It enforces 0600 permissions on the database
@@ -129,6 +132,11 @@ func Open(dbPath string) (*Store, error) {
 			_ = db.Close()
 			db = nil
 			return fmt.Errorf("migrate v2: %w", mErr)
+		}
+		if mErr := migrateToV3(db); mErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("migrate v3: %w", mErr)
 		}
 		// Force WAL + SHM sidecar materialization by taking a write lock.
 		// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
@@ -366,6 +374,7 @@ func (s *Store) writeBatch(batch []Injection) error {
 			inj.Location,
 			suspect,
 			inj.AuthSignal,
+			inj.SignerError,
 		); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
@@ -462,6 +471,47 @@ func migrateToV2(db *sql.DB) error {
 
 	if _, err := db.Exec(`INSERT INTO schema_version (v) VALUES (2)`); err != nil {
 		return fmt.Errorf("mark v2: %w", err)
+	}
+	return nil
+}
+
+// migrateToV3 adds the signer_error column to pre-existing v2 schemas.
+// Idempotent.
+func migrateToV3(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
+		return fmt.Errorf("read version: %w", err)
+	}
+	if v >= 3 {
+		return nil
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(injections)`)
+	if err != nil {
+		return fmt.Errorf("table_info: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		have[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close table_info: %w", err)
+	}
+	if !have["signer_error"] {
+		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN signer_error TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add signer_error: %w", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO schema_version (v) VALUES (3)`); err != nil {
+		return fmt.Errorf("mark v3: %w", err)
 	}
 	return nil
 }
