@@ -260,6 +260,8 @@ No behaviour change. Existing implementation clears the credential; multi-field 
 
 ### `veil init` (`.env` auto-detection)
 
+> **Superseded by [`2026-04-23-init-aws-correlation-design.md`](./2026-04-23-init-aws-correlation-design.md)** — init now correlates AWS triples into a single `Scheme: "aws"` credential via strict decoration matching, making the mis-pairing concern below moot. The `mismatch_detector` fallback described elsewhere in this spec remains active for declined prompts, invalid AKID values, and partial groups.
+
 `veil init` continues to scan `.env` files and auto-create bearer-style credentials via the existing provider patterns. It does **not** auto-detect scheme-specific credentials: a `.env` with `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_SESSION_TOKEN` becomes three independent bearer credentials, which will not work for SigV4. The user runs `veil add --scheme aws …` explicitly to get signed auth. (Rationale: auto-pairing heuristically is error-prone — e.g., multiple AWS accounts in one `.env`. An explicit add is cheap and unambiguous. The mismatch detector will surface the "AWS bearer creds don't sign" case, pointing the user at the explicit add.)
 
 ---
