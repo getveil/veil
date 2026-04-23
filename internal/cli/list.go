@@ -99,9 +99,21 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 	rows := make([]row, len(creds))
 	for i, c := range creds {
 		r := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
-		if c.Username != "" {
-			r.name = c.Name + " (basic)"
-			r.nameStyled = c.Name + " " + ui.Muted.Sprint("(basic)")
+		// Compute scheme tag with precedence: aws > github_app > basic.
+		// Tags are shown inline after the credential name, dimmed so
+		// columnar alignment stays readable.
+		var tag string
+		switch {
+		case c.Scheme == "aws" || c.AWSAccessKeyID != "":
+			tag = "(aws)"
+		case c.Scheme == "github_app" || c.GitHubAppID != 0:
+			tag = "(github app)"
+		case c.Username != "":
+			tag = "(basic)"
+		}
+		if tag != "" {
+			r.name = c.Name + " " + tag
+			r.nameStyled = c.Name + " " + ui.Muted.Sprint(tag)
 		}
 		if t, ok := lastInjected[c.Name]; ok {
 			r.last = ui.RelativeTime(t)
