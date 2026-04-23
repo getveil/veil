@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -104,5 +107,113 @@ func TestAdd_InteractiveUsesReadPasswordHook(t *testing.T) {
 	}
 	if cred.Real != "silent-secret-1234567890" {
 		t.Errorf("readPassword value not used, got %q", cred.Real)
+	}
+}
+
+func TestAddCmd_SchemeAWS_HappyPath(t *testing.T) {
+	root := initProject(t)
+
+	var stdout, stderr bytes.Buffer
+	cmd := NewRoot("test")
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader("real-secret-access-key\n"))
+	cmd.SetArgs([]string{
+		"add", "--path", root, "aws-prod",
+		"--scheme", "aws",
+		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--host", "*.amazonaws.com",
+		"--value-stdin",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add: %v (stderr: %s)", err, stderr.String())
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, ok := v.Get("aws-prod")
+	if !ok {
+		t.Fatal("credential not added")
+	}
+	if cred.Scheme != "aws" {
+		t.Errorf("Scheme = %q, want aws", cred.Scheme)
+	}
+	if cred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AccessKeyID not stored")
+	}
+	if cred.AWSAccessKeyIDPlaceholder == "" || !strings.HasPrefix(cred.AWSAccessKeyIDPlaceholder, "AKIA") {
+		t.Errorf("AccessKeyIDPlaceholder = %q, want AKIA-prefixed", cred.AWSAccessKeyIDPlaceholder)
+	}
+}
+
+func TestAddCmd_SchemeAWS_RejectsBadAccessKeyID(t *testing.T) {
+	root := initProject(t)
+	cmd := NewRoot("test")
+	cmd.SetErr(io.Discard)
+	cmd.SetOut(io.Discard)
+	cmd.SetIn(strings.NewReader("secret\n"))
+	cmd.SetArgs([]string{
+		"add", "--path", root, "aws-prod",
+		"--scheme", "aws",
+		"--aws-access-key-id", "WRONGFORMAT",
+		"--value-stdin",
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected validation error on bad access key id")
+	}
+}
+
+func TestAddCmd_SchemeAWS_WithSessionTokenFile(t *testing.T) {
+	root := initProject(t)
+	tokPath := filepath.Join(root, "sess.txt")
+	if err := os.WriteFile(tokPath, []byte("FwoGZXIvrealsessiontoken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(strings.NewReader("secret-access-key\n"))
+	cmd.SetArgs([]string{
+		"add", "--path", root, "aws-sts",
+		"--scheme", "aws",
+		"--aws-access-key-id", "ASIAIOSFODNN7EXAMPLE",
+		"--aws-session-token-file", tokPath,
+		"--value-stdin",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, _ := v.Get("aws-sts")
+	if cred.AWSSessionToken != "FwoGZXIvrealsessiontoken" {
+		t.Errorf("session token = %q", cred.AWSSessionToken)
+	}
+	if cred.AWSSessionTokenPlaceholder == "" {
+		t.Error("session token placeholder empty")
+	}
+}
+
+func TestAddCmd_SchemeAWS_MutuallyExclusiveWithUser(t *testing.T) {
+	root := initProject(t)
+	cmd := NewRoot("test")
+	cmd.SetErr(io.Discard)
+	cmd.SetOut(io.Discard)
+	cmd.SetIn(strings.NewReader("secret\n"))
+	cmd.SetArgs([]string{
+		"add", "--path", root, "x",
+		"--scheme", "aws",
+		"--user", "bob",
+		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--value-stdin",
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected mutual-exclusion error between --user and --scheme aws")
 	}
 }
