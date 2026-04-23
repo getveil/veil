@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path"
@@ -122,6 +125,32 @@ func canonicalHeaders(hdr http.Header, signedHeaders []string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// deriveSigningKey computes kSigning per SigV4 spec:
+//
+//	kSecret  = "AWS4" + secret
+//	kDate    = HMAC(kSecret, date)
+//	kRegion  = HMAC(kDate, region)
+//	kService = HMAC(kRegion, service)
+//	kSigning = HMAC(kService, "aws4_request")
+func deriveSigningKey(secretAccessKey, date, region, service string) []byte {
+	kSecret := []byte("AWS4" + secretAccessKey)
+	kDate := hmacSHA256(kSecret, []byte(date))
+	kRegion := hmacSHA256(kDate, []byte(region))
+	kService := hmacSHA256(kRegion, []byte(service))
+	return hmacSHA256(kService, []byte("aws4_request"))
+}
+
+func hmacSHA256(key, data []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(data)
+	return h.Sum(nil)
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum)
 }
 
 // trimInnerWhitespace trims surrounding whitespace and collapses internal

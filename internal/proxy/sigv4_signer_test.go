@@ -1,6 +1,9 @@
 package proxy
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCanonicalURI(t *testing.T) {
 	cases := []struct {
@@ -40,6 +43,21 @@ func TestCanonicalQueryString(t *testing.T) {
 				t.Errorf("canonicalQueryString(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// AWS SigV4 signing-key derivation test vector, published at:
+// https://docs.aws.amazon.com/general/latest/gr/signature-v4-examples.html
+func TestDeriveSigningKey_PublishedVector(t *testing.T) {
+	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	date := "20150830"
+	region := "us-east-1"
+	service := "iam"
+	key := deriveSigningKey(secret, date, region, service)
+	got := fmt.Sprintf("%x", key)
+	want := "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
+	if got != want {
+		t.Errorf("deriveSigningKey = %s, want %s", got, want)
 	}
 }
 
