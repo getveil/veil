@@ -1112,3 +1112,175 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 		}
 	}
 }
+
+func TestInit_CorrelatesTwoAWSAccountsInEnvFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "PROD_AWS_ACCESS_KEY_ID=AKIAPRODEXAMPLE00001\n" +
+		"PROD_AWS_SECRET_ACCESS_KEY=prod/secret/access/key/example00001\n" +
+		"DEV_AWS_ACCESS_KEY_ID=AKIADEVEXAMPLE000001\n" +
+		"DEV_AWS_SECRET_ACCESS_KEY=dev/secret/access/key/example000001\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	for _, groupName := range []string{"PROD_AWS_ACCESS_KEY_ID", "DEV_AWS_ACCESS_KEY_ID"} {
+		c, ok := v.Get(groupName)
+		if !ok {
+			t.Errorf("missing aws credential %q", groupName)
+			continue
+		}
+		if c.Scheme != "aws" {
+			t.Errorf("%s.Scheme = %q, want aws", groupName, c.Scheme)
+		}
+	}
+	for _, leaked := range []string{"PROD_AWS_SECRET_ACCESS_KEY", "DEV_AWS_SECRET_ACCESS_KEY"} {
+		if _, ok := v.Get(leaked); ok {
+			t.Errorf("unexpected bearer credential %q (should be absorbed)", leaked)
+		}
+	}
+	prodCred, _ := v.Get("PROD_AWS_ACCESS_KEY_ID")
+	if prodCred.AWSAccessKeyID != "AKIAPRODEXAMPLE00001" {
+		t.Errorf("PROD AWSAccessKeyID = %q", prodCred.AWSAccessKeyID)
+	}
+	if prodCred.Real != "prod/secret/access/key/example00001" {
+		t.Errorf("PROD secret cross-paired: %q", prodCred.Real)
+	}
+	devCred, _ := v.Get("DEV_AWS_ACCESS_KEY_ID")
+	if devCred.AWSAccessKeyID != "AKIADEVEXAMPLE000001" {
+		t.Errorf("DEV AWSAccessKeyID = %q", devCred.AWSAccessKeyID)
+	}
+	if devCred.Real != "dev/secret/access/key/example000001" {
+		t.Errorf("DEV secret cross-paired: %q", devCred.Real)
+	}
+}
+
+func TestInit_PartialAWSFallsThroughToBearer(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	c, ok := v.Get("AWS_ACCESS_KEY_ID")
+	if !ok {
+		t.Fatal("vault missing AWS_ACCESS_KEY_ID")
+	}
+	if c.Scheme != "" {
+		t.Errorf("Scheme = %q, want empty (bearer)", c.Scheme)
+	}
+	if c.AWSAccessKeyID != "" {
+		t.Errorf("AWSAccessKeyID = %q on bearer credential", c.AWSAccessKeyID)
+	}
+}
+
+func TestInit_FakeAWSValueStaysBearer(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "AWS_ACCESS_KEY_ID=fake-access-key-test\n" +
+		"AWS_SECRET_ACCESS_KEY=fake-secret-key-for-testing-purposes\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
+		c, ok := v.Get(name)
+		if !ok {
+			t.Errorf("missing credential %q", name)
+			continue
+		}
+		if c.Scheme != "" {
+			t.Errorf("%s.Scheme = %q, want empty (bearer, not aws)", name, c.Scheme)
+		}
+	}
+}
+
+func TestInit_DryRunShowsGroupedAWS(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "would vault (aws)") {
+		t.Errorf("dry-run output missing grouped AWS line:\n%s", outStr)
+	}
+
+	gotBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotBytes) != envContent {
+		t.Errorf(".env changed in dry-run:\n got = %q\nwant = %q", string(gotBytes), envContent)
+	}
+}
