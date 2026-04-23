@@ -1,15 +1,26 @@
 package proxy
 
 import (
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/8enji/veil/internal/vault"
 )
+
+// upstreamHost returns just the host:port portion of a httptest.Server URL.
+func upstreamHost(s *httptest.Server) string {
+	u, _ := url.Parse(s.URL)
+	return u.Host
+}
 
 // TestBasicAuthEndToEnd spins up an upstream HTTP server that requires a
 // specific Basic auth header, runs a request through ProcessRequest with
@@ -120,5 +131,155 @@ func TestDetectorFiresOnSigV4Shape(t *testing.T) {
 	}
 	if suspect != 1 {
 		t.Errorf("expected 1 suspect injection, got %d (all: %+v)", suspect, injections)
+	}
+}
+
+// TestIntegration_AWSSigV4_EndToEnd spins up an HTTP server that verifies a
+// SigV4 signature with a known real SecretAccessKey, invokes the proxy with
+// a request signed by the placeholder key, and asserts that the upstream
+// verifies the real signature.
+func TestIntegration_AWSSigV4_EndToEnd(t *testing.T) {
+	realSecret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	realAKID := "AKIAIOSFODNN7EXAMPLE"
+	placeholderAKID := "AKIAPH0000000000EXMP"
+	placeholderSecret := "VeilSecretPlaceholderXXXXXXXXXXXXXXXXXXX"
+
+	// Upstream validator: recompute canonical request + signature from the
+	// incoming Authorization header and ensure it matches the real signing key.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		parsed, err := parseSigV4Authorization(auth)
+		if err != nil {
+			t.Errorf("upstream parse: %v", err)
+			w.WriteHeader(400)
+			return
+		}
+		if parsed.AccessKeyID != realAKID {
+			t.Errorf("upstream saw AKID = %q, want real %q", parsed.AccessKeyID, realAKID)
+		}
+		body, _ := io.ReadAll(r.Body)
+		canon := r.Method + "\n" +
+			canonicalURI(r.URL.Path, false) + "\n" +
+			canonicalQueryString(r.URL.RawQuery) + "\n" +
+			canonicalHeaders(r.Header, parsed.SignedHeaders) + "\n" +
+			strings.Join(parsed.SignedHeaders, ";") + "\n" +
+			sha256Hex(body)
+		scope := parsed.Date + "/" + parsed.Region + "/" + parsed.Service + "/aws4_request"
+		sts := "AWS4-HMAC-SHA256\n" + r.Header.Get("X-Amz-Date") + "\n" + scope + "\n" + sha256Hex([]byte(canon))
+		key := deriveSigningKey(realSecret, parsed.Date, parsed.Region, parsed.Service)
+		want := fmt.Sprintf("%x", hmacSHA256(key, []byte(sts)))
+		if parsed.Signature != want {
+			t.Errorf("signature mismatch\n got=%s\nwant=%s", parsed.Signature, want)
+			w.WriteHeader(403)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	upHost := upstreamHost(upstream)
+	cred := &vault.Credential{
+		ID: vault.NewID(), Name: "aws-prod", Scheme: "aws",
+		Real: realSecret, Placeholder: placeholderSecret,
+		AWSAccessKeyID: realAKID, AWSAccessKeyIDPlaceholder: placeholderAKID,
+		AllowedHosts: []string{upHost, strings.Split(upHost, ":")[0]},
+	}
+	srv, _, _ := testSetup(t, cred)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// Agent signs request with placeholder secret. The SignedHeaders list
+	// deliberately omits "host": Go's http stack moves Host out of the
+	// header map into req.Host before transport, so neither the proxy's
+	// signer nor the upstream verifier can recover it from the header
+	// map. Signing only x-amz-date keeps the canonical request stable
+	// across both ends without needing to touch shared signer code.
+	req, _ := http.NewRequest("GET", upstream.URL+"/path", nil)
+	req.Header.Set("X-Amz-Date", "20150830T123600Z")
+	canonReq := "GET\n/path\n\nx-amz-date:20150830T123600Z\n\nx-amz-date\n" + sha256Hex(nil)
+	sts := "AWS4-HMAC-SHA256\n20150830T123600Z\n20150830/us-east-1/service/aws4_request\n" + sha256Hex([]byte(canonReq))
+	phKey := deriveSigningKey(placeholderSecret, "20150830", "us-east-1", "service")
+	phSig := fmt.Sprintf("%x", hmacSHA256(phKey, []byte(sts)))
+	req.Header.Set("Authorization",
+		"AWS4-HMAC-SHA256 "+
+			"Credential="+placeholderAKID+"/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=x-amz-date, "+
+			"Signature="+phSig)
+
+	client := httpClient(srv.Addr())
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("end-to-end returned %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestIntegration_GitHubAppJWT_EndToEnd spins up an HTTP server that
+// verifies a GitHub App JWT against a known real RSA public key, invokes
+// the proxy with a JWT signed by the placeholder key, and asserts that the
+// upstream verifies a JWT signed with the real key.
+func TestIntegration_GitHubAppJWT_EndToEnd(t *testing.T) {
+	realKey, realPEM := genPEM(t)
+	placeholderKey, placeholderPEM := genPEM(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		jwt := strings.TrimPrefix(auth, "Bearer ")
+		parts := strings.Split(jwt, ".")
+		if len(parts) != 3 {
+			t.Errorf("upstream JWT not 3-part: %s", jwt)
+			w.WriteHeader(400)
+			return
+		}
+		sig, err := base64URLDecode(parts[2])
+		if err != nil {
+			t.Errorf("upstream sig decode: %v", err)
+			w.WriteHeader(400)
+			return
+		}
+		h := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+		// crypto.SHA256 is the RFC 7518 §3.3 hash identifier; the wired-up
+		// signer uses the same prefix.
+		if err := rsa.VerifyPKCS1v15(&realKey.PublicKey, crypto.SHA256, h[:], sig); err != nil {
+			t.Errorf("upstream JWT does not verify with real key: %v", err)
+			w.WriteHeader(401)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+
+	upHost := upstreamHost(upstream)
+	cred := &vault.Credential{
+		ID: vault.NewID(), Name: "gh-app", Scheme: "github_app",
+		Real: realPEM, Placeholder: placeholderPEM,
+		GitHubAppID:  7777,
+		AllowedHosts: []string{upHost, strings.Split(upHost, ":")[0]},
+	}
+	srv, _, _ := testSetup(t, cred)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	jwt := signJWT(t, placeholderKey, 7777)
+	req, _ := http.NewRequest("POST", upstream.URL+"/app/installations", nil)
+	req.Header.Set("Authorization", "Bearer "+jwt)
+
+	client := httpClient(srv.Addr())
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("end-to-end returned %d: %s", resp.StatusCode, body)
 	}
 }
