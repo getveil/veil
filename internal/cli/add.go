@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +48,8 @@ type addOpts struct {
 	awsAccessKeyID       string
 	awsSessionTokenFile  string
 	awsSessionTokenStdin bool
+	githubAppID          int64
+	githubInstallationID int64
 }
 
 func addCmd() *cobra.Command {
@@ -63,10 +67,12 @@ func addCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.value, "value", "", "secret value (UNSAFE: saved to shell history; prefer --value-stdin)")
 	cmd.Flags().BoolVar(&opts.valueStdin, "value-stdin", false, "read secret from stdin without a prompt")
 	cmd.Flags().StringVar(&opts.username, "user", "", "username for HTTP Basic credentials")
-	cmd.Flags().StringVar(&opts.scheme, "scheme", "", "credential scheme: aws (default: bearer or basic)")
+	cmd.Flags().StringVar(&opts.scheme, "scheme", "", "credential scheme: aws, github_app (default: bearer or basic)")
 	cmd.Flags().StringVar(&opts.awsAccessKeyID, "aws-access-key-id", "", "AWS access key ID (required for --scheme aws)")
 	cmd.Flags().StringVar(&opts.awsSessionTokenFile, "aws-session-token-file", "", "path to a file containing an AWS session token")
 	cmd.Flags().BoolVar(&opts.awsSessionTokenStdin, "aws-session-token-stdin", false, "read AWS session token from stdin (mutually exclusive with --value-stdin)")
+	cmd.Flags().Int64Var(&opts.githubAppID, "github-app-id", 0, "GitHub App ID (required for --scheme github_app)")
+	cmd.Flags().Int64Var(&opts.githubInstallationID, "github-installation-id", 0, "GitHub App installation ID (optional)")
 	cmd.MarkFlagsMutuallyExclusive("value", "value-stdin")
 	cmd.MarkFlagsMutuallyExclusive("aws-session-token-file", "aws-session-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("value-stdin", "aws-session-token-stdin")
@@ -91,6 +97,9 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 
 	if opts.scheme == "aws" {
 		return runAddAWS(cmd, root, v, name, opts)
+	}
+	if opts.scheme == "github_app" {
+		return runAddGitHubApp(cmd, root, v, name, opts)
 	}
 
 	isBasic := opts.username != ""
@@ -324,6 +333,102 @@ func runAddAWS(cmd *cobra.Command, root string, v *vault.Vault, name string, opt
 		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
 	}
 	return nil
+}
+
+// runAddGitHubApp handles the `--scheme github_app` branch. The real value
+// on stdin (or --value) is an RSA PEM private key belonging to a GitHub App;
+// the stored placeholder is a fresh RSA 2048 PEM, so the SDK can load it
+// and sign JWTs locally. The proxy detects the resulting JWT by its `iss`
+// claim and re-signs with the real key before forwarding.
+func runAddGitHubApp(cmd *cobra.Command, root string, v *vault.Vault, name string, opts addOpts) error {
+	if opts.username != "" {
+		return cliError("--user is not valid with --scheme github_app", "")
+	}
+	if opts.githubAppID <= 0 {
+		return cliError("--github-app-id must be > 0 for --scheme github_app", "")
+	}
+
+	value, err := readCredentialValue(cmd, name, opts.value, opts.valueStdin)
+	if err != nil {
+		return err
+	}
+	if value == "" {
+		return cliError("no value provided", "")
+	}
+	if err := validateRSAPEM(value); err != nil {
+		return cliErrorf("--value must be an RSA PEM private key: %v", err)
+	}
+
+	placeholderPEM, err := placeholder.GenerateGitHubAppPrivateKey()
+	if err != nil {
+		return cliErrorf("generating placeholder key: %v", err)
+	}
+
+	// Resolve allowed hosts: --host flags if provided, otherwise default to api.github.com.
+	allowedHosts := opts.hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = []string{"api.github.com"}
+	}
+
+	// --force: capture old placeholder for .env sync.
+	var oldPh string
+	if opts.force {
+		if prev, found := v.Get(name); found {
+			oldPh = prev.Placeholder
+			_, _ = v.Delete(name)
+		}
+	}
+
+	cred := &vault.Credential{
+		ID:                   vault.NewID(),
+		Name:                 name,
+		Real:                 value,
+		Placeholder:          placeholderPEM,
+		Source:               "manual",
+		AllowedHosts:         allowedHosts,
+		CreatedAt:            time.Now(),
+		Scheme:               "github_app",
+		GitHubAppID:          opts.githubAppID,
+		GitHubInstallationID: opts.githubInstallationID,
+	}
+	if err := v.Add(cred); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
+		}
+		return cliErrorf("adding credential: %v", err)
+	}
+
+	w := cmd.OutOrStdout()
+	if oldPh != "" && oldPh != cred.Placeholder {
+		updated := syncPlaceholderInEnvFiles(root, oldPh, cred.Placeholder)
+		if updated > 0 {
+			ui.Step(w, fmt.Sprintf("Updated placeholder in %d .env %s", updated, plural(updated, "file", "files")))
+		}
+	}
+
+	ui.Step(w, fmt.Sprintf("Added %s to vault (github_app)", name))
+	_, _ = fmt.Fprintf(w, "    %s %d\n", ui.Muted.Sprint("App ID:"), opts.githubAppID)
+	_, _ = fmt.Fprintf(w, "    %s <generated RSA PEM — %d bytes>\n", ui.Muted.Sprint("Private key placeholder:"), len(placeholderPEM))
+	if len(allowedHosts) > 0 {
+		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
+	}
+	return nil
+}
+
+// validateRSAPEM returns nil iff `value` decodes as a PEM block that
+// contains either a PKCS#1 or PKCS#8-wrapped RSA private key.
+func validateRSAPEM(value string) error {
+	block, _ := pem.Decode([]byte(value))
+	if block == nil {
+		return fmt.Errorf("no PEM block found")
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return nil
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		return nil
+	}
+	return fmt.Errorf("not an RSA private key (PKCS#1 or PKCS#8)")
 }
 
 // generateAWSAccessKeyIDPlaceholder asks the AWS provider for a placeholder
