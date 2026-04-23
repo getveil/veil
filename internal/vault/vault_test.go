@@ -649,6 +649,44 @@ func TestPlaceholderSetIncludesUsernamePlaceholder(t *testing.T) {
 	}
 }
 
+func TestPlaceholderMap_IncludesAWSFields(t *testing.T) {
+	dir := t.TempDir()
+	ks := NewMemKeystore()
+	v, err := CreateVault(dir, "pid", ks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := &Credential{
+		ID:                         NewID(),
+		Name:                       "aws-prod",
+		Real:                       "real-secret",
+		Placeholder:                "VeilAWSSecret",
+		Scheme:                     "aws",
+		AWSAccessKeyID:             "AKIAREAL",
+		AWSAccessKeyIDPlaceholder:  "AKIAPH",
+		AWSSessionToken:            "realtok",
+		AWSSessionTokenPlaceholder: "VeilSess",
+		AllowedHosts:               []string{"*.amazonaws.com"},
+		CreatedAt:                  time.Now(),
+	}
+	if err := v.Add(cred); err != nil {
+		t.Fatal(err)
+	}
+	pm := v.PlaceholderMap()
+	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
+		if pm[ph] == nil {
+			t.Errorf("PlaceholderMap missing %q", ph)
+		}
+	}
+
+	set := v.PlaceholderSet()
+	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
+		if _, ok := set[ph]; !ok {
+			t.Errorf("PlaceholderSet missing %q", ph)
+		}
+	}
+}
+
 func TestCredential_AWSFieldsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	ks := NewMemKeystore()
