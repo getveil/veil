@@ -43,7 +43,9 @@ type Correlator interface {
 // here plus the sibling file. Order matters when schemes could overlap
 // (in practice PEMs and AKIDs are structurally distinct, so overlap is
 // unreachable).
-var correlators = []Correlator{}
+var correlators = []Correlator{
+	awsCorrelator{},
+}
 
 // DetectAll runs each registered correlator in order, passing only
 // remaining (un-consumed) candidates to later correlators.
