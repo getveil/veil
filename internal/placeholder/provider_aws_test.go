@@ -53,6 +53,28 @@ func TestProviderAWS(t *testing.T) {
 			t.Fatalf("expected length %d, got %d", len(value), len(result))
 		}
 	})
+	t.Run("match_ASIA", func(t *testing.T) {
+		if !prov.Match("", "ASIAIOSFODNN7EXAMPLE") {
+			t.Fatal("should match ASIA prefix")
+		}
+	})
+	t.Run("generate_ASIA_length_and_prefix", func(t *testing.T) {
+		value := "ASIAIOSFODNN7EXAMPLE" // 20 chars
+		result := prov.Generate(value)
+		if len(result) != 20 {
+			t.Fatalf("expected length 20, got %d", len(result))
+		}
+		if !strings.HasPrefix(result, "ASIA") {
+			t.Fatalf("expected ASIA prefix, got: %s", result)
+		}
+		for _, c := range result[4:] {
+			isUpper := c >= 'A' && c <= 'Z'
+			isDigit := c >= '0' && c <= '9'
+			if !isUpper && !isDigit {
+				t.Fatalf("expected uppercase alphanumeric, got: %c", c)
+			}
+		}
+	})
 }
 
 func TestGenerateAWSSessionToken_LengthAndSentinel(t *testing.T) {
