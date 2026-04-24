@@ -2,13 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/8enji/veil/internal/config"
+	"github.com/8enji/veil/internal/proxy"
 	"github.com/8enji/veil/internal/skiphost"
+	"github.com/8enji/veil/internal/vault"
 )
 
 func TestInitHappyPath(t *testing.T) {
@@ -1282,5 +1285,94 @@ func TestInit_DryRunShowsGroupedAWS(t *testing.T) {
 	}
 	if string(gotBytes) != envContent {
 		t.Errorf(".env changed in dry-run:\n got = %q\nwant = %q", string(gotBytes), envContent)
+	}
+}
+
+func TestInit_VaultedAWSCredentialResignsViaProxy(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	cred, ok := v.Get("AWS_ACCESS_KEY_ID")
+	if !ok {
+		t.Fatal("vault missing AWS_ACCESS_KEY_ID")
+	}
+	if cred.Scheme != "aws" {
+		t.Fatalf("cred.Scheme = %q, want aws", cred.Scheme)
+	}
+	if cred.AWSAccessKeyIDPlaceholder == "" {
+		t.Fatal("cred missing AWSAccessKeyIDPlaceholder")
+	}
+
+	// Build an injector keyed by the placeholder AKID — this mirrors what
+	// the proxy does when an agent emits a SigV4 request signed with the
+	// placeholder credentials.
+	injector := proxy.NewInjector(
+		map[string]*vault.Credential{cred.AWSAccessKeyIDPlaceholder: cred},
+		nil, 0, "test",
+	)
+
+	// Construct a plausible SigV4 request using the placeholder AKID. The
+	// Signature value is intentionally "ignored" — the proxy signer discards
+	// and recomputes it. This is the same fixture shape used by
+	// TestSignAWSSigV4_GetVanilla in internal/proxy/sigv4_signer_test.go.
+	header := http.Header{}
+	header.Set("Host", "example.amazonaws.com")
+	header.Set("X-Amz-Date", "20150830T123600Z")
+	header.Set("Authorization",
+		"AWS4-HMAC-SHA256 "+
+			"Credential="+cred.AWSAccessKeyIDPlaceholder+"/20150830/us-east-1/service/aws4_request, "+
+			"SignedHeaders=host;x-amz-date, "+
+			"Signature=ignored")
+
+	_, newHeader, _, injections := injector.ProcessRequest(
+		"req-spotcheck",
+		"GET",
+		"https://example.amazonaws.com/",
+		header,
+		nil,
+	)
+
+	var resigned bool
+	for _, inj := range injections {
+		if inj.Location == proxy.LocationAWSSigV4Resigned {
+			resigned = true
+			break
+		}
+	}
+	if !resigned {
+		t.Fatalf("expected aws_sigv4_resigned injection, got: %+v", injections)
+	}
+
+	newAuth := newHeader.Get("Authorization")
+	if !strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyID+"/") {
+		t.Errorf("Authorization should contain real AKID after re-sign, got: %s", newAuth)
+	}
+	if strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyIDPlaceholder+"/") {
+		t.Errorf("Authorization still contains placeholder AKID, got: %s", newAuth)
+	}
+	if strings.Contains(newAuth, "Signature=ignored") {
+		t.Errorf("Authorization signature was not recomputed, got: %s", newAuth)
 	}
 }
