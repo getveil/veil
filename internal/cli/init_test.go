@@ -192,6 +192,147 @@ func TestInitForce(t *testing.T) {
 	}
 }
 
+// TestInitReinitDoesNotOrphanKeystoreEntries is the F-15 regression. After a
+// successful init, a second init (without --force) must fail before creating
+// any new keystore entry so the keystore still holds exactly one master-key
+// entry for the project.
+func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+	afterFirst := snapshotTestKeystore(t)
+	if len(afterFirst) != 1 {
+		t.Fatalf("expected exactly 1 keystore entry after first init, got %d: %v", len(afterFirst), afterFirst)
+	}
+
+	// Second init without --force should fail (project already initialized)
+	// and must not create a new keystore entry.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err == nil {
+		t.Fatal("expected second init to fail with 'already initialized'")
+	}
+
+	afterSecond := snapshotTestKeystore(t)
+	if len(afterSecond) != 1 {
+		t.Errorf("expected exactly 1 keystore entry after re-init attempt, got %d: %v",
+			len(afterSecond), afterSecond)
+	}
+	if afterSecond[0] != afterFirst[0] {
+		t.Errorf("keystore entry changed across re-init attempt: was %q, now %q",
+			afterFirst[0], afterSecond[0])
+	}
+}
+
+// TestInitForceCleansPriorKeystoreEntry verifies that an init --force run
+// deletes the previous projectID's master-key entry from the keystore, so
+// only the new entry remains. Without this cleanup, every --force would
+// leak an orphan entry (F-15).
+func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+	afterFirst := snapshotTestKeystore(t)
+	if len(afterFirst) != 1 {
+		t.Fatalf("expected 1 keystore entry after first init, got %d: %v", len(afterFirst), afterFirst)
+	}
+
+	// Restore .env content for the second pass to have something to vault.
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("init --force failed: %v", err)
+	}
+
+	afterForce := snapshotTestKeystore(t)
+	if len(afterForce) != 1 {
+		t.Errorf("expected 1 keystore entry after --force (prior orphan cleaned), got %d: %v",
+			len(afterForce), afterForce)
+	}
+}
+
+// TestUninstallEmptiesKeystoreForProject is the F-15 regression for the
+// uninstall path: after uninstall, the keystore must hold no master-key
+// entries belonging to this project.
+func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if got := snapshotTestKeystore(t); len(got) != 1 {
+		t.Fatalf("expected 1 keystore entry after init, got %d: %v", len(got), got)
+	}
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"uninstall", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	if got := snapshotTestKeystore(t); len(got) != 0 {
+		t.Errorf("expected keystore empty after uninstall, got %d entries: %v", len(got), got)
+	}
+}
+
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	// Ensure no MCP config is discovered either.
