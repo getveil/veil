@@ -90,18 +90,22 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		}
 	}
 
-	// Collect plain-text row data for column width calculation.
+	// Build display rows. Non-AWS credentials produce one row each. AWS
+	// credentials in --reveal/--placeholder modes expand to one row per
+	// logical secret (AKID, secret, optional session token), each labeled
+	// with the canonical AWS env-var name and paired with the matching
+	// value. Sub-rows after the first leave name/hosts/source/last blank
+	// to visually group them under the credential.
+	//
 	// nameStyled mirrors name but may carry ANSI styling (e.g., the "(basic)"
 	// tag is dimmed). Width math uses the plain name to keep alignment correct.
 	type row struct {
-		name, nameStyled, hosts, value, placeholder, source, last string
+		name, nameStyled, hosts, varName, value, placeholder, source, last string
 	}
-	rows := make([]row, len(creds))
-	for i, c := range creds {
-		r := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
-		// Compute scheme tag with precedence: aws > github_app > basic.
-		// Tags are shown inline after the credential name, dimmed so
-		// columnar alignment stays readable.
+	expandAWS := reveal || showPlaceholder
+	var rows []row
+	for _, c := range creds {
+		base := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
 		var tag string
 		switch {
 		case c.Scheme == "aws" || c.AWSAccessKeyID != "":
@@ -112,34 +116,74 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 			tag = "(basic)"
 		}
 		if tag != "" {
-			r.name = c.Name + " " + tag
-			r.nameStyled = c.Name + " " + ui.Muted.Sprint(tag)
+			base.name = c.Name + " " + tag
+			base.nameStyled = c.Name + " " + ui.Muted.Sprint(tag)
 		}
 		if t, ok := lastInjected[c.Name]; ok {
-			r.last = ui.RelativeTime(t)
+			base.last = ui.RelativeTime(t)
 		}
 		if len(c.AllowedHosts) > 0 {
-			r.hosts = formatHosts(c.AllowedHosts, 1)
+			base.hosts = formatHosts(c.AllowedHosts, 1)
 		} else {
-			r.hosts = "(none)"
+			base.hosts = "(none)"
 		}
+
+		isAWS := c.Scheme == "aws" || c.AWSAccessKeyID != ""
+		if expandAWS && isAWS {
+			// Row 1: AKID (anchors the credential's name/hosts/source/last).
+			r1 := base
+			r1.varName = "AWS_ACCESS_KEY_ID"
+			if reveal {
+				r1.value = c.AWSAccessKeyID
+			}
+			if showPlaceholder {
+				r1.placeholder = c.AWSAccessKeyIDPlaceholder
+			}
+			rows = append(rows, r1)
+			// Row 2: secret access key (Real/Placeholder hold the secret).
+			r2 := row{varName: "AWS_SECRET_ACCESS_KEY"}
+			if reveal {
+				r2.value = c.Real
+			}
+			if showPlaceholder {
+				r2.placeholder = c.Placeholder
+			}
+			rows = append(rows, r2)
+			// Row 3: optional session token.
+			if c.AWSSessionToken != "" || c.AWSSessionTokenPlaceholder != "" {
+				r3 := row{varName: "AWS_SESSION_TOKEN"}
+				if reveal {
+					r3.value = c.AWSSessionToken
+				}
+				if showPlaceholder {
+					r3.placeholder = c.AWSSessionTokenPlaceholder
+				}
+				rows = append(rows, r3)
+			}
+			continue
+		}
+
 		if reveal {
-			r.value = c.Real
+			base.value = c.Real
 		}
 		if showPlaceholder {
-			r.placeholder = c.Placeholder
+			base.placeholder = c.Placeholder
 		}
-		rows[i] = r
+		rows = append(rows, base)
 	}
 
 	// Compute column widths from data and headers.
 	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
+	varW := len("VAR")
 	valueW := len("VALUE")
 	phW := len("PLACEHOLDER")
 	for _, r := range rows {
 		nameW = maxInt(nameW, len(r.name))
 		hostsW = maxInt(hostsW, len(r.hosts))
 		sourceW = maxInt(sourceW, len(r.source))
+		if expandAWS {
+			varW = maxInt(varW, len(r.varName))
+		}
 		if reveal {
 			valueW = maxInt(valueW, len(r.value))
 		}
@@ -152,8 +196,6 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 	// so escape codes don't break column alignment.
 	out := cmd.OutOrStdout()
 	gap := "    "
-	// emitName returns the styled name padded to nameW using the plain
-	// name's length for the math (so ANSI escapes don't skew alignment).
 	emitName := func(r row) string {
 		pad := nameW - len(r.name)
 		if pad < 0 {
@@ -162,33 +204,43 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		return r.nameStyled + strings.Repeat(" ", pad)
 	}
 	if reveal {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+			ui.Muted.Sprint(padRight("VAR", varW)), gap,
 			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			if r.hosts == "" {
+				hosts = padRight("", hostsW)
+			}
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
 				emitName(r), gap,
 				hosts, gap,
+				padRight(r.varName, varW), gap,
 				padRight(r.value, valueW), gap,
 				padRight(r.source, sourceW), gap,
 				r.last)
 		}
 	} else if showPlaceholder {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+			ui.Muted.Sprint(padRight("VAR", varW)), gap,
 			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
 			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
+			if r.hosts == "" {
+				hosts = padRight("", hostsW)
+			}
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
 				emitName(r), gap,
 				hosts, gap,
+				padRight(r.varName, varW), gap,
 				padRight(r.placeholder, phW), gap,
 				padRight(r.source, sourceW), gap,
 				r.last)
