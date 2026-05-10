@@ -98,6 +98,7 @@ func TestInitHappyPath(t *testing.T) {
 
 func TestInitDryRun(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -114,15 +115,27 @@ func TestInitDryRun(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--dry-run", "--yes", "--path", tmpDir})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init --dry-run failed: %v", err)
 	}
 
-	// .veil/ should be created (vault is still created).
-	if _, err := os.Stat(filepath.Join(tmpDir, ".veil")); err != nil {
-		t.Error(".veil/ directory should exist even in dry-run mode")
+	// F-3 regression: dry-run must not write any project state.
+	stateDir := filepath.Join(tmpDir, ".veil")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Errorf(".veil/ should not exist after --dry-run, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.meta")); !os.IsNotExist(err) {
+		t.Errorf("vault.meta should not exist after --dry-run, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.bin")); !os.IsNotExist(err) {
+		t.Errorf("vault.bin should not exist after --dry-run, stat err: %v", err)
+	}
+
+	// F-3 regression: dry-run must not write to the keystore.
+	if entries := snapshotTestKeystore(t); len(entries) != 0 {
+		t.Errorf("keystore should be empty after --dry-run, got %d entries: %v", len(entries), entries)
 	}
 
 	// .env file should be UNCHANGED.
