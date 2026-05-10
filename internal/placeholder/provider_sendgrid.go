@@ -12,7 +12,7 @@ func init() {
 			}
 			return strings.Contains(strings.ToUpper(name), "SENDGRID")
 		},
-		Generate: func(value string) string {
+		Generate: func(_, _ string) string {
 			// SendGrid API keys: SG. + 22 base64 chars + . + 43 base64 chars.
 			// Sentinel (uppercase alnum) is valid base64 content; it lands at
 			// offset 3 (start of the first base64 block).

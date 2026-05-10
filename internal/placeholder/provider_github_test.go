@@ -18,7 +18,7 @@ func TestProviderGitHub(t *testing.T) {
 		})
 		t.Run("generate_"+prefix, func(t *testing.T) {
 			value := prefix + "abcdef123456abcdef123456"
-			result := prov.Generate(value)
+			result := prov.Generate("", value)
 			if !strings.HasPrefix(result, prefix) {
 				t.Fatalf("prefix not preserved: %s", result)
 			}
@@ -51,7 +51,7 @@ func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
 	})
 
 	t.Run("generate_github_pat_structure", func(t *testing.T) {
-		result := prov.Generate(value)
+		result := prov.Generate("", value)
 		if len(result) != len(value) {
 			t.Fatalf("length mismatch: %d vs %d", len(result), len(value))
 		}

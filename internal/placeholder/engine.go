@@ -100,7 +100,7 @@ func generateOnce(name, value string) (string, error) {
 		return ph, nil
 	}
 	if p := DefaultRegistry().Match(name, value); p != nil {
-		return p.Generate(value), nil
+		return p.Generate(name, value), nil
 	}
 	return sentinelize(charClassFake(value), 0), nil
 }

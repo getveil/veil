@@ -22,7 +22,7 @@ func init() {
 			}
 			return isJWTWithAlg(value)
 		},
-		Generate: func(value string) string {
+		Generate: func(_, _ string) string {
 			return generateSupabaseJWT("anon")
 		},
 		Hosts: []string{"*.supabase.co", "*.supabase.com"},

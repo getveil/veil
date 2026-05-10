@@ -326,7 +326,10 @@ func vaultAWSGroup(
 ) (vaulted, scoped int, fileChanged bool, err error) {
 	w := cmd.OutOrStdout()
 
-	secretPh, err := placeholder.Generate(g.Name, g.AWS.SecretKey, seen)
+	// Pass SecretKeyVar (e.g. AWS_SECRET_ACCESS_KEY or PROD_AWS_SECRET_ACCESS_KEY)
+	// so the AWS provider's role-aware dispatch always picks a secret-style
+	// placeholder, regardless of the value's leading bytes.
+	secretPh, err := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
 	if err != nil {
 		return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
 	}

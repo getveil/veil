@@ -65,7 +65,7 @@ func TestProviderContract(t *testing.T) {
 				t.Fatalf("provider %q did not match its own sample (name=%q value=%q)",
 					name, s.keyName, s.value)
 			}
-			out := p.Generate(s.value)
+			out := p.Generate(s.keyName, s.value)
 			if out == "" {
 				t.Fatalf("empty Generate output for %q", name)
 			}

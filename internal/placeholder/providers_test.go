@@ -39,7 +39,7 @@ func TestRegisterFormat_BasicMatch(t *testing.T) {
 		t.Fatal("should not match unrelated")
 	}
 
-	result := prov.Generate("tp_originalvalue1234")
+	result := prov.Generate("", "tp_originalvalue1234")
 	if len(result) != 20 {
 		t.Fatalf("expected length 20, got %d: %s", len(result), result)
 	}
@@ -78,7 +78,7 @@ func TestRegisterFormat_HexCharset(t *testing.T) {
 		}
 	}
 
-	result := prov.Generate("anything-at-all-here-for-32chars")
+	result := prov.Generate("", "anything-at-all-here-for-32chars")
 	if len(result) != 32 {
 		t.Fatalf("expected length 32, got %d", len(result))
 	}
@@ -119,7 +119,7 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 	}
 
 	input := "flex_shortvalue"
-	result := prov.Generate(input)
+	result := prov.Generate("", input)
 	if len(result) != len(input) {
 		t.Fatalf("expected length %d (same as input), got %d", len(input), len(result))
 	}
@@ -158,20 +158,20 @@ func TestRegisterFormat_LongerPrefixWins(t *testing.T) {
 
 	// Value has the longest prefix. Generate must emit output starting with
 	// that full longer prefix, not the shorter "sk-" substring.
-	result := prov.Generate("sk-ant-api-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	result := prov.Generate("", "sk-ant-api-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 	if !strings.HasPrefix(result, "sk-ant-api") {
 		t.Fatalf("expected longest prefix sk-ant-api to win, got: %s", result)
 	}
 
 	// Value has the medium prefix. Output must start with "sk-ant-", not
 	// "sk-".
-	result = prov.Generate("sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	result = prov.Generate("", "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 	if !strings.HasPrefix(result, "sk-ant-") {
 		t.Fatalf("expected medium prefix sk-ant- to win, got: %s", result)
 	}
 
 	// Value has only the short prefix.
-	result = prov.Generate("sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+	result = prov.Generate("", "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 	if !strings.HasPrefix(result, "sk-") {
 		t.Fatalf("expected short prefix sk- to match, got: %s", result)
 	}
@@ -194,7 +194,7 @@ func TestRegistryIsolation(t *testing.T) {
 	r.Register(ProviderPattern{
 		Name:     "only-test",
 		Match:    func(name, value string) bool { return name == "ONLY" },
-		Generate: func(value string) string { return "fake-only" },
+		Generate: func(_, _ string) string { return "fake-only" },
 	})
 	p, ok := r.Get("only-test")
 	if !ok {
@@ -239,7 +239,7 @@ func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
 		Name:     "hwfoo",
 		Priority: PriorityHandwritten,
 		Match:    func(name, value string) bool { return strings.HasPrefix(value, "foo_") },
-		Generate: func(value string) string { return "HANDWRITTEN-WON" },
+		Generate: func(_, _ string) string { return "HANDWRITTEN-WON" },
 	})
 	defer func() { registry = saved }()
 
@@ -261,13 +261,13 @@ func TestPriority_StableWithinTier(t *testing.T) {
 		Name:     "tier1a",
 		Priority: PriorityFormat,
 		Match:    func(name, value string) bool { return value == "shared" },
-		Generate: func(value string) string { return "a" },
+		Generate: func(_, _ string) string { return "a" },
 	})
 	register(ProviderPattern{
 		Name:     "tier1b",
 		Priority: PriorityFormat,
 		Match:    func(name, value string) bool { return value == "shared" },
-		Generate: func(value string) string { return "b" },
+		Generate: func(_, _ string) string { return "b" },
 	})
 	defer func() { registry = saved }()
 

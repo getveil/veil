@@ -7,11 +7,15 @@ import (
 )
 
 // ProviderPattern describes a secret pattern that can be matched and replaced
-// with a structurally-valid placeholder.
+// with a structurally-valid placeholder. Generate receives the same (name,
+// value) pair as Match so providers can choose a placeholder shape based on
+// the credential's role rather than guessing from the value alone — required
+// for fields like AWS where the role (AKID vs secret) cannot always be
+// inferred from the value's prefix.
 type ProviderPattern struct {
 	Name     string
 	Match    func(name, value string) bool
-	Generate func(value string) string
+	Generate func(name, value string) string
 	Hosts    []string // curated host set for this provider
 	Priority int      // higher runs first; see priority.go for tiers
 }
@@ -185,7 +189,7 @@ func registerFormat(f Format) {
 			}
 			return false
 		},
-		Generate: func(value string) string {
+		Generate: func(_, value string) string {
 			prefix := ""
 			for _, pfx := range prefixes {
 				if strings.HasPrefix(value, pfx) {
