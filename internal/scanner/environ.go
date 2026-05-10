@@ -68,6 +68,25 @@ var environDenylist = map[string]struct{}{
 	"HOSTTYPE": {}, "HOSTNAME": {},
 	// SSH (paths/sockets, not credentials themselves)
 	"SSH_AUTH_SOCK": {}, "SSH_AGENT_PID": {},
+	// Anthropic / Claude Code injected runtime config (non-secret). Note: only
+	// ANTHROPIC_BASE_URL is denylisted by exact match — ANTHROPIC_API_KEY and
+	// other ANTHROPIC_* names with credential roles must still be evaluated.
+	"ANTHROPIC_BASE_URL": {},
+	// OpenTelemetry baggage header propagation, not a credential.
+	"BAGGAGE": {},
+}
+
+// environDenylistPrefixes is a list of prefixes whose names are skipped before
+// the secret-like heuristic. Each entry must be specific enough that no
+// credential-bearing name plausibly starts with it. Prefer exact-match entries
+// in environDenylist when in doubt.
+var environDenylistPrefixes = []string{
+	// Claude Code SDK / runtime metadata injected when veil runs as a child of
+	// a Claude Code session (e.g. CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH, which trips
+	// the secret-name heuristic via the "auth" substring).
+	"CLAUDE_CODE_",
+	// OpenTelemetry configuration (endpoints, sampler config, resource attrs).
+	"OTEL_",
 }
 
 // IsObviouslyNotSecret reports whether name is on the denylist of POSIX /
@@ -83,8 +102,15 @@ var environDenylist = map[string]struct{}{
 // the heuristic everywhere, so additions should be limited to POSIX /
 // shell / system names with no plausible credential role.
 func IsObviouslyNotSecret(name string) bool {
-	_, ok := environDenylist[name]
-	return ok
+	if _, ok := environDenylist[name]; ok {
+		return true
+	}
+	for _, prefix := range environDenylistPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanEnviron returns the shell-exported env vars that look secret-like.
