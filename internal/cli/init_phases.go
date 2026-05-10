@@ -118,8 +118,24 @@ type secretLine struct {
 // set is shared across files so placeholder generation stays collision-free.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
-		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
-		return 0, 0, nil
+		// An orphaned backup (one not in the current vault's registry) means
+		// this file was vaulted by a prior Veil instance whose state was wiped
+		// — the backup IS the source of truth, so use it instead of the
+		// current (placeholder-filled) .env. Without this, F-12 would silently
+		// capture fewer secrets than the previous init.
+		orphan, oerr := isOrphanedBackup(root, envPath)
+		if oerr != nil {
+			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", envPath), oerr)
+		}
+		if orphan {
+			if err := reclaimOrphanedBackup(envPath); err != nil {
+				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
+			}
+			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
+		} else {
+			ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
+			return 0, 0, nil
+		}
 	}
 
 	envFile, err := scanner.ParseFile(envPath)
@@ -214,7 +230,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	if !dryRun && fileChanged {
-		if err := writeBackup(envPath); err != nil {
+		if err := recordVaultedBackup(root, envPath); err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 		}
 		if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {

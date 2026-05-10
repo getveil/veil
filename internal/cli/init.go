@@ -153,7 +153,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	mcpConfigsProcessed := 0
 	if mcpConfigPath != "" {
-		n, s, err := processMCPConfig(cmd, in, v, mcpConfigPath, force, dryRun, interactive)
+		n, s, err := processMCPConfig(cmd, in, v, root, mcpConfigPath, force, dryRun, interactive)
 		if err != nil {
 			return err
 		}
@@ -236,11 +236,26 @@ func plural(n int, singular, pluralForm string) string {
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
 // rewrites the config with placeholders. Returns the number of secrets vaulted
 // and the number auto-scoped to hosts.
-func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPath string, force, dryRun, interactive bool) (int, int, error) {
-	// Check for existing backup (indicates already migrated).
+func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, configPath string, force, dryRun, interactive bool) (int, int, error) {
+	// Check for existing backup. An orphaned backup (one not in the current
+	// vault's registry) means this file was vaulted by a prior Veil instance
+	// whose state is gone — the backup IS the source of truth, so use it
+	// instead of the current (placeholder-filled) config. Without this, F-12
+	// would silently capture fewer secrets than the previous init.
 	if backupExists(configPath) && !force {
-		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-migrate)", configPath)
-		return 0, 0, nil
+		orphan, oerr := isOrphanedBackup(root, configPath)
+		if oerr != nil {
+			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", configPath), oerr)
+		}
+		if orphan {
+			if err := reclaimOrphanedBackup(configPath); err != nil {
+				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", configPath), err)
+			}
+			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", configPath)
+		} else {
+			ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-migrate)", configPath)
+			return 0, 0, nil
+		}
 	}
 
 	mcpCfg, err := mcpconfig.Parse(configPath)
@@ -367,7 +382,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, configPa
 	}
 
 	if !dryRun && configChanged {
-		if err := writeBackup(configPath); err != nil {
+		if err := recordVaultedBackup(root, configPath); err != nil {
 			return 0, 0, cliErrorf("writing MCP config backup: %v", err)
 		}
 
