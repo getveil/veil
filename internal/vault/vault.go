@@ -16,6 +16,12 @@ import (
 type vaultMeta struct {
 	ProjectID string `json:"project_id"`
 	Version   int    `json:"version"`
+	// VaultedFiles is the absolute path of every file init has rewritten and
+	// has a .veil-backup for. Uninstall consumes this list so it can restore
+	// files that live outside the project root (e.g. Claude Desktop's MCP
+	// config). Older meta files written before this field was added unmarshal
+	// as nil — callers must treat that as "registry not yet seeded."
+	VaultedFiles []string `json:"vaulted_files,omitempty"`
 }
 
 // Vault is an in-memory representation of an opened vault.
