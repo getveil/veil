@@ -158,7 +158,7 @@ type placeholderResolver map[string]string
 // reverse-substituting placeholders with real values. Returns:
 //   - classUnmodified: after substitution, bytes match the backup.
 //   - classModified: bytes differ. The returned string is a unified diff
-//     between the (substitution-applied) current file and the backup.
+//     of the actual file change that uninstall will apply (current → backup).
 //   - classOriginalMissing: current file does not exist on disk.
 func classifyEnvPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
 	backupBytes, err := os.ReadFile(backup) // #nosec G304
@@ -177,7 +177,11 @@ func classifyEnvPair(original, backup string, resolver placeholderResolver) (cla
 	if bytes.Equal(expected, backupBytes) {
 		return classUnmodified, "", nil
 	}
-	return classModified, renderUnifiedDiff(backupBytes, expected), nil
+	// Show the user the actual file change uninstall will apply, not the
+	// (substitution-applied) reconstruction — otherwise placeholder lines
+	// that resolve cleanly are hidden from the preview, under-reporting
+	// scope (F-11).
+	return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
 }
 
 // expectedOriginalEnv parses current as a .env file and replaces each
@@ -200,11 +204,12 @@ func expectedOriginalEnv(current []byte, resolver placeholderResolver) []byte {
 }
 
 // renderUnifiedDiff produces a minimal unified-style diff between a and b.
-// The output begins with "--- backup" / "+++ current" headers. Each
-// differing line is prefixed with '-' (present in a, missing from b) or
-// '+' (present in b, missing from a). Context lines are prefixed with a
-// single space. Implementation uses a line-by-line LCS — fine for files
-// of typical .env/MCP size (tens to hundreds of lines).
+// The output begins with "--- current" / "+++ backup" headers, reflecting
+// what uninstall will do (replace current with backup). Each differing line
+// is prefixed with '-' (present in a, missing from b) or '+' (present in b,
+// missing from a). Context lines are prefixed with a single space.
+// Implementation uses a line-by-line LCS — fine for files of typical
+// .env/MCP size (tens to hundreds of lines).
 func renderUnifiedDiff(a, b []byte) string {
 	if bytes.Equal(a, b) {
 		return ""
@@ -222,7 +227,7 @@ func renderUnifiedDiff(a, b []byte) string {
 
 	lcs := lcsTable(aLines, bLines)
 	var sb strings.Builder
-	sb.WriteString("--- backup\n+++ current\n")
+	sb.WriteString("--- current\n+++ backup\n")
 	emitDiff(&sb, aLines, bLines, lcs, len(aLines), len(bLines))
 	return sb.String()
 }
@@ -288,13 +293,15 @@ func classifyMCPPair(original, backup string, resolver placeholderResolver) (cla
 
 	expected, err := expectedOriginalMCP(currentBytes, resolver)
 	if err != nil {
-		return classModified, renderUnifiedDiff(backupBytes, currentBytes), nil
+		return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
 	}
 
 	if bytes.Equal(expected, backupBytes) {
 		return classUnmodified, "", nil
 	}
-	return classModified, renderUnifiedDiff(backupBytes, expected), nil
+	// Show the actual file change, not the substitution-applied reconstruction
+	// (F-11): reconstructions hide cleanly-resolving placeholder lines.
+	return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
 }
 
 // expectedOriginalMCP parses the current MCP config bytes, substitutes
