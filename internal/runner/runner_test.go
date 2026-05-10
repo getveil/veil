@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/8enji/veil/internal/audit"
 	"github.com/8enji/veil/internal/testutil"
+	"github.com/oklog/ulid/v2"
 )
 
 // allowAllAmbientSecretLikes returns the list of env-var names in the current
@@ -899,5 +902,138 @@ func TestSweepStaleSessionDirsLeavesFresh(t *testing.T) {
 
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatalf("fresh dir should survive, got err=%v", err)
+	}
+}
+
+// fakeAuditFooterSource implements auditFooterSource for footer-rendering
+// tests. It records whether Flush was called before Summary so the F-9
+// regression test can assert the ordering invariant directly.
+type fakeAuditFooterSource struct {
+	total       int
+	blocked     int
+	hosts       []string
+	err         error
+	flushed     bool
+	summaryCall bool
+	flushedAt   int  // call counter when Flush ran (1 = first call)
+	summaryAt   int  // call counter when Summary ran
+	calls       int
+}
+
+func (f *fakeAuditFooterSource) Flush() {
+	f.calls++
+	f.flushed = true
+	f.flushedAt = f.calls
+}
+
+func (f *fakeAuditFooterSource) Summary(_ time.Time) (int, int, []string, *audit.Row, error) {
+	f.calls++
+	f.summaryCall = true
+	f.summaryAt = f.calls
+	return f.total, f.blocked, f.hosts, nil, f.err
+}
+
+// TestPrintSessionFooter_F9_RendersInjectionCount is the F-9 regression test:
+// when N (>0) injections occurred and the audit source returns them, the
+// footer must report `Injections: N across M host(s)` with both > 0 — not
+// `0 across 0 hosts`.
+func TestPrintSessionFooter_F9_RendersInjectionCount(t *testing.T) {
+	src := &fakeAuditFooterSource{
+		total:   3,
+		blocked: 0,
+		hosts:   []string{"api.example.com", "api.other.com"},
+	}
+	var buf bytes.Buffer
+	printSessionFooter(&buf, src, time.Now(), 5*time.Second, 0)
+
+	out := buf.String()
+	want := "Injections:  3 across 2 host(s)"
+	if !strings.Contains(out, want) {
+		t.Fatalf("footer should contain %q, got:\n%s", want, out)
+	}
+	if strings.Contains(out, "0 across 0 hosts") {
+		t.Errorf("footer regressed to F-9 zeros despite N=3 rows: %s", out)
+	}
+}
+
+// TestPrintSessionFooter_F9_FlushesBeforeQuery enforces the fix: Flush must
+// run before Summary, otherwise short sessions whose audit buffer never
+// reached the 50-row auto-flush threshold see SELECT COUNT(*) return 0.
+func TestPrintSessionFooter_F9_FlushesBeforeQuery(t *testing.T) {
+	src := &fakeAuditFooterSource{total: 1, hosts: []string{"api.example.com"}}
+	var buf bytes.Buffer
+	printSessionFooter(&buf, src, time.Now(), time.Second, 0)
+
+	if !src.flushed {
+		t.Fatal("printSessionFooter must call Flush() so buffered rows reach the DB before Summary")
+	}
+	if !src.summaryCall {
+		t.Fatal("printSessionFooter must call Summary()")
+	}
+	if src.flushedAt >= src.summaryAt {
+		t.Fatalf("Flush must run BEFORE Summary; got flushedAt=%d summaryAt=%d", src.flushedAt, src.summaryAt)
+	}
+}
+
+// TestPrintSessionFooter_SummaryError_ShowsUnavailable verifies the fallback
+// path: if the audit query fails the user sees `(unavailable)` rather than
+// silently zeroed counts.
+func TestPrintSessionFooter_SummaryError_ShowsUnavailable(t *testing.T) {
+	src := &fakeAuditFooterSource{err: errors.New("disk gone")}
+	var buf bytes.Buffer
+	printSessionFooter(&buf, src, time.Now(), time.Second, 0)
+
+	out := buf.String()
+	if !strings.Contains(out, "(unavailable)") {
+		t.Errorf("footer should contain '(unavailable)' when Summary errs, got:\n%s", out)
+	}
+	if strings.Contains(out, "Injections:  0 across") {
+		t.Errorf("footer must not silently print zeros on Summary error: %s", out)
+	}
+}
+
+// TestPrintSessionFooter_F9_RealStoreShortSession is the integration form of
+// the F-9 regression: drive the real audit.Store with a small number of
+// recorded injections (well under the 50-row auto-flush threshold) and
+// assert the footer renders the recorded count. Without Store.Flush() the
+// rows would still be in the in-memory buffer when Summary runs.
+func TestPrintSessionFooter_F9_RealStoreShortSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.sqlite")
+	store, err := audit.Open(dbPath)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	sessionStart := time.Now().UTC().Add(-time.Second)
+
+	// Record N=4 successful injections across 2 distinct hosts. Far below
+	// the 50-row auto-flush threshold, so they MUST still be in the buffer
+	// at the moment printSessionFooter runs.
+	hosts := []string{"api.openai.com", "api.openai.com", "api.anthropic.com", "api.anthropic.com"}
+	for i, h := range hosts {
+		store.Record(audit.Injection{
+			Timestamp:      time.Now().UTC(),
+			RequestID:      ulid.Make().String(),
+			Host:           h,
+			Method:         "POST",
+			URLPath:        "/v1/test",
+			CredentialID:   ulid.Make().String(),
+			CredentialName: fmt.Sprintf("CRED_%d", i),
+			AgentPID:       os.Getpid(),
+			AgentCmd:       "test",
+			BytesBefore:    16,
+			BytesAfter:     32,
+			Location:       "header",
+		})
+	}
+
+	var buf bytes.Buffer
+	printSessionFooter(&buf, store, sessionStart, time.Second, 0)
+
+	out := buf.String()
+	wantCount := "Injections:  4 across 2 host(s)"
+	if !strings.Contains(out, wantCount) {
+		t.Fatalf("F-9 regression: footer should report %q for 4 buffered rows, got:\n%s", wantCount, out)
 	}
 }

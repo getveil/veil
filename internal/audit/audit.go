@@ -220,6 +220,17 @@ func (s *Store) DrainForTest() {
 	s.flushPending()
 }
 
+// Flush synchronously writes any pending injection rows to the database
+// without stopping the background flusher. Callers that need an up-to-date
+// view of the audit DB (e.g. the session-end footer that immediately
+// queries Summary) must Flush first, otherwise short sessions whose
+// injection count never reached the 50-row auto-flush threshold or the
+// 100ms ticker tick will read zero from SQLite while the buffer still
+// holds the rows.
+func (s *Store) Flush() {
+	s.flushPending()
+}
+
 // Record appends an injection event to the pending buffer. It is safe for
 // concurrent use. When the buffer reaches 50 rows the flusher is signalled
 // to write immediately.
