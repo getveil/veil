@@ -106,8 +106,24 @@ func cliErrorWith(sentinel error, msg, hint string) error {
 }
 
 // formatCLIError is cliError's writer-injectable core, used by tests.
+// Returns an *exitError so cmd/veil/main.go can detect that the message has
+// already been written and skip its fallback printer (which exists to surface
+// cobra-internal errors like mutually-exclusive flag groups).
 func formatCLIError(w io.Writer, msg, hint string) error {
-	return ui.FormatError(w, ui.RedactPath(msg), ui.RedactPath(hint))
+	_ = ui.FormatError(w, ui.RedactPath(msg), ui.RedactPath(hint))
+	return &exitError{code: ExitGeneric, msg: ui.RedactPath(msg)}
+}
+
+// IsAlreadyPrinted reports whether err was produced by a Veil error helper
+// that has already written a styled message to stderr. Used by cmd/veil/main.go
+// to avoid double-printing while still surfacing cobra-internal errors that
+// SilenceErrors would otherwise swallow.
+func IsAlreadyPrinted(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ee *exitError
+	return errors.As(err, &ee)
 }
 
 // FormatErrorForTest is exported for cross-package tests (cmd/veil) that need

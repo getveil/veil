@@ -72,6 +72,34 @@ func TestRun_PropagatesExitCode(t *testing.T) {
 	}
 }
 
+// TestRun_PrintsCobraInternalError is the F-8 regression guard. Cobra catches
+// MarkFlagsMutuallyExclusive violations before RunE fires, so no Veil helper
+// has a chance to print. With SilenceErrors set on the root, the user used to
+// see exit 1 with empty stdout AND empty stderr. run() must surface the
+// message itself.
+func TestRun_PrintsCobraInternalError(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	root := cli.NewRoot("test")
+	var stderr bytes.Buffer
+	code := run(context.Background(), root,
+		[]string{"list", "--placeholder", "--reveal", "--yes"},
+		io.Discard, &stderr)
+
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, got %d", code)
+	}
+	s := stderr.String()
+	if s == "" {
+		t.Fatal("stderr was empty; cobra-internal error was swallowed")
+	}
+	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("stderr missing %q:\n%s", want, s)
+		}
+	}
+}
+
 // TestRun_PassesContextForCancellation verifies that the ctx passed to run
 // is propagated to commands via ExecuteContext and gets canceled when the
 // parent ctx is canceled.
