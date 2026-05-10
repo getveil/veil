@@ -1288,6 +1288,51 @@ func TestInit_DryRunShowsGroupedAWS(t *testing.T) {
 	}
 }
 
+// TestInit_NoNonInteractiveNoticeBeforeRootResolution verifies that
+// init does not print "Non-interactive mode: vaulting all detected
+// secrets" when the project-root precondition fails. Otherwise users
+// see a misleading "proceeding" notice immediately followed by an
+// error (regression for F-1).
+func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	// Use a tempdir that has no project marker (no .git, .veil, .env)
+	// and a HOME above it so FindProjectRoot stops before reaching the
+	// real project root above the test process's actual cwd.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "nowhere")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	// Provide a non-TTY *os.File for stdin so detectInteractive falls
+	// into the non-interactive branch (a *bytes.Buffer would be treated
+	// as interactive and bypass the bug).
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	_ = pw.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(pr)
+	cmd.SetArgs([]string{"init"}) // no --path, so resolveInitRoot uses cwd
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected init to fail without a project root, got nil")
+	}
+
+	if strings.Contains(out.String(), "Non-interactive mode") {
+		t.Errorf("non-interactive notice printed before precondition failure:\n%s", out.String())
+	}
+}
+
 func TestInit_VaultedAWSCredentialResignsViaProxy(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	clearShellEnvTestNoise(t)

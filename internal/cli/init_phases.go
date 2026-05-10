@@ -20,22 +20,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// detectInteractive reports whether the init flow should prompt the user.
-// Returns false if --yes was passed or if stdin is not a TTY (in which case
-// a notice is printed to w).
-func detectInteractive(w io.Writer, stdin io.Reader, yes bool) bool {
+// detectInteractive reports whether the init flow should prompt the user
+// and whether the caller should announce non-interactive mode. announce is
+// true only when init fell back to non-interactive mode because stdin is
+// not a TTY (not when --yes was passed). Callers should defer printing the
+// announcement until after preconditions succeed, so users do not see a
+// "proceeding" notice before a precondition failure.
+func detectInteractive(stdin io.Reader, yes bool) (interactive, announce bool) {
 	if yes {
-		return false
+		return false, false
 	}
 	f, ok := stdin.(*os.File)
 	if !ok {
-		return true
+		return true, false
 	}
 	if isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd()) {
-		return true
+		return true, false
 	}
-	ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
-	return false
+	return false, true
 }
 
 // resolveInitRoot returns the project root to initialize. Falls back to
