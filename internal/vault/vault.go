@@ -172,6 +172,72 @@ func (v *Vault) Add(cred *Credential) error {
 	return v.Save()
 }
 
+// AddBatch validates all credentials up front and, on success, persists them
+// in a single Save. Either every credential is committed or none are.
+func (v *Vault) AddBatch(creds []*Credential) error {
+	if len(creds) == 0 {
+		return nil
+	}
+
+	// Existing-name and existing-placeholder sets, built from current vault.
+	existingNames := make(map[string]struct{}, len(v.credentials))
+	existingPHs := make(map[string]string, len(v.credentials)*2) // ph -> owner name
+	for _, c := range v.credentials {
+		existingNames[c.Name] = struct{}{}
+		if c.Placeholder != "" {
+			existingPHs[c.Placeholder] = c.Name
+		}
+		if c.UsernamePlaceholder != "" {
+			existingPHs[c.UsernamePlaceholder] = c.Name
+		}
+	}
+
+	// Within-batch sets so duplicates inside creds[] are caught too.
+	batchNames := make(map[string]struct{}, len(creds))
+	batchPHs := make(map[string]string, len(creds)*2)
+
+	for _, cred := range creds {
+		if _, ok := existingNames[cred.Name]; ok {
+			return fmt.Errorf("%w: %q", ErrDuplicateCredential, cred.Name)
+		}
+		if _, ok := batchNames[cred.Name]; ok {
+			return fmt.Errorf("%w: %q (duplicate within batch)", ErrDuplicateCredential, cred.Name)
+		}
+		for _, ph := range []string{cred.Placeholder, cred.UsernamePlaceholder} {
+			if ph == "" {
+				continue
+			}
+			if owner, ok := existingPHs[ph]; ok {
+				return fmt.Errorf("%w: generated placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, owner)
+			}
+			if owner, ok := batchPHs[ph]; ok {
+				return fmt.Errorf("%w: generated placeholder for %q matches credential %q within batch", ErrPlaceholderCollision, cred.Name, owner)
+			}
+		}
+		batchNames[cred.Name] = struct{}{}
+		if cred.Placeholder != "" {
+			batchPHs[cred.Placeholder] = cred.Name
+		}
+		if cred.UsernamePlaceholder != "" {
+			batchPHs[cred.UsernamePlaceholder] = cred.Name
+		}
+	}
+
+	preLen := len(v.credentials)
+	v.credentials = append(v.credentials, creds...)
+	if err := v.Save(); err != nil {
+		v.credentials = v.credentials[:preLen]
+		return err
+	}
+	return nil
+}
+
+// HasCredential reports whether a credential with name is present.
+func (v *Vault) HasCredential(name string) bool {
+	_, ok := v.Get(name)
+	return ok
+}
+
 // collidesWithAny reports whether candidate matches either the secret
 // placeholder or the username placeholder of c.
 func collidesWithAny(candidate string, c *Credential) bool {

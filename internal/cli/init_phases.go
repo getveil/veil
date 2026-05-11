@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/8enji/veil/internal/cli/correlate"
@@ -118,6 +120,17 @@ type secretLine struct {
 // (in interactive mode), adds credentials to v, and rewrites the .env file
 // with placeholders. Returns (vaulted, scoped) counts for the file. The seen
 // set is shared across files so placeholder generation stays collision-free.
+//
+// Write order per file (atomicity boundary):
+//  1. build creds in memory
+//  2. build .env bytes in memory
+//  3. writeBackupOnly(envPath)
+//  4. v.AddBatch(creds)
+//  5. registerVaultedFile(root, envPath, KindEnv)
+//  6. atomicWriteFile(envPath, bytes)
+//
+// If we crash between 5 and 6 the next run detects the registered-but-
+// cleartext .env via needsEnvRewrite and replays step 6 only.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
 		// An orphaned backup (one not in the current vault's registry) means
@@ -134,7 +147,25 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
 			}
 			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
+			// The crashed run may have committed credentials to the vault
+			// before crashing between AddBatch and registerVaultedFile. Those
+			// credentials are now orphaned: no .env references them (the
+			// reclaimed file holds cleartext) and the next pass will try to
+			// vault the same names again, hitting ErrDuplicateCredential.
+			// Wipe any pre-existing credential whose name matches a secret-
+			// like key in the just-restored .env so the re-run is truly
+			// fresh.
+			if err := cleanupStaleVaultedCreds(cmd, v, envPath); err != nil {
+				return 0, 0, wrapErr(fmt.Sprintf("cleaning stale vault credentials for %s", envPath), err)
+			}
 		} else {
+			recovered, rerr := recoverPendingEnvRewrite(cmd, v, envPath, dryRun)
+			if rerr != nil {
+				return 0, 0, rerr
+			}
+			if recovered {
+				return 0, 0, nil
+			}
 			ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
 			return 0, 0, nil
 		}
@@ -177,30 +208,112 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		return 0, 0, nil
 	}
 
-	var vaulted, scoped int
-	fileChanged := false
+	creds, vaulted, scoped, err := buildEnvFileCredentials(envFile, selectedGroups, selectedSecrets, seen)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(creds) == 0 {
+		return 0, 0, nil
+	}
 
-	for _, g := range selectedGroups {
-		n, s, changed, err := vaultAWSGroup(cmd, v, seen, envFile, g, dryRun)
-		if err != nil {
-			return vaulted, scoped, err
-		}
-		vaulted += n
-		scoped += s
-		if changed {
-			fileChanged = true
+	if dryRun {
+		printDryRunVaultLines(w, selectedGroups, selectedSecrets, creds)
+		return vaulted, scoped, nil
+	}
+
+	// envFile has already been mutated in place; freeze the bytes before any
+	// I/O so the on-disk state moves atomically.
+	newBytes := envFile.Bytes()
+
+	// --force: clear any existing entries that would otherwise collide. A
+	// duplicate at AddBatch time means a prior partial run stranded a cred
+	// without a matching backup/rewrite — silently skipping it here is the
+	// stranded-credential bug we're closing.
+	if force {
+		for _, c := range creds {
+			if v.HasCredential(c.Name) {
+				if _, err := v.Delete(c.Name); err != nil {
+					return 0, 0, wrapErr(fmt.Sprintf("clearing existing %s for --force", c.Name), err)
+				}
+			}
 		}
 	}
 
-	for _, s := range selectedSecrets {
-		ph, err := placeholder.Generate(s.key, s.value, seen)
-		if err != nil {
-			return vaulted, scoped, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), err)
+	if err := writeBackupOnly(envPath); err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
+	}
+	if err := v.AddBatch(creds); err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", envPath), err)
+	}
+	if err := registerVaultedFile(root, envPath, vault.KindEnv); err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("registering %s", envPath), err)
+	}
+	if err := atomicWriteFile(envPath, newBytes); err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("writing %s", envPath), err)
+	}
+	return vaulted, scoped, nil
+}
+
+// buildEnvFileCredentials constructs the credentials for one .env file from
+// the user's selection, resolving AWS groups inline. envFile is mutated in
+// place so each selected key now holds its placeholder; callers can take
+// envFile.Bytes() once buildEnvFileCredentials returns. The seen set is
+// updated with every placeholder generated, in caller-visible order.
+func buildEnvFileCredentials(
+	envFile *scanner.EnvFile,
+	groups []correlate.Group,
+	secrets []secretLine,
+	seen placeholder.Set,
+) (creds []*vault.Credential, vaulted, scoped int, err error) {
+	for _, g := range groups {
+		secretPh, gErr := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
+		if gErr != nil {
+			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), gErr)
+		}
+		seen[secretPh] = struct{}{}
+
+		akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
+		seen[akIDPh] = struct{}{}
+
+		var sessPh string
+		if g.AWS.SessionToken != "" {
+			sessPh, gErr = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
+			if gErr != nil {
+				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), gErr)
+			}
+			seen[sessPh] = struct{}{}
 		}
 
-		credHosts := placeholder.HostsForCredential(s.key, s.value)
+		creds = append(creds, &vault.Credential{
+			ID:                         vault.NewID(),
+			Name:                       g.Name,
+			Real:                       g.AWS.SecretKey,
+			Placeholder:                secretPh,
+			Source:                     "init",
+			AllowedHosts:               []string{"*.amazonaws.com"},
+			CreatedAt:                  time.Now(),
+			Scheme:                     "aws",
+			AWSAccessKeyID:             g.AWS.AccessKeyID,
+			AWSAccessKeyIDPlaceholder:  akIDPh,
+			AWSSessionToken:            g.AWS.SessionToken,
+			AWSSessionTokenPlaceholder: sessPh,
+		})
+		envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
+		envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
+		if g.AWS.SessionTokenVar != "" {
+			envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
+		}
+		vaulted++
+		scoped++
+	}
 
-		cred := &vault.Credential{
+	for _, s := range secrets {
+		ph, gErr := placeholder.Generate(s.key, s.value, seen)
+		if gErr != nil {
+			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), gErr)
+		}
+		credHosts := placeholder.HostsForCredential(s.key, s.value)
+		creds = append(creds, &vault.Credential{
 			ID:           vault.NewID(),
 			Name:         s.key,
 			Real:         s.value,
@@ -208,38 +321,207 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 			Source:       "init",
 			AllowedHosts: credHosts,
 			CreatedAt:    time.Now(),
-		}
-		if err := v.Add(cred); err != nil {
-			if errors.Is(err, vault.ErrDuplicateCredential) {
-				ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", s.key)
-				continue
-			}
-			return vaulted, scoped, wrapErr(fmt.Sprintf("vaulting %s", s.key), err)
-		}
+		})
+		envFile.SetValue(s.key, ph)
 		seen[ph] = struct{}{}
-
 		vaulted++
 		if len(credHosts) > 0 {
 			scoped++
 		}
-
-		if dryRun {
-			ui.Dimf(w, "  would vault: %s -> %s", s.key, ph)
-		} else {
-			envFile.SetValue(s.key, ph)
-			fileChanged = true
-		}
 	}
 
-	if !dryRun && fileChanged {
-		if err := recordVaultedBackup(root, envPath, vault.KindEnv); err != nil {
-			return vaulted, scoped, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
+	return creds, vaulted, scoped, nil
+}
+
+// applyEnvFileMutations rewrites envFile in place so each credential's source
+// key now holds its placeholder, then returns the resulting bytes. Used only
+// by the recovery path; the happy path mutates envFile inside
+// buildEnvFileCredentials and just calls envFile.Bytes() there.
+func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) []byte {
+	for _, c := range creds {
+		if c.Scheme == "aws" {
+			// AWS creds rewrite up to three vars. Name (= AccessKeyIDVar)
+			// is the only var name on the credential; for the other two
+			// (secret access key, optional session token), value-match the
+			// remaining KV lines since their original var names aren't stored.
+			envFile.SetValue(c.Name, c.AWSAccessKeyIDPlaceholder)
+			replaceValueIfMatches(envFile, c.Real, c.Placeholder)
+			if c.AWSSessionToken != "" {
+				replaceValueIfMatches(envFile, c.AWSSessionToken, c.AWSSessionTokenPlaceholder)
+			}
+			continue
 		}
-		if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
-			return vaulted, scoped, wrapErr(fmt.Sprintf("writing %s", envPath), err)
+		envFile.SetValue(c.Name, c.Placeholder)
+	}
+	return envFile.Bytes()
+}
+
+// replaceValueIfMatches scans envFile and, for the first KV line whose
+// decoded value equals oldVal, swaps it to newVal.
+func replaceValueIfMatches(envFile *scanner.EnvFile, oldVal, newVal string) {
+	for _, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine && line.Value == oldVal {
+			envFile.SetValue(line.Key, newVal)
+			return
 		}
 	}
-	return vaulted, scoped, nil
+}
+
+// printDryRunVaultLines emits the same "would vault" lines the legacy code
+// path produced, derived from the prepared credentials. Group lines list
+// each member var. Both groups and creds[] share appearance order.
+func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secretLine, creds []*vault.Credential) {
+	ci := 0
+	for _, g := range groups {
+		if ci >= len(creds) {
+			break
+		}
+		c := creds[ci]
+		ci++
+		ui.Dimf(w, "  would vault (aws): %s", g.Name)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, c.AWSAccessKeyIDPlaceholder)
+		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, c.Placeholder)
+		if g.AWS.SessionToken != "" {
+			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, c.AWSSessionTokenPlaceholder)
+		}
+	}
+	for _, s := range secrets {
+		if ci >= len(creds) {
+			break
+		}
+		c := creds[ci]
+		ci++
+		ui.Dimf(w, "  would vault: %s -> %s", s.key, c.Placeholder)
+	}
+}
+
+// needsEnvRewrite reports whether envPath still has cleartext for any cred
+// in creds — i.e., NONE of the credentials' placeholders appear as a
+// substring of the file. True signals a crash between meta-register and
+// .env-rewrite that should be replayed.
+func needsEnvRewrite(envPath string, creds []*vault.Credential) (bool, error) {
+	data, err := os.ReadFile(envPath) // #nosec G304 -- envPath is a vaulted project file
+	if err != nil {
+		return false, err
+	}
+	for _, c := range creds {
+		if c.Placeholder != "" && bytes.Contains(data, []byte(c.Placeholder)) {
+			return false, nil
+		}
+		if c.AWSAccessKeyIDPlaceholder != "" && bytes.Contains(data, []byte(c.AWSAccessKeyIDPlaceholder)) {
+			return false, nil
+		}
+		if c.AWSSessionTokenPlaceholder != "" && bytes.Contains(data, []byte(c.AWSSessionTokenPlaceholder)) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// recoverPendingEnvRewrite detects the "meta is registered but .env was
+// never rewritten" crash state. When that holds it replays only step 6
+// (the atomic rewrite) using the credentials already in the vault. Returns
+// (true, nil) when recovery ran; (false, nil) means the caller should fall
+// through to the existing "already has a backup" warning.
+func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string, dryRun bool) (bool, error) {
+	if dryRun {
+		return false, nil
+	}
+	envFile, err := scanner.ParseFile(envPath)
+	if err != nil {
+		return false, wrapErr(fmt.Sprintf("parsing %s", envPath), err)
+	}
+	var owned []*vault.Credential
+	ownedValues := make(map[string]string)
+	for _, line := range envFile.Lines {
+		if line.Kind != scanner.KVLine {
+			continue
+		}
+		if c, ok := v.Get(line.Key); ok {
+			owned = append(owned, c)
+			ownedValues[line.Key] = line.Value
+		}
+	}
+	if len(owned) == 0 {
+		return false, nil
+	}
+	rewrite, err := needsEnvRewrite(envPath, owned)
+	if err != nil {
+		return false, wrapErr(fmt.Sprintf("checking rewrite state of %s", envPath), err)
+	}
+	if !rewrite {
+		return false, nil
+	}
+	// Before rewriting placeholders over cleartext, confirm each key's
+	// current cleartext still equals the credential's stored Real. A
+	// mismatch means the user edited the .env between the crash and this
+	// run; silently rewriting would discard their edit and point the .env
+	// at a stale vault entry. Refuse and surface an actionable error.
+	var diverged []string
+	for _, c := range owned {
+		val, ok := ownedValues[c.Name]
+		if !ok {
+			continue
+		}
+		if c.Scheme == "aws" {
+			// AWS credentials store the access key id on Name (compared
+			// here) and the secret separately. The stored Real holds the
+			// secret value, not the access key id, so direct Name->Real
+			// comparison would always diverge. Skip the divergence check
+			// for aws-scheme entries — they take the existing recovery
+			// path unchanged.
+			continue
+		}
+		if val != c.Real {
+			diverged = append(diverged, c.Name)
+		}
+	}
+	if len(diverged) > 0 {
+		msg := fmt.Sprintf(
+			"%s has been edited since vaulting was interrupted; values for [%s] no longer match the vault. Re-run `veil init --force` to re-vault from the current .env, or restore the .veil-backup sidecar if you didn't mean to edit",
+			envPath,
+			strings.Join(diverged, ", "),
+		)
+		return false, wrapErr("recovering interrupted init", errors.New(msg))
+	}
+	newBytes := applyEnvFileMutations(envFile, owned)
+	if err := atomicWriteFile(envPath, newBytes); err != nil {
+		return false, wrapErr(fmt.Sprintf("writing %s", envPath), err)
+	}
+	ui.Warnf(cmd.ErrOrStderr(), "%s: recovering interrupted init — re-applying placeholders", envPath)
+	return true, nil
+}
+
+// cleanupStaleVaultedCreds removes any credential in v whose name matches a
+// secret-like key in the just-reclaimed .env at envPath. Called from the
+// orphan-recovery path after reclaimOrphanedBackup restores the cleartext
+// .env: those credentials were committed to the vault by a crashed run
+// before registerVaultedFile fired, so they're now orphaned and would
+// trigger ErrDuplicateCredential on the imminent AddBatch. "Not found"
+// (the credential isn't actually present) is non-fatal; only true persist
+// errors surface.
+func cleanupStaleVaultedCreds(cmd *cobra.Command, v *vault.Vault, envPath string) error {
+	envFile, err := scanner.ParseFile(envPath)
+	if err != nil {
+		return wrapErr(fmt.Sprintf("parsing %s", envPath), err)
+	}
+	w := cmd.ErrOrStderr()
+	for _, line := range envFile.Lines {
+		if line.Kind != scanner.KVLine {
+			continue
+		}
+		if !placeholder.IsSecretLike(line.Key, line.Value) {
+			continue
+		}
+		removed, derr := v.Delete(line.Key)
+		if derr != nil {
+			return wrapErr(fmt.Sprintf("removing stale credential %s", line.Key), derr)
+		}
+		if removed {
+			ui.Dimf(w, "  removed stale vault entry %s from crashed run", line.Key)
+		}
+	}
+	return nil
 }
 
 // selectEnvKeys returns the groups and bearer secrets the user chose to
@@ -332,78 +614,6 @@ func filterSecretsByRemaining(secrets []secretLine, remaining []correlate.Candid
 		}
 	}
 	return out
-}
-
-// vaultAWSGroup writes one Scheme:"aws" credential for g, rewrites the
-// three (or two) source env-var placeholders in envFile, and reports
-// (vaulted, scoped, fileChanged). An AWS group counts as one credential
-// regardless of member count, matching what the user sees in `veil list`.
-func vaultAWSGroup(
-	cmd *cobra.Command, v *vault.Vault, seen placeholder.Set,
-	envFile *scanner.EnvFile, g correlate.Group, dryRun bool,
-) (vaulted, scoped int, fileChanged bool, err error) {
-	w := cmd.OutOrStdout()
-
-	// Pass SecretKeyVar (e.g. AWS_SECRET_ACCESS_KEY or PROD_AWS_SECRET_ACCESS_KEY)
-	// so the AWS provider's role-aware dispatch always picks a secret-style
-	// placeholder, regardless of the value's leading bytes.
-	secretPh, err := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
-	if err != nil {
-		return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
-	}
-	seen[secretPh] = struct{}{}
-
-	akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
-	seen[akIDPh] = struct{}{}
-
-	var sessPh string
-	if g.AWS.SessionToken != "" {
-		sessPh, err = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
-		if err != nil {
-			return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), err)
-		}
-		seen[sessPh] = struct{}{}
-	}
-
-	cred := &vault.Credential{
-		ID:                         vault.NewID(),
-		Name:                       g.Name,
-		Real:                       g.AWS.SecretKey,
-		Placeholder:                secretPh,
-		Source:                     "init",
-		AllowedHosts:               []string{"*.amazonaws.com"},
-		CreatedAt:                  time.Now(),
-		Scheme:                     "aws",
-		AWSAccessKeyID:             g.AWS.AccessKeyID,
-		AWSAccessKeyIDPlaceholder:  akIDPh,
-		AWSSessionToken:            g.AWS.SessionToken,
-		AWSSessionTokenPlaceholder: sessPh,
-	}
-	if err := v.Add(cred); err != nil {
-		if errors.Is(err, vault.ErrDuplicateCredential) {
-			ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", g.Name)
-			return 0, 0, false, nil
-		}
-		return 0, 0, false, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
-	}
-
-	if dryRun {
-		ui.Dimf(w, "  would vault (aws): %s", g.Name)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, akIDPh)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, secretPh)
-		if g.AWS.SessionToken != "" {
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, sessPh)
-		}
-	} else {
-		envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
-		envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
-		if g.AWS.SessionTokenVar != "" {
-			envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
-		}
-		fileChanged = true
-	}
-
-	return 1, 1, fileChanged, nil
 }
 
 // promptSkipHostsPhase asks the user to seed the skip-host list after vaulting.
