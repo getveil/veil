@@ -54,7 +54,7 @@ func runStatusInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	defer func() { _ = store.Close() }()
 
 	since := time.Now().Add(-24 * time.Hour)
-	total, blocked, hosts, lastInj, err := store.Summary(since)
+	total, blocked, leaked, hosts, lastInj, err := store.Summary(since)
 	if err != nil {
 		return wrapErr("querying audit", err)
 	}
@@ -125,6 +125,9 @@ func runStatusInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	_, _ = fmt.Fprintf(w, "  Injections   %d\n", total)
 	if blocked > 0 {
 		_, _ = fmt.Fprintf(w, "  Blocked      %d\n", blocked)
+	}
+	if leaked > 0 {
+		_, _ = fmt.Fprintf(w, "  Leaks        %d\n", leaked)
 	}
 
 	if len(hosts) > 0 {

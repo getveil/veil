@@ -154,6 +154,60 @@ func TestInitDryRun(t *testing.T) {
 	}
 }
 
+// TestInitDryRun_SummaryQualified verifies the dry-run summary lines all carry
+// a "would …" qualifier and do not claim that secrets were "stored" or that
+// Veil was "initialized." Without this, a user inspecting only the summary
+// would conclude that --dry-run had vaulted secrets when nothing changed.
+func TestInitDryRun_SummaryQualified(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "OPENAI_API_KEY=sk-proj-1234567890abcdef\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--dry-run", "--yes", "--path", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --dry-run failed: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Forbidden phrases — these would mislead a user reading the summary.
+	forbidden := []string{
+		"secret stored in keychain",
+		"secrets stored in keychain",
+		"Veil initialized for",
+	}
+	for _, p := range forbidden {
+		if strings.Contains(outStr, p) {
+			t.Errorf("dry-run output must not contain %q (implies real action). Got:\n%s", p, outStr)
+		}
+	}
+
+	// Required qualifier phrases — confirm the summary is honest.
+	required := []string{
+		"would store",
+		"Dry-run preview for",
+		"would be vaulted",
+	}
+	for _, p := range required {
+		if !strings.Contains(outStr, p) {
+			t.Errorf("dry-run output missing %q. Got:\n%s", p, outStr)
+		}
+	}
+}
+
 func TestInitForce(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 

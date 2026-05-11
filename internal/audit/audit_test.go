@@ -137,6 +137,43 @@ func TestRecordAndQuery(t *testing.T) {
 	}
 }
 
+// TestQuery_HostFilter_TolerantMatching verifies the host filter accepts a
+// bare hostname against host:port rows, ignores case, and still matches when
+// the caller does pass an explicit port. Stored rows in production carry the
+// host:port form (req.URL.Host) so a strict equality match made the
+// documented `--host <name>` filter silently empty.
+func TestQuery_HostFilter_TolerantMatching(t *testing.T) {
+	s := openTestStore(t)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.Record(makeInjection("api.github.com:443", "gh", base))
+	s.Record(makeInjection("api.github.com:443", "gh", base.Add(time.Second)))
+	s.Record(makeInjection("api.openai.com:443", "oai", base.Add(2*time.Second)))
+	s.flushPending()
+
+	cases := []struct {
+		name, host string
+		want       int
+	}{
+		{"bare hostname matches host:port", "api.github.com", 2},
+		{"explicit host:port still matches", "api.github.com:443", 2},
+		{"uppercase input case-insensitive", "API.GITHUB.COM", 2},
+		{"different host filtered out", "api.openai.com", 1},
+		{"non-matching host returns none", "api.anthropic.com", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := s.Query(Filter{Host: tc.host})
+			if err != nil {
+				t.Fatalf("Query(Host=%q): %v", tc.host, err)
+			}
+			if len(rows) != tc.want {
+				t.Errorf("Query(Host=%q): got %d rows, want %d", tc.host, len(rows), tc.want)
+			}
+		})
+	}
+}
+
 func TestRecordBatching(t *testing.T) {
 	s := openTestStore(t)
 
@@ -189,7 +226,7 @@ func TestSummary(t *testing.T) {
 
 	s.flushPending()
 
-	total, blocked, hostList, last, err := s.Summary(base)
+	total, blocked, leaked, hostList, last, err := s.Summary(base)
 	if err != nil {
 		t.Fatalf("Summary: %v", err)
 	}
@@ -199,6 +236,9 @@ func TestSummary(t *testing.T) {
 	}
 	if blocked != 2 {
 		t.Errorf("blocked = %d, want 2", blocked)
+	}
+	if leaked != 0 {
+		t.Errorf("leaked = %d, want 0", leaked)
 	}
 	if len(hostList) != 3 {
 		t.Errorf("hosts = %v, want 3 distinct (suspect host must be excluded)", hostList)
@@ -213,6 +253,55 @@ func TestSummary(t *testing.T) {
 	}
 	if last.Host != "api.cohere.com" {
 		t.Errorf("last host = %q, want api.cohere.com (suspect row must be excluded)", last.Host)
+	}
+}
+
+// TestSummary_LeakedRowsExcludedFromInjections is the regression test for the
+// session-end banner conflating placeholder leaks with successful injections.
+// A row with Location=="leaked" represents a request the proxy refused to
+// forward (sentinel guard tripped, no real secret reached the wire). Counting
+// it as an injection would mislead users into believing a deleted credential
+// had been successfully swapped.
+func TestSummary_LeakedRowsExcludedFromInjections(t *testing.T) {
+	s := openTestStore(t)
+
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	// One real injection that should count.
+	s.Record(makeInjection("api.openai.com", "openai-key", base))
+	// Two leaked rows on a host that has no successful injection — these
+	// must not count as injections nor add a host.
+	leakRow1 := makeInjection("httpbin.org:443", "", base.Add(time.Second))
+	leakRow1.Location = "leaked"
+	leakRow1.CredentialName = ""
+	leakRow1.CredentialID = ""
+	s.Record(leakRow1)
+
+	leakRow2 := makeInjection("httpbin.org:443", "", base.Add(2*time.Second))
+	leakRow2.Location = "leaked"
+	leakRow2.CredentialName = ""
+	leakRow2.CredentialID = ""
+	s.Record(leakRow2)
+	s.flushPending()
+
+	total, blocked, leaked, hosts, last, err := s.Summary(base)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("total = %d, want 1 (leaked rows must be excluded from injections)", total)
+	}
+	if blocked != 0 {
+		t.Errorf("blocked = %d, want 0", blocked)
+	}
+	if leaked != 2 {
+		t.Errorf("leaked = %d, want 2", leaked)
+	}
+	if len(hosts) != 1 || hosts[0] != "api.openai.com" {
+		t.Errorf("hosts = %v, want [api.openai.com] (httpbin host had only leaks)", hosts)
+	}
+	if last == nil || last.Host != "api.openai.com" {
+		t.Errorf("last = %v, want api.openai.com (leaked rows must not be selected as last injection)", last)
 	}
 }
 
