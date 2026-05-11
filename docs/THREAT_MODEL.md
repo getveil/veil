@@ -44,6 +44,6 @@ Scoped gaps:
 
 ## Known limitations called out in the code
 
-- **Compressed request bodies.** Bodies with a `Content-Encoding` header pass through untouched; Veil does not decompress→inject→recompress.
-- **Body injection allowlist.** Only `application/json`, `application/x-www-form-urlencoded`, `text/*`, `application/xml`, and `application/*+json`/`*+xml` are scanned. Binary types and unknown Content-Types pass through.
+- **Compressed request bodies.** Requests with a non-`identity` `Content-Encoding` header are rejected with HTTP 502 (fail-closed). Veil does not decompress→inject→recompress, and refuses to forward payloads it cannot scan.
+- **Body injection allowlist.** Only `application/json`, `application/x-www-form-urlencoded`, `application/xml`, `application/yaml`, `application/x-yaml`, `application/toml`, `application/x-ndjson`, `application/graphql`, `text/*`, and `application/*+json`/`*+xml` are scanned. Binary types and unknown Content-Types pass through.
 - **Large bodies.** Bodies larger than 10 MiB are not scanned.
