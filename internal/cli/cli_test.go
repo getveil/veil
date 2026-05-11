@@ -453,6 +453,33 @@ func TestListPlaceholder(t *testing.T) {
 	}
 }
 
+// TestList_MutuallyExclusiveFlagsError is the F-8 regression at the cobra
+// boundary. The cobra error must (1) be returned to the caller and (2) name
+// both flags so cmd/veil/main.go can surface it. Errors that exit run() with
+// IsAlreadyPrinted == false are the ones that get printed; cobra-internal
+// validation errors fall in that bucket.
+func TestList_MutuallyExclusiveFlagsError(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"list", "--path", root, "--placeholder", "--reveal", "--yes"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --placeholder + --reveal")
+	}
+	msg := err.Error()
+	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if IsAlreadyPrinted(err) {
+		t.Error("cobra-internal flag-group error should not be marked as already printed")
+	}
+}
+
 func TestStatusShowsProxyNotRunning(t *testing.T) {
 	root := initProject(t)
 
