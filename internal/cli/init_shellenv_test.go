@@ -48,7 +48,7 @@ func TestProcessShellEnv_VaultsSecrets(t *testing.T) {
 	var out bytes.Buffer
 
 	// Non-interactive path: all candidates are vaulted.
-	count, scoped, err := processShellEnv(&out, strings.NewReader(""), v, candidates, /*dryRun*/ false, /*interactive*/ false)
+	count, scoped, err := processShellEnv(&out, strings.NewReader(""), v, candidates /*dryRun*/, false /*interactive*/, false)
 	if err != nil {
 		t.Fatalf("processShellEnv: %v", err)
 	}

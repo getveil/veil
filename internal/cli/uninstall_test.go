@@ -412,9 +412,9 @@ func TestClassifyEnvPairDiffShowsAllChangedLines(t *testing.T) {
 	// Resolver substitutes ALL placeholders cleanly; reconstruction == backup,
 	// so the older code path produced an empty/under-reported diff.
 	resolver := placeholderResolver{
-		"ghp_VEIL_xxx":   "ghp_real_aBcDef",
-		"sk-VEIL-yyy":    "sk-real-1234",
-		"VEILSecretZZZ":  "wJalrXReal",
+		"ghp_VEIL_xxx":  "ghp_real_aBcDef",
+		"sk-VEIL-yyy":   "sk-real-1234",
+		"VEILSecretZZZ": "wJalrXReal",
 	}
 
 	status, diff, err := classifyEnvPair(orig, backup, resolver)
@@ -457,10 +457,10 @@ func TestClassifyEnvPairDiffShowsRealChangeWhenUserEdited(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver := placeholderResolver{
-		"ghp_VEIL_xxx":    "ghp_real_aBcDef",
-		"sk-VEIL-yyy":     "sk-real-1234",
-		"sk_live_VEIL":    "sk_live_real",
-		"xoxb-VEIL":       "xoxb-real",
+		"ghp_VEIL_xxx": "ghp_real_aBcDef",
+		"sk-VEIL-yyy":  "sk-real-1234",
+		"sk_live_VEIL": "sk_live_real",
+		"xoxb-VEIL":    "xoxb-real",
 	}
 
 	status, diff, err := classifyEnvPair(orig, backup, resolver)

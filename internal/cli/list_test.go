@@ -41,7 +41,7 @@ func TestListCmd_TagsSchemes(t *testing.T) {
 	}
 	if err := v.Add(&vault.Credential{
 		ID: vault.NewID(), Name: "gh-app",
-		Real: "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n",
+		Real:         "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n",
 		Placeholder:  "-----BEGIN RSA PRIVATE KEY-----\nxyz\n-----END RSA PRIVATE KEY-----\n",
 		Scheme:       "github_app",
 		GitHubAppID:  111,

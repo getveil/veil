@@ -916,8 +916,8 @@ type fakeAuditFooterSource struct {
 	err         error
 	flushed     bool
 	summaryCall bool
-	flushedAt   int  // call counter when Flush ran (1 = first call)
-	summaryAt   int  // call counter when Summary ran
+	flushedAt   int // call counter when Flush ran (1 = first call)
+	summaryAt   int // call counter when Summary ran
 	calls       int
 }
 

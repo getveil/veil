@@ -413,28 +413,28 @@ func printSessionFooter(w io.Writer, store auditFooterSource, sessionStart time.
 	store.Flush()
 	sessionTotal, sessionBlocked, sessionLeaked, sessionHosts, _, summaryErr := store.Summary(sessionStart)
 	ui.Dim(w, "───────────────────────────────────────")
-	fmt.Fprintf(w, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
-	fmt.Fprintf(w, "  Duration:    %s\n", formatDuration(sessionDuration))
+	_, _ = fmt.Fprintf(w, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
+	_, _ = fmt.Fprintf(w, "  Duration:    %s\n", formatDuration(sessionDuration))
 	if summaryErr == nil {
 		hostInfo := "0 hosts"
 		if len(sessionHosts) > 0 {
 			hostInfo = fmt.Sprintf("%d host(s)", len(sessionHosts))
 		}
-		fmt.Fprintf(w, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
+		_, _ = fmt.Fprintf(w, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
 		if sessionBlocked > 0 {
-			fmt.Fprintf(w, "  Blocked:     %d\n", sessionBlocked)
+			_, _ = fmt.Fprintf(w, "  Blocked:     %d\n", sessionBlocked)
 		}
 		// Leaks are distinct from injections: the request was refused before
 		// any real secret reached the wire. Surface them separately so a
 		// user trusting "Injections: N" never mistakes a placeholder leak
 		// for a successful swap.
 		if sessionLeaked > 0 {
-			fmt.Fprintf(w, "  Leaks:       %d\n", sessionLeaked)
+			_, _ = fmt.Fprintf(w, "  Leaks:       %d\n", sessionLeaked)
 		}
 	} else {
-		fmt.Fprintf(w, "  Injections:  %s\n", ui.Muted.Sprint("(unavailable)"))
+		_, _ = fmt.Fprintf(w, "  Injections:  %s\n", ui.Muted.Sprint("(unavailable)"))
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
 
 // formatDuration formats a duration as "Xh Ym Zs", omitting zero components.

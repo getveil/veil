@@ -1494,7 +1494,7 @@ func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pr.Close()
+	defer func() { _ = pr.Close() }()
 	_ = pw.Close()
 
 	cmd := NewRoot("test")

@@ -24,7 +24,7 @@ func writeBackup(src string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(src+backupSuffix, data, 0600) // #nosec G304 G306 -- derived backup path
+	return os.WriteFile(src+backupSuffix, data, 0600) // #nosec G304 G306 G703 -- derived backup path
 }
 
 // recordVaultedBackup writes src's backup AND registers src's absolute path
