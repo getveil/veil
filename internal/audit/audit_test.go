@@ -764,8 +764,14 @@ func TestPendingCapBoundsMemory(t *testing.T) {
 	s.warnWriter = warn
 	s.mu.Unlock()
 
-	// Close the underlying DB handle so flush writes fail. We avoid Close()
-	// because it tears down the flusher goroutine.
+	// Stop the flusher BEFORE the insert loop. The assertion is about
+	// Record's drop-on-full path (pending stays bounded, overflow counts as
+	// dropped). On a fast runner a live flusher would drain pending each
+	// tick — pending never reaches pendingCap and dropped stays near 0.
+	// Close the DB after stopping the flusher so a stray late flush (if any)
+	// cannot succeed; flushPending tolerates a closed DB by re-queueing.
+	s.stopFlusher()
+	s.wg.Wait()
 	_ = s.db.Close()
 
 	base := time.Now()
@@ -789,10 +795,6 @@ func TestPendingCapBoundsMemory(t *testing.T) {
 	if !strings.Contains(warnOutput, "audit buffer full") {
 		t.Errorf("expected ui.Warnf for full buffer, got %q", warnOutput)
 	}
-
-	// Tear down the flusher goroutine without re-closing s.db.
-	close(s.done)
-	s.wg.Wait()
 }
 
 func TestHealthReflectsDrops(t *testing.T) {
@@ -801,6 +803,12 @@ func TestHealthReflectsDrops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// Stop the flusher before inserting (see TestPendingCapBoundsMemory for
+	// the race rationale). The assertion is that Record's drop path bumps
+	// Health.Dropped and persists it; a live flusher on a fast runner
+	// would drain pending and starve the test of drops.
+	s.stopFlusher()
+	s.wg.Wait()
 	_ = s.db.Close()
 	s.mu.Lock()
 	s.warnWriter = &captureWarn{}
@@ -826,9 +834,6 @@ func TestHealthReflectsDrops(t *testing.T) {
 	if persisted.Dropped < 5 {
 		t.Errorf("persisted.Dropped = %d, want >= 5", persisted.Dropped)
 	}
-
-	close(s.done)
-	s.wg.Wait()
 }
 
 func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
