@@ -136,7 +136,9 @@ func vaultShellAWSGroup(
 	w io.Writer, v *vault.Vault, seen placeholder.Set,
 	g correlate.Group, dryRun bool,
 ) (vaulted, scoped int, err error) {
-	secretPh, err := placeholder.Generate(g.Name, g.AWS.SecretKey, seen)
+	// Pass SecretKeyVar so the AWS provider's role-aware dispatch always picks
+	// a secret-style placeholder, regardless of the value's leading bytes.
+	secretPh, err := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
 	if err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
 	}

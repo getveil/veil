@@ -12,12 +12,16 @@ func generateAWSAccessKeyIDPlaceholder(realAKID string, existing placeholder.Set
 		// Should never happen: aws provider is registered at init.
 		return realAKID
 	}
+	// Pass the canonical env-var name so the AWS provider picks an AKID-style
+	// placeholder unconditionally — required for callers that hand us a value
+	// whose role-vs-pattern relationship is asserted by the caller (here,
+	// always an access key ID).
 	for i := 0; i < 10; i++ {
-		cand := p.Generate(realAKID)
+		cand := p.Generate("AWS_ACCESS_KEY_ID", realAKID)
 		if _, clash := existing[cand]; !clash {
 			return cand
 		}
 	}
 	// Fallback: shouldn't happen with 16-char random bodies.
-	return p.Generate(realAKID)
+	return p.Generate("AWS_ACCESS_KEY_ID", realAKID)
 }

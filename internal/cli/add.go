@@ -224,8 +224,10 @@ func runAddAWS(cmd *cobra.Command, root string, v *vault.Vault, name string, opt
 		return cliError("no value provided", "")
 	}
 
-	// Secret access key placeholder.
-	secretPh, err := placeholder.Generate(name, secret, v.PlaceholderSet())
+	// Secret access key placeholder. Pass the canonical env-var name so the
+	// AWS provider's role-aware dispatch picks a secret-style placeholder
+	// even when the secret value happens to start with AKIA/ASIA.
+	secretPh, err := placeholder.Generate("AWS_SECRET_ACCESS_KEY", secret, v.PlaceholderSet())
 	if err != nil {
 		return cliErrorf("generating placeholder: %v", err)
 	}

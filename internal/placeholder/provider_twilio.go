@@ -12,7 +12,7 @@ func init() {
 			}
 			return strings.Contains(strings.ToUpper(name), "TWILIO")
 		},
-		Generate: func(value string) string {
+		Generate: func(_, value string) string {
 			if strings.HasPrefix(value, "SK") {
 				// API Key SID: SK + 32 hex chars (sentinel displaces 4 hex chars;
 				// the hex shape is intentionally traded for detectability per the

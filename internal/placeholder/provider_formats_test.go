@@ -231,14 +231,14 @@ func TestFormatProviders(t *testing.T) {
 			})
 
 			t.Run("generate_prefix", func(t *testing.T) {
-				result := prov.Generate(tt.genInput)
+				result := prov.Generate("", tt.genInput)
 				if tt.wantPrefix != "" && !strings.HasPrefix(result, tt.wantPrefix) {
 					t.Fatalf("expected prefix %q, got: %s", tt.wantPrefix, result)
 				}
 			})
 
 			t.Run("generate_length", func(t *testing.T) {
-				result := prov.Generate(tt.genInput)
+				result := prov.Generate("", tt.genInput)
 				expectedLen := tt.wantLen
 				if expectedLen == 0 {
 					expectedLen = len(tt.genInput)
@@ -249,7 +249,7 @@ func TestFormatProviders(t *testing.T) {
 			})
 
 			t.Run("generate_charset", func(t *testing.T) {
-				result := prov.Generate(tt.genInput)
+				result := prov.Generate("", tt.genInput)
 				if !strings.Contains(result, Sentinel) {
 					t.Fatalf("expected sentinel %q in %s", Sentinel, result)
 				}
