@@ -52,7 +52,9 @@ func requireInitializedProject(_ *cobra.Command) (string, error) {
 	}
 	stateDir := config.ProjectStateDir(root)
 	if info, statErr := os.Stat(stateDir); statErr != nil || !info.IsDir() {
-		return "", cliErrorWith(ErrNotInitialized, "project not initialized", "Run veil init to get started")
+		return "", cliErrorWith(ErrNotInitialized,
+			"Veil is not initialized in this project",
+			"Run `veil init` to get started.")
 	}
 	return root, nil
 }
@@ -63,9 +65,9 @@ func requireInitializedProject(_ *cobra.Command) (string, error) {
 // error is returned unchanged so callers can decide whether to print.
 // Use this in commands that need the vault (add, list, remove, status, log).
 func withVault(cmd *cobra.Command, fn func(root string, v *vault.Vault) error) error {
-	root, err := resolveRoot()
+	root, err := requireInitializedProject(cmd)
 	if err != nil {
-		return cliError(err.Error(), "")
+		return err
 	}
 	v, err := openVault(root)
 	if err != nil {

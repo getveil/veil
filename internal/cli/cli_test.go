@@ -67,6 +67,58 @@ func TestRunRequiresInit(t *testing.T) {
 	}
 }
 
+// TestVaultCommandsPostUninstall covers F-14: after uninstall (or before
+// init), commands that go through withVault must surface a friendly
+// "not initialized" message instead of leaking the missing-vault.meta path
+// from vault.Open. Each subtest creates a project with no .veil/ and asserts
+// the error is friendly, exits non-zero, and never mentions vault.meta or an
+// absolute path.
+func TestVaultCommandsPostUninstall(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"status", []string{"status"}},
+		{"list", []string{"list"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+			tmpDir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := NewRoot("test")
+			outBuf := new(bytes.Buffer)
+			errBuf := new(bytes.Buffer)
+			cmd.SetOut(outBuf)
+			cmd.SetErr(errBuf)
+			cmd.SetArgs(append(tc.args, "--path", tmpDir))
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for uninitialized project, got nil")
+			}
+			if code := ExitCodeFor(err); code == ExitSuccess {
+				t.Errorf("expected non-zero exit code, got %d", code)
+			}
+
+			combined := outBuf.String() + errBuf.String() + err.Error()
+			if !strings.Contains(combined, "not initialized") {
+				t.Errorf("expected 'not initialized' in output, got:\n%s", combined)
+			}
+			if strings.Contains(combined, "vault.meta") {
+				t.Errorf("output should not leak 'vault.meta'; got:\n%s", combined)
+			}
+			if strings.Contains(combined, tmpDir) {
+				t.Errorf("output should not leak the absolute project path %q; got:\n%s", tmpDir, combined)
+			}
+		})
+	}
+}
+
 func TestAddAndList(t *testing.T) {
 	root := initProject(t)
 
