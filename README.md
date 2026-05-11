@@ -42,11 +42,11 @@ veil status
 veil list
 
 # Add a secret manually
-veil add --key GITHUB_TOKEN --value ghp_abc123
+veil add GITHUB_TOKEN --value ghp_abc123
 
 # View audit logs
 veil log
-veil log --today
+veil log --since 1h
 
 # Reverse it - restore original .env/MCP files, wipe vault and state
 veil uninstall              # prompts with diff before touching anything
@@ -56,7 +56,7 @@ veil uninstall --dry-run    # preview the plan without changes
 ## What it supports
 
 - **Secrets**: AWS, Stripe, GitHub PATs, OpenAI, Slack, Twilio, SendGrid, Supabase, and more — with format-aware placeholders for each
-- **Keychain**: macOS Keychain, Linux Secret Service, Windows Credential Manager
+- **Keychain**: macOS Keychain, Linux Secret Service (with age-encrypted file fallback)
 - **Agents**: Anything that respects `HTTP_PROXY` / `HTTPS_PROXY`
 - **MCP configs**: Auto-detects and migrates plaintext tokens from MCP configuration files
 
@@ -65,15 +65,17 @@ veil uninstall --dry-run    # preview the plan without changes
 ```
 cmd/veil/       CLI entrypoint
 internal/
-  cli/          Command definitions (init, run, status, add, list, log)
+  cli/          Command definitions (init, run, status, add, list, log, remove, skip, uninstall)
   proxy/        HTTPS proxy with credential injection
   vault/        OS keychain abstraction
   placeholder/  Format-aware placeholder generation
-  scanner/      MCP supply chain scanner
+  scanner/      .env file discovery
   audit/        SQLite audit logging
   config/       Project config management
+  envkeys/      Canonical env-var key list (proxy + CA bundle)
   mcpconfig/    MCP config file parsing
   runner/       Agent process management
+  skiphost/     Persistent skip-host list
   ui/           Terminal output
 ```
 
