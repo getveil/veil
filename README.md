@@ -14,14 +14,62 @@ The agent thinks it has real tokens. It doesn't.
 
 ## Install
 
-```
-go install github.com/8enji/veil/cmd/veil@latest
-```
-
-Or build from source:
+### Homebrew (macOS, Linux)
 
 ```
-git clone https://github.com/8enji/veil.git
+brew install getveil/tap/veil
+```
+
+This is the recommended path — installs are auto-deduplicated and the
+binary is placed by a trusted local process, so macOS Gatekeeper does
+not flag it.
+
+### Direct download
+
+Grab the tarball for your platform from the
+[Releases page](https://github.com/getveil/veil/releases/latest),
+then verify and install:
+
+```bash
+# Pick your platform
+PLAT=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
+TAG=v0.1.0          # latest release tag
+
+# Verify SHA-256 checksum
+grep "veil_${TAG#v}_${PLAT}.tar.gz" checksums.txt | shasum -a 256 -c -
+
+# Verify Sigstore signature on checksums.txt
+cosign verify-blob \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity-regexp 'https://github.com/getveil/veil/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+# Optional: verify GitHub build-provenance attestation
+gh attestation verify "veil_${TAG#v}_${PLAT}.tar.gz" --repo getveil/veil
+
+# Install
+tar -xzf "veil_${TAG#v}_${PLAT}.tar.gz"
+sudo mv veil /usr/local/bin/
+```
+
+> **macOS Gatekeeper note:** if you downloaded the tarball through a
+> browser, the extracted binary may be quarantined. Run once via right-click
+> → Open, or strip the attribute: `xattr -d com.apple.quarantine
+> /usr/local/bin/veil`. Apple Developer ID notarization is tracked for a
+> future release. Homebrew installs are not affected.
+
+### From source (developers)
+
+```
+go install github.com/getveil/veil/cmd/veil@latest
+```
+
+Or:
+
+```
+git clone https://github.com/getveil/veil.git
 cd veil
 make build
 # binary at bin/veil
