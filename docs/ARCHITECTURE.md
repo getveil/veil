@@ -1,6 +1,6 @@
 # Veil Architecture
 
-How Veil works today, how it evolves into the full broker described in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md), and the invariants that hold across both.
+How Veil works today, how it evolves into the full identity broker, and the invariants that hold across both.
 
 This document has two parts:
 
@@ -13,12 +13,12 @@ Parts III and IV cover the evolution path and what is explicitly out of scope.
 
 ## Architectural position
 
-Veil sits *below the agent*, on the wire, as a local mediation layer every outbound request passes through. The agent cannot opt out, cannot be lied to about what the identity layer sees, and does not need to cooperate for the layer to function. This is the structural commitment inherited from [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §1–3; every design decision downstream of it is constrained by it.
+Veil sits *below the agent*, on the wire, as a local mediation layer every outbound request passes through. The agent cannot opt out, cannot be lied to about what the identity layer sees, and does not need to cooperate for the layer to function. This is the structural commitment every design decision downstream of it is constrained by.
 
 Three invariants hold across every stage of the roadmap:
 
 1. **One chokepoint per machine.** All agent egress passes through a single local mediation process.
-2. **One event model.** Every mediation event — credential swap, policy verdict, anomaly flag — emits the same envelope shape into the same store. The dataset is the asset ([`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5); it compounds only if the shape stays stable.
+2. **One event model.** Every mediation event — credential swap, policy verdict, anomaly flag — emits the same envelope shape into the same store. The dataset is the asset; it compounds only if the shape stays stable.
 3. **No agent cooperation required.** No SDK, no callback, no framework adoption. The agent reads its `.env`, constructs headers, makes requests; Veil is the wire beneath it.
 
 We exclude any feature that would weaken these invariants, regardless of immediate utility.
@@ -65,15 +65,15 @@ Veil ships as a single Go binary with no background daemon, no cloud dependency,
 
 | Component | Package | Role |
 |---|---|---|
-| CLI | `internal/cli` | Command definitions: `init`, `run`, `status`, `add`, `list`, `log`, `skip`, `remove` |
+| CLI | `internal/cli` | Command definitions: `init`, `run`, `status`, `add`, `list`, `log`, `skip`, `remove`, `uninstall` |
 | Proxy | `internal/proxy` | HTTPS MITM proxy via `goproxy`. TLS termination, leaf cert cache, per-request injection pipeline. |
 | Injector | `internal/proxy/injector.go` | Aho-Corasick multi-pattern matching over URL, headers, and text-like request bodies. Replaces matched placeholders with real credentials subject to host-scoping. |
 | Basic decoder | `internal/proxy/basic_decoder.go` | Pre-pass that decodes `Authorization: Basic` and `Proxy-Authorization: Basic` headers, matches both username and secret halves to a vault record, rewrites with real values. |
 | Mismatch detector | `internal/proxy/mismatch_detector.go` | Post-pass that flags requests to credentialed hosts carrying an auth-shaped signal (Authorization / Cookie / `X-*-{token,auth,key,sig,signature}` / auth-shaped query params) when no injection fired. |
 | Vault | `internal/vault` | Encrypted credential store (per-project). Sealed blob on disk, master key held by the keystore. |
 | Keystore | `internal/vault/keystore_*.go` | Pluggable backend for the vault master key. Today: macOS Keychain (always), Linux Secret Service (probed at startup), age-encrypted file with `VEIL_PASSPHRASE` as fallback. |
-| Placeholder | `internal/placeholder` | Format-aware placeholder generation. 14 curated providers + a declarative `Format` registry. Correct prefix, length, and charset per service. Includes provider→host resolution so credentials are scoped automatically. |
-| Audit | `internal/audit` | SQLite-backed injection log. WAL mode, batched writes, v2 schema with `suspect_flag` and `auth_signal` columns for the mismatch detector. |
+| Placeholder | `internal/placeholder` | Format-aware placeholder generation: 17 providers via a declarative `Format` registry plus 5 hand-written providers (AWS, GitHub, Twilio, SendGrid, Supabase). Correct prefix, length, and charset per service. Includes provider→host resolution so credentials are scoped automatically. |
+| Audit | `internal/audit` | SQLite-backed injection log. WAL mode, batched writes, v3 schema with `suspect_flag` and `auth_signal` columns (mismatch detector) and a `signer_error` column (signer failures). |
 | Scanner | `internal/scanner` | `.env` file discovery (curated basenames; `.example` / `.sample` excluded). |
 | MCP config | `internal/mcpconfig` | Parses MCP server configs and extracts embedded credentials for migration to the vault. |
 | Runner | `internal/runner` | Agent process lifecycle — spawn with proxy + CA env vars, generate per-session PKCS12 truststore for JVM children (exposed via `JAVA_TOOL_OPTIONS`), forward signals, reclaim foreground tty, clean session temp dir. |
@@ -81,7 +81,7 @@ Veil ships as a single Go binary with no background daemon, no cloud dependency,
 
 ## Lifecycle of a request
 
-`veil run <agent>` performs the following sequence (`internal/runner/runner.go:44`):
+`veil run <agent>` performs the following sequence (`internal/runner/runner.go`):
 
 1. **Load vault.** Opens the per-project sealed blob, master key retrieved from the keystore.
 2. **Open audit DB.** Creates/opens the SQLite store, forces WAL + SHM materialization, chmods DB + sidecars to 0600 and the parent dir to 0700.
@@ -89,10 +89,11 @@ Veil ships as a single Go binary with no background daemon, no cloud dependency,
 4. **Build session CA bundle.** Writes a temp file combining system roots with Veil's CA for runtime injection into the child.
 5. **Start proxy.** Listens on `127.0.0.1:0` — random loopback port, never routable.
 6. **Spawn child.** Agent process is launched with:
-   - `HTTP_PROXY` / `HTTPS_PROXY` → `http://127.0.0.1:<proxy-port>`
-   - `NO_PROXY` → `localhost,127.0.0.1,::1` plus any `--skip` hosts
-   - `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `HTTPLIB2_CA_CERTS` → session CA bundle
-7. **Forward signals.** SIGINT, SIGTERM, SIGHUP forwarded to the child's process group.
+   - `HTTP_PROXY` / `HTTPS_PROXY` → `http://127.0.0.1:<proxy-port>` (lowercase variants also set)
+   - `NO_PROXY` → `localhost,127.0.0.1,::1` plus any `--skip` hosts (lowercase variant also set)
+   - `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `HTTPLIB2_CA_CERTS`, `CARGO_HTTP_CAINFO` → session CA bundle
+   - `JAVA_TOOL_OPTIONS` → `-Djavax.net.ssl.trustStore=...` for the per-session PKCS12 truststore, merged with any pre-existing value
+7. **Forward signals.** SIGINT, SIGTERM, SIGQUIT, SIGHUP forwarded to the child's process group. SIGINT initiates escalation: SIGTERM after 5s, SIGKILL after 10s if the child has not exited.
 8. **Wait.** Proxy runs until the child exits.
 9. **Cleanup.** Proxy stopped, PID file removed, session temp dir swept.
 
@@ -121,14 +122,15 @@ whose Authorization header uses keyed cryptography:
 Each signer returns one of three outcomes: `…_resigned` (sign and forward),
 `scheme_unmediated` (forward unchanged — no vaulted credential covers this
 host), or `signer_failed` (fail-closed 502 with `X-Veil-Error` and a
-`SignerError` audit row, queryable via `veil log --signer-failed`).
+`signer_failed` audit row capturing the error class in a `signer_error`
+column, queryable via `veil log --signer-failed`).
 
 ## Credential store
 
 The vault is **per-project** (keyed by project root path, `vault.meta` on disk records the project ID). The stored blob is sealed with a 32-byte master key generated at `veil init` time via `crypto/rand` and held by the keystore — it is never written to disk in clear text.
 
 - **macOS:** `security` framework (macOS Keychain), always selected.
-- **Linux:** Secret Service (D-Bus) probed at startup with a test Set/Delete (`keystore_auto.go:16`). If the probe fails, falls back to an age-encrypted key file at `~/.local/state/veil/` — this fallback requires `VEIL_PASSPHRASE` in the environment for every vault operation.
+- **Linux:** Secret Service (D-Bus) probed at startup with a test Set/Delete (`keystore_auto.go`). If the probe fails, falls back to an age-encrypted key file at `~/.local/state/veil/master.key.age` — this fallback requires `VEIL_PASSPHRASE` in the environment for every vault operation.
 - **Fallback on-disk file** is scrypt-protected via `filippo.io/age` with the parent dir chmod'd to 0700 and the file itself chmod'd to 0600.
 
 The keystore is a pluggable interface (`internal/vault/keystore.go`) — the same seam accepts external backing stores in the aspirational architecture (see Part II).
@@ -140,17 +142,18 @@ Every mediation event is recorded to a local SQLite database (`internal/audit/au
 - Timestamp, request ID (ULID, groups multi-hit requests), destination host, HTTP method, URL path
 - Credential ID and credential name (never the credential value)
 - Agent PID and agent command
-- Injection location — `header`, `body`, `url`, `blocked`, or `mismatch_suspected`
+- Injection location — `header`, `body`, `url`, `blocked`, `mismatch_suspected`, or `signer_failed`
 - Byte counts before/after injection
 - `suspect_flag` + `auth_signal` for records flagged by the mismatch detector
+- `signer_error` for signer-failure records (AWS SigV4, GitHub App JWT)
 
-The schema is versioned (`schema_version` table, currently v2). The database is chmod'd 0600 with parent directory 0700 on every open — idempotent, corrects existing installs. Queryable via `veil log` with `--since`, `--host`, `--credential`, `--suspect` filters.
+The schema is versioned (`schema_version` table, currently v3). The database is chmod'd 0600 with parent directory 0700 on every open — idempotent, corrects existing installs. Queryable via `veil log` with `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed` filters.
 
-This schema is the dataset referenced in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5. Every downstream capability in Part II — OTEL export, team dashboard, anomaly baselines, threat intelligence — subscribes to this same event stream. New columns are added under schema versioning; the shape never gets replaced.
+This schema is the dataset the rest of the platform is built around. Every downstream capability in Part II — OTEL export, team dashboard, anomaly baselines, threat intelligence — subscribes to this same event stream. New columns are added under schema versioning; the shape never gets replaced.
 
 ## How the MVP delivers the four outcomes
 
-Mapped to the four-outcome framing in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §2:
+Mapped to the four-outcome framing:
 
 - **Agents don't hold credentials.** Static substitution. `veil init` migrates secrets out of `.env` / MCP configs into the vault, replaces them with format-aware placeholders. The proxy rewrites placeholders on outbound requests. HTTP Bearer and HTTP Basic are both end-to-end. **AWS SigV4** (including STS session tokens) and **GitHub App JWT** are mediated end-to-end via dedicated signer functions (see "Signer functions" above). Remaining keyed-crypto schemes (HMAC webhook signatures, mTLS client certs) are **surfaced** by the transform-mismatch detector rather than silently failing.
 - **Agents can only do what you've authorized.** Host-scoping is the current authorization primitive — credentials fire only for hosts on their `AllowedHosts` list (derived automatically by provider match, URL parsing, or manual configuration, see `internal/placeholder/hosts.go`). Not yet a declarative policy language.
@@ -179,7 +182,7 @@ HTTP/HTTPS traffic from any tool that respects `HTTP_PROXY` / `HTTPS_PROXY`:
 | mTLS / client certificates | Credential used in TLS handshake, never at HTTP layer | Architectural constraint of the proxy model |
 | HMAC webhook signatures | Credential used as signing key, never appears on wire (keyed-crypto, Class 2) | **Surfaced by mismatch detector**; native signing — Part II. AWS SigV4 and GitHub App JWT are now re-signed by dedicated signer functions (see "Signer functions" above). |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret is traded for a bearer token *before* the request we see | Ephemeral brokering — Part II |
-| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | Our design choice — decompression risks exceed the gap |
+| Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded | Decompression risks exceed the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in future release |
 | Windows | No proxy substrate yet | Part II |
 
@@ -189,7 +192,7 @@ For a fuller treatment of what happens when mediation can't fire (and why the mi
 
 # Part II — Aspirational Architecture (on the roadmap)
 
-The MVP in Part I is the *primitive*. Part II is how that primitive expands into the full identity broker described in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §2 and §4, organized by the four outcomes. Each plane names its mechanism and the code seam it attaches to; detailed design is deferred to per-plane specs when the work is scheduled.
+The MVP in Part I is the *primitive*. Part II is how that primitive expands into the full identity broker, organized by the four outcomes. Each plane names its mechanism and the code seam it attaches to; detailed design is deferred to per-plane specs when the work is scheduled.
 
 ## Credential plane
 
@@ -200,14 +203,14 @@ The MVP in Part I is the *primitive*. Part II is how that primitive expands into
 ## Policy plane
 
 - **Next — declarative YAML policy engine.** Rules evaluate between injection and forward. Primitives: per-agent, per-service, per-operation — host allowlist, verb blocklist, path scope, rate limit. Denied requests return structured errors to the agent and flag the audit record. Seam: a new step in the proxy `OnRequest` pipeline, between the injector and the goproxy forward.
-- **Horizon — learned scoping.** Per-credential, per-endpoint, per-agent baselines computed from the audit corpus. Veil suggests tighter policies when usage stabilizes; the user approves; next rotation enforces. This is the policy-recommendation loop in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5.
+- **Horizon — learned scoping.** Per-credential, per-endpoint, per-agent baselines computed from the audit corpus. Veil suggests tighter policies when usage stabilizes; the user approves; next rotation enforces.
 - **Horizon — team inheritance and anomaly alerting.** Team-wide policy defaults, per-developer overrides. Anomaly signals on policy violations — "credential that has only ever hit `/users/me` just hit `/admin/keys`."
 
 ## Audit plane
 
 - **Next — centralized team audit dashboard.** Local SQLite remains the source of truth per machine; events are additionally exported upstream. OpenTelemetry export subscribes at the same `audit.Store.Record` seam. Configurable retention.
 - **Horizon — SIEM integrations.** Datadog, Splunk, Sumo Logic as additional subscribers. Compliance-evidence generation (SOC 2, ISO 27001) from the same corpus.
-- **Horizon — anomaly baselines and threat-intel feed.** Rolling baselines per credential / endpoint / agent. Curated cross-customer threat signatures derived from the aggregate dataset — the compounding moat in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5.
+- **Horizon — anomaly baselines and threat-intel feed.** Rolling baselines per credential / endpoint / agent. Curated cross-customer threat signatures derived from the aggregate dataset — the compounding moat.
 
 Every audit-plane capability reuses the MVP event shape. New columns are added under schema versioning; the envelope never gets replaced.
 
@@ -221,7 +224,7 @@ The existing proxy, injector, vault, and audit components are unchanged by kerne
 
 ## Daemonization
 
-[`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §3 describes "a local daemon on every developer machine." Today Veil is a per-session process — `veil run` starts it, it exits when the child exits. The step between is a long-running local daemon that persists the listener, the audit DB, and (in team mode) the synced credential store.
+The full broker calls for "a local daemon on every developer machine." Today Veil is a per-session process — `veil run` starts it, it exits when the child exits. The step between is a long-running local daemon that persists the listener, the audit DB, and (in team mode) the synced credential store.
 
 The parked egress-enforcement spec already describes the session-scoped primitives the daemon reuses: session-tagged proxy lifecycle, per-child scoping, graceful teardown. Daemonization adds a longer-lived parent process and an IPC surface for the CLI; it does not introduce a second mediation path.
 
@@ -254,17 +257,17 @@ The point of this layout is that none of Part II requires re-architecture. Every
 
 # Part IV — Explicitly out of scope
 
-Mirrors [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §4 — two adjacent categories are *not* ours to cover:
+Two adjacent categories are *not* ours to cover:
 
 - **MCP supply-chain scanning.** MCPScan, Invariant Labs, and Snyk's agent-scan serve that market. Our mediation telemetry can complement scanners; we are not one.
 - **Agent-behavior / prompt observability.** Prompt Security, Lakera, and Lasso serve that market. We emit credential and access events; we do not monitor general agent behavior.
 
-We hold these as load-bearing exclusions. Staying narrow is what makes the primitive compound — the moat in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5 is one event type in one store, and that breaks if the architecture absorbs adjacent categories.
+We hold these as load-bearing exclusions. Staying narrow is what makes the primitive compound — the moat is one event type in one store, and that breaks if the architecture absorbs adjacent categories.
 
 ---
 
 ## References
 
-- [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) — vision, four-outcome model, compounding-dataset thesis.
 - [`MVP.md`](MVP.md) — shipping scope, CLI surface, success criteria.
 - [`THREAT_MODEL.md`](THREAT_MODEL.md) — what Veil protects against, what it doesn't, deployment notes for hardened setups.
+- [`USE_CASES.md`](USE_CASES.md) — per-scenario coverage matrix.
