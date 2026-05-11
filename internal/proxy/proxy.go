@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -275,7 +276,13 @@ func stripHostPort(hostport string) string {
 // placeholder sentinel. A single bytes.Contains / strings.Contains lookup is
 // enough because the sentinel is embedded at a known offset in every
 // generated placeholder (see placeholder.Sentinel). The returned location is
-// "url", "header:<name>", or "body"; leaked is true if any hit is found.
+// "url", "header:<name>", "header:<name>(basic)", or "body"; leaked is true
+// if any hit is found.
+//
+// Basic auth credentials in Authorization / Proxy-Authorization headers are
+// base64-encoded, so a raw substring scan would miss a placeholder embedded
+// in the user or password half. detectLeak base64-decodes those values and
+// re-scans the plaintext.
 func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location string, leaked bool) {
 	if strings.Contains(newURL, placeholder.Sentinel) {
 		return "url", true
@@ -285,10 +292,44 @@ func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location 
 			if strings.Contains(v, placeholder.Sentinel) {
 				return "header:" + name, true
 			}
+			if isBasicAuthHeader(name) && basicAuthLeaked(v) {
+				return "header:" + name + "(basic)", true
+			}
 		}
 	}
 	if len(newBody) > 0 && bytes.Contains(newBody, []byte(placeholder.Sentinel)) {
 		return "body", true
 	}
 	return "", false
+}
+
+// isBasicAuthHeader reports whether name carries HTTP Basic credentials.
+// http.Header keys are canonicalized so a direct equality check is sufficient.
+func isBasicAuthHeader(name string) bool {
+	return name == "Authorization" || name == "Proxy-Authorization"
+}
+
+// basicAuthLeaked reports whether value is "Basic <base64>" whose decoded
+// payload contains the placeholder sentinel. Non-Basic schemes return false
+// (they are scanned by the raw header pass). Malformed base64 is treated as a
+// leak: a real client would have produced a decodable value, and forwarding
+// junk credentials to a non-allowed host risks exposing whatever the caller
+// actually meant to send.
+func basicAuthLeaked(value string) bool {
+	const schemeLen = len("Basic ")
+	if len(value) <= schemeLen {
+		return false
+	}
+	if !strings.EqualFold(value[:schemeLen], "Basic ") {
+		return false
+	}
+	encoded := strings.TrimSpace(value[schemeLen:])
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.URLEncoding.DecodeString(encoded)
+		if err != nil {
+			return strings.Contains(encoded, placeholder.Sentinel)
+		}
+	}
+	return bytes.Contains(raw, []byte(placeholder.Sentinel))
 }
