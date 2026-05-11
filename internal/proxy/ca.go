@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/config"
 )
 
 // CA holds a root certificate authority used for signing leaf certificates.

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/testutil"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/testutil"
 	"github.com/oklog/ulid/v2"
 )
 

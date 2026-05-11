@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/placeholder"
 )
 
 // sample is a representative input for a provider's Match/Generate.

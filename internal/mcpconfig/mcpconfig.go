@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/8enji/veil/internal/envkeys"
+	"github.com/getveil/veil/internal/envkeys"
 )
 
 const configFileName = "claude_desktop_config.json"

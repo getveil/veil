@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/vault"
 	"github.com/oklog/ulid/v2"
 )
 

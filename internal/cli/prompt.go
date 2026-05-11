@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 )
 
 type ynsChoice int

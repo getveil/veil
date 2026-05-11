@@ -5,9 +5,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/scanner"
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
+	"github.com/getveil/veil/internal/ui"
 )
 
 // scanUnvaultedSecretLikes returns the names of env vars in environ that look

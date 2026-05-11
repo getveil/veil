@@ -3,9 +3,9 @@ package cli
 import (
 	"fmt"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/skiphost"
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
 

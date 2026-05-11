@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/config"
 )
 
 func TestActiveProxyPIDsIgnoresDeadPIDs(t *testing.T) {

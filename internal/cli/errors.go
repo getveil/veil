@@ -6,10 +6,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/proxy"
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/proxy"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // Exit codes exposed to the shell. Stable across releases; scripts can rely

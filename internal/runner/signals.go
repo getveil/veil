@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 )
 
 const (

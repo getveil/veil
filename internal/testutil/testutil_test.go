@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/8enji/veil/internal/testutil"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/testutil"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func TestTempProjectRoot(t *testing.T) {

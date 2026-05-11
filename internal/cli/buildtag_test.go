@@ -5,7 +5,7 @@ package cli_test
 import (
 	"testing"
 
-	"github.com/8enji/veil/internal/cli"
+	"github.com/getveil/veil/internal/cli"
 )
 
 func TestProdBuildIgnoresMemKeystoreEnv(t *testing.T) {

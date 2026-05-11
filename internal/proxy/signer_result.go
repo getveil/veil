@@ -1,6 +1,6 @@
 package proxy
 
-import "github.com/8enji/veil/internal/audit"
+import "github.com/getveil/veil/internal/audit"
 
 // Signer Location values emitted into audit records.
 const (

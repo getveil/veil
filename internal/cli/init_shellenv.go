@@ -6,11 +6,11 @@ import (
 	"io"
 	"time"
 
-	"github.com/8enji/veil/internal/cli/correlate"
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/scanner"
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/cli/correlate"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // nonEmptyShellCandidates returns candidates whose Value is not empty.

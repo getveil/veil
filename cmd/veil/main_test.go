@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/cli"
+	"github.com/getveil/veil/internal/cli"
 	"github.com/spf13/cobra"
 )
 

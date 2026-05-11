@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/testutil"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/testutil"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // makeCred is a thin wrapper that delegates to testutil.MakeCred while

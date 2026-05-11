@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/placeholder"
 )
 
 // vaultMeta is the on-disk JSON written to vault.meta.

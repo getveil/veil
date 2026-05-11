@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/scanner"
+	"github.com/getveil/veil/internal/scanner"
 )
 
 // TestAdd_ValueFlag_WarnsShellHistory verifies that using --value emits a

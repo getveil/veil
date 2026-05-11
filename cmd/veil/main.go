@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/8enji/veil/internal/cli"
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/cli"
+	"github.com/getveil/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
 

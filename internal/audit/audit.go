@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 	_ "modernc.org/sqlite"
 )
 

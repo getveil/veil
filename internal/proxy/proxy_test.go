@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // testSetup creates a temporary vault with a mem keystore and a temporary

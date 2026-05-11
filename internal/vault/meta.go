@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/config"
 )
 
 // ReadProjectID reads vault.meta at the project root and returns the stored

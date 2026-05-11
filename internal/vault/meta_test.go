@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func TestReadProjectIDReturnsStoredValue(t *testing.T) {

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/proxy"
-	"github.com/8enji/veil/internal/skiphost"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/proxy"
+	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func TestInitHappyPath(t *testing.T) {

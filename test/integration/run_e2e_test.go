@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/scanner"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
 )
 
 // projectRoot returns the absolute path to the Veil repo root. It walks

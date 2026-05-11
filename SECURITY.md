@@ -8,7 +8,7 @@ Veil is a security tool. We take vulnerability reports seriously and aim to ackn
 
 Use GitHub's private vulnerability reporting:
 
-1. Go to https://github.com/8enji/veil/security/advisories/new
+1. Go to https://github.com/getveil/veil/security/advisories/new
 2. Provide a description, reproduction steps, and impact
 3. We will respond within 72 hours
 

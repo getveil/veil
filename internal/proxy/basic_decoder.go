@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // basicSchemes lists the header names that carry HTTP Basic credentials.

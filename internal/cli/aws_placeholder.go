@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/8enji/veil/internal/placeholder"
+import "github.com/getveil/veil/internal/placeholder"
 
 // generateAWSAccessKeyIDPlaceholder asks the AWS provider for a placeholder
 // of the given access key ID, retrying up to a small budget to avoid
