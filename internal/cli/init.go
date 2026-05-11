@@ -136,9 +136,26 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return wrapErr("keystore", err)
 	}
-	v, err := vault.CreateVault(root, vault.NewID(), ks)
-	if err != nil {
-		return wrapErr("creating vault", err)
+
+	var v *vault.Vault
+	if dryRun {
+		// Dry-run must not touch .veil/ or the keystore; build a transient
+		// in-memory vault so placeholder generation and duplicate checks
+		// still work but no state is persisted.
+		v = vault.NewInMemoryVault(root, vault.NewID())
+	} else {
+		// On --force, the existing project's master key would otherwise be
+		// orphaned in the keystore (each CreateVault generates a new
+		// projectID). Best-effort delete the prior entry first.
+		if force {
+			if priorID, err := vault.ReadProjectID(root); err == nil {
+				_ = ks.Delete(priorID)
+			}
+		}
+		v, err = vault.CreateVault(root, vault.NewID(), ks)
+		if err != nil {
+			return wrapErr("creating vault", err)
+		}
 	}
 
 	ui.Phase(w, "Vaulting secrets...")
