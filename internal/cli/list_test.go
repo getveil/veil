@@ -328,3 +328,56 @@ func TestList_AWSCredentialNoSessionToken(t *testing.T) {
 		}
 	}
 }
+
+// TestList_AWSDetectionByAccessKeyID locks in the second branch of
+// isAWSCred: a credential with AWSAccessKeyID set but Scheme == ""
+// must still be tagged "(aws)" and expanded into per-secret rows.
+func TestList_AWSDetectionByAccessKeyID(t *testing.T) {
+	root := initProject(t)
+
+	const (
+		akid     = "AKIANOSCHEME00000000"
+		akidPh   = "AKIAPHNOSCHEME000000"
+		secret   = "secretWithoutSchemeField1234567890ABCDE"
+		secretPh = "secretPHWithoutSchemeField00000000000PH"
+	)
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	if err := v.Add(&vault.Credential{
+		ID: vault.NewID(), Name: "aws-no-scheme",
+		Real: secret, Placeholder: secretPh,
+		// Scheme intentionally left empty.
+		AWSAccessKeyID:            akid,
+		AWSAccessKeyIDPlaceholder: akidPh,
+		AllowedHosts:              []string{"*.amazonaws.com"},
+		CreatedAt:                 time.Now(),
+	}); err != nil {
+		t.Fatalf("add aws: %v", err)
+	}
+
+	origIsTTY := stdoutIsTerminal
+	stdoutIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdoutIsTerminal = origIsTTY })
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"list", "--path", root, "--reveal"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list --reveal: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "(aws)") {
+		t.Errorf("expected (aws) tag for credential detected via AWSAccessKeyID:\n%s", s)
+	}
+	if !strings.Contains(s, "AWS_ACCESS_KEY_ID") || !strings.Contains(s, akid) {
+		t.Errorf("expected AKID row with value %q:\n%s", akid, s)
+	}
+	if !strings.Contains(s, "AWS_SECRET_ACCESS_KEY") || !strings.Contains(s, secret) {
+		t.Errorf("expected secret-key row with value %q:\n%s", secret, s)
+	}
+}

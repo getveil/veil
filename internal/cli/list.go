@@ -211,8 +211,12 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			if r.hosts == "" {
+			// Sub-rows (AWS expansion) intentionally render no hosts string;
+			// only the anchor row carries the hosts column.
+			var hosts string
+			if r.hosts != "" {
+				hosts = styleHosts(r.hosts, hostsW)
+			} else {
 				hosts = padRight("", hostsW)
 			}
 			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
@@ -232,8 +236,12 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			if r.hosts == "" {
+			// Sub-rows (AWS expansion) intentionally render no hosts string;
+			// only the anchor row carries the hosts column.
+			var hosts string
+			if r.hosts != "" {
+				hosts = styleHosts(r.hosts, hostsW)
+			} else {
 				hosts = padRight("", hostsW)
 			}
 			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
