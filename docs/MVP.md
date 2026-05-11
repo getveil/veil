@@ -8,19 +8,19 @@ What ships today, what a developer can rely on, and where the edges are. For mec
 
 A single Go binary, `veil`. Local mediation of agent egress via an in-process HTTPS MITM proxy started by `veil run` and torn down when the agent exits. macOS and Linux. No daemon, no cloud, no account, no network dependency at runtime.
 
-The free tier described in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §7 is this binary. Everything below is what that binary does today.
+The MVP free tier is this binary. Everything below is what that binary does today.
 
 ---
 
 ## 2. What you get, by outcome
 
-Mapped to the four outcomes in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §2.
+Mapped to the four outcomes Veil targets.
 
 **Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files and MCP configs into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). **AWS SigV4** (including STS session-token credentials) and **GitHub Apps** (api.github.com and GitHub Enterprise Server) are also mediated end-to-end: Veil re-signs the request at the proxy with the real SecretAccessKey or RSA private key. The remaining keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-**Every action is on the record.** Every credential swap, blocked event, and mismatch-detector flag is written to a local SQLite database (schema v2, columns including `suspect_flag` and `auth_signal`). The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`, `--suspect`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md) §audit-plane.
+**Every action is on the record.** Every credential swap, blocked event, mismatch-detector flag, and signer failure is written to a local SQLite database (schema v3, columns including `suspect_flag`, `auth_signal`, and `signer_error`). The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md#audit-plane).
 
 **Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`, `npm`, `pip`, `twine`, `docker push`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
 
@@ -35,11 +35,12 @@ The public contract. Names and flags below are stable for the MVP series.
 | `veil init` | Scan the project for `.env` files and MCP configs, vault any secrets found, write placeholders back, install the local CA. |
 | `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
-| `veil add <name>` | Add a credential to the vault. `--user <value>` creates an HTTP Basic credential (username + secret pair). |
-| `veil list` | List managed credentials by name. Basic credentials tagged `(basic)`. Values are never printed. |
-| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--suspect`. `--suspect` rows are marked `[!]`. |
-| `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. |
+| `veil add <name>` | Add a credential to the vault. Flags select the scheme: `--user` for HTTP Basic, `--scheme aws` for AWS SigV4 (with `--aws-access-key-id` and `--aws-session-token-file`/`--aws-session-token-stdin`), `--scheme github_app` for GitHub App JWT (with `--github-app-id`, `--github-installation-id`). Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
+| `veil list` | List managed credentials by name. Basic credentials tagged `(basic)`. Values are never printed unless `--reveal` is passed. |
+| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed`. `--suspect` rows are marked `[!]`. |
+| `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. `--list` shows the current list; `--remove <host>` deletes an entry. |
 | `veil remove <name>` | Delete a credential from the vault. |
+| `veil uninstall` | Reverse `veil init`: restore original `.env` and MCP files from backups, wipe vault and audit state. `--dry-run` previews the plan. |
 
 ---
 
@@ -65,7 +66,7 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 | HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. AWS SigV4 and GitHub App JWT are now re-signed natively (see §2). |
 | mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
-| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | Our design choice — decompression risk exceeds the gap |
+| Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded | Decompression risk exceeds the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in a future release |
 | Windows | No proxy substrate yet | Part II |
 
@@ -80,7 +81,7 @@ These are not "not yet." We hold them as load-bearing exclusions.
 - **MCP supply-chain scanning.** MCPScan, Invariant Labs, Snyk's agent-scan serve that market.
 - **Agent-behavior / prompt observability.** Prompt Security, Lakera, Lasso serve that market.
 
-[`ARCHITECTURE.md`](ARCHITECTURE.md) Part IV explains why the moat in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5 depends on staying narrow.
+[`ARCHITECTURE.md`](ARCHITECTURE.md) Part IV explains why the moat depends on staying narrow.
 
 ---
 
