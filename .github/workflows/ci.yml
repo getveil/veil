@@ -17,6 +17,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    # Ubuntu runners have no D-Bus session, so AutoKeystore probes the
+    # libsecret keyring, fails, and falls back to the age-encrypted file
+    # keystore — which requires VEIL_PASSPHRASE. Integration tests strip
+    # VEIL_TEST_KEYSTORE on purpose so they exercise the real production
+    # chain end-to-end, so the passphrase must be present in the workflow
+    # env. macOS Keychain doesn't need this but the var is harmless there.
+    env:
+      VEIL_PASSPHRASE: ci-test-passphrase-not-secret
     steps:
       - uses: actions/checkout@v4
 
