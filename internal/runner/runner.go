@@ -5,6 +5,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,22 +208,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	// 11c. Print exit summary to stderr.
-	sessionDuration := time.Since(sessionStart)
-	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := auditStore.Summary(sessionStart)
-	ui.Dim(os.Stderr, "───────────────────────────────────────")
-	fmt.Fprintf(os.Stderr, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
-	fmt.Fprintf(os.Stderr, "  Duration:    %s\n", formatDuration(sessionDuration))
-	if summaryErr == nil {
-		hostInfo := "0 hosts"
-		if len(sessionHosts) > 0 {
-			hostInfo = fmt.Sprintf("%d host(s)", len(sessionHosts))
-		}
-		fmt.Fprintf(os.Stderr, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
-		if sessionBlocked > 0 {
-			fmt.Fprintf(os.Stderr, "  Blocked:     %d\n", sessionBlocked)
-		}
-	}
-	fmt.Fprintln(os.Stderr)
+	printSessionFooter(os.Stderr, auditStore, sessionStart, time.Since(sessionStart), exitCode)
 
 	// 12. Return result.
 	if waitErr != nil {
@@ -407,6 +393,41 @@ func formatExitSummary(exitCode int) string {
 		return "session complete"
 	}
 	return fmt.Sprintf("session ended (exit %d)", exitCode)
+}
+
+// auditFooterSource is the audit-store surface the session footer needs:
+// flush any buffered rows so the SELECT below sees an up-to-date view, then
+// query aggregates. Defined as an interface so footer-rendering tests can
+// substitute a fake without spinning up SQLite.
+type auditFooterSource interface {
+	Flush()
+	Summary(since time.Time) (total int, blocked int, hosts []string, lastInjection *audit.Row, err error)
+}
+
+// printSessionFooter writes the session-end summary block to w. Flushes the
+// audit buffer first because audit.Store batches writes in memory; without
+// the flush, a short session whose injection count never reached the 50-row
+// auto-flush threshold or the 100ms ticker tick would render zeros while
+// the rows are still buffered (F-9).
+func printSessionFooter(w io.Writer, store auditFooterSource, sessionStart time.Time, sessionDuration time.Duration, exitCode int) {
+	store.Flush()
+	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := store.Summary(sessionStart)
+	ui.Dim(w, "───────────────────────────────────────")
+	fmt.Fprintf(w, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
+	fmt.Fprintf(w, "  Duration:    %s\n", formatDuration(sessionDuration))
+	if summaryErr == nil {
+		hostInfo := "0 hosts"
+		if len(sessionHosts) > 0 {
+			hostInfo = fmt.Sprintf("%d host(s)", len(sessionHosts))
+		}
+		fmt.Fprintf(w, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
+		if sessionBlocked > 0 {
+			fmt.Fprintf(w, "  Blocked:     %d\n", sessionBlocked)
+		}
+	} else {
+		fmt.Fprintf(w, "  Injections:  %s\n", ui.Muted.Sprint("(unavailable)"))
+	}
+	fmt.Fprintln(w)
 }
 
 // formatDuration formats a duration as "Xh Ym Zs", omitting zero components.
