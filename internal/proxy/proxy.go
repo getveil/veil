@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elazarl/goproxy"
 	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
-	"github.com/elazarl/goproxy"
 	"github.com/oklog/ulid/v2"
 )
 
