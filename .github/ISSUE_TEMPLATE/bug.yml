@@ -1,0 +1,45 @@
+name: Bug report
+description: Something didn't work the way it should
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: What command did you run?
+      description: Paste the exact command, including flags.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: Include any error output (redact secrets).
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: macOS 14.4 / Ubuntu 22.04
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Veil version (`veil --version`)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output (redacted)
+      description: Paste `veil log --since 1h` output if applicable.
+      render: text
