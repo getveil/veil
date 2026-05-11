@@ -46,7 +46,7 @@ func TestIsSecretLike_CIMetadataNotSecret(t *testing.T) {
 		{"GITHUB_EVENT_NAME", "push"},
 		{"GITHUB_JOB", "test"},
 		{"GITHUB_REF_TYPE", "branch"},
-		{"GITHUB_REPOSITORY_OWNER", "8enji"},
+		{"GITHUB_REPOSITORY_OWNER", "getveil"},
 		{"GITHUB_WORKFLOW", "CI"},
 	} {
 		if IsSecretLike(kv.name, kv.value) {
