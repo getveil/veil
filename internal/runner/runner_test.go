@@ -911,6 +911,7 @@ func TestSweepStaleSessionDirsLeavesFresh(t *testing.T) {
 type fakeAuditFooterSource struct {
 	total       int
 	blocked     int
+	leaked      int
 	hosts       []string
 	err         error
 	flushed     bool
@@ -926,11 +927,11 @@ func (f *fakeAuditFooterSource) Flush() {
 	f.flushedAt = f.calls
 }
 
-func (f *fakeAuditFooterSource) Summary(_ time.Time) (int, int, []string, *audit.Row, error) {
+func (f *fakeAuditFooterSource) Summary(_ time.Time) (int, int, int, []string, *audit.Row, error) {
 	f.calls++
 	f.summaryCall = true
 	f.summaryAt = f.calls
-	return f.total, f.blocked, f.hosts, nil, f.err
+	return f.total, f.blocked, f.leaked, f.hosts, nil, f.err
 }
 
 // TestPrintSessionFooter_F9_RendersInjectionCount is the F-9 regression test:
@@ -972,6 +973,49 @@ func TestPrintSessionFooter_F9_FlushesBeforeQuery(t *testing.T) {
 	}
 	if src.flushedAt >= src.summaryAt {
 		t.Fatalf("Flush must run BEFORE Summary; got flushedAt=%d summaryAt=%d", src.flushedAt, src.summaryAt)
+	}
+}
+
+// TestPrintSessionFooter_LeaksRenderedSeparately verifies the footer
+// distinguishes leaked rows from successful injections. A placeholder leak
+// is a refused request — not a swap — so it must not increment the
+// "Injections" counter. Instead, when N leaks occurred the footer shows a
+// dedicated "Leaks: N" line.
+func TestPrintSessionFooter_LeaksRenderedSeparately(t *testing.T) {
+	src := &fakeAuditFooterSource{
+		total:   1,
+		blocked: 0,
+		leaked:  2,
+		hosts:   []string{"api.example.com"},
+	}
+	var buf bytes.Buffer
+	printSessionFooter(&buf, src, time.Now(), 5*time.Second, 0)
+
+	out := buf.String()
+	if !strings.Contains(out, "Injections:  1 across 1 host(s)") {
+		t.Errorf("footer should show only the 1 real injection, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Leaks:       2") {
+		t.Errorf("footer should show separate leak count of 2, got:\n%s", out)
+	}
+	if strings.Contains(out, "Injections:  3") {
+		t.Errorf("footer must not roll leaks into injections, got:\n%s", out)
+	}
+}
+
+// TestPrintSessionFooter_NoLeaksHidesLine verifies the "Leaks" line is
+// omitted when no leaks occurred, keeping the common-case banner clean.
+func TestPrintSessionFooter_NoLeaksHidesLine(t *testing.T) {
+	src := &fakeAuditFooterSource{
+		total:   1,
+		blocked: 0,
+		leaked:  0,
+		hosts:   []string{"api.example.com"},
+	}
+	var buf bytes.Buffer
+	printSessionFooter(&buf, src, time.Now(), time.Second, 0)
+	if strings.Contains(buf.String(), "Leaks:") {
+		t.Errorf("footer must not show 'Leaks:' line when leak count is zero, got:\n%s", buf.String())
 	}
 }
 

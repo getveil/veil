@@ -204,12 +204,22 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 
 	unscoped := secretsVaulted - secretsScoped
-	ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
-	if secretsScoped > 0 {
-		ui.Step(w, fmt.Sprintf("%d auto-scoped to hosts", secretsScoped))
-	}
-	if unscoped > 0 {
-		ui.Warn(w, fmt.Sprintf("%d unscoped (use veil add --host to scope)", unscoped))
+	if dryRun {
+		ui.Step(w, fmt.Sprintf("would store %d %s in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
+		if secretsScoped > 0 {
+			ui.Step(w, fmt.Sprintf("%d would be auto-scoped to hosts", secretsScoped))
+		}
+		if unscoped > 0 {
+			ui.Warn(w, fmt.Sprintf("%d would be unscoped (use veil add --host to scope)", unscoped))
+		}
+	} else {
+		ui.Step(w, fmt.Sprintf("%d %s stored in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
+		if secretsScoped > 0 {
+			ui.Step(w, fmt.Sprintf("%d auto-scoped to hosts", secretsScoped))
+		}
+		if unscoped > 0 {
+			ui.Warn(w, fmt.Sprintf("%d unscoped (use veil add --host to scope)", unscoped))
+		}
 	}
 	_, _ = fmt.Fprintln(w)
 
@@ -224,13 +234,25 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		appendGitignore(root)
 	}
 
-	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
-	_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
-	if mcpConfigsProcessed > 0 {
-		_, _ = fmt.Fprintf(w, "  MCP configs processed: %d\n", mcpConfigsProcessed)
+	if dryRun {
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Dry-run preview for %s — no changes made", root))
+		_, _ = fmt.Fprintf(w, "  .env files that would be processed:  %d\n", len(envPaths))
+		if mcpConfigsProcessed > 0 {
+			_, _ = fmt.Fprintf(w, "  MCP configs that would be processed: %d\n", mcpConfigsProcessed)
+		}
+		_, _ = fmt.Fprintf(w, "  Secrets that would be vaulted:       %d\n", secretsVaulted)
+		_, _ = fmt.Fprintln(w)
+		ui.Dim(w, "Re-run without --dry-run to apply these changes.")
+		_, _ = fmt.Fprintln(w)
+	} else {
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
+		_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
+		if mcpConfigsProcessed > 0 {
+			_, _ = fmt.Fprintf(w, "  MCP configs processed: %d\n", mcpConfigsProcessed)
+		}
+		_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
+		_, _ = fmt.Fprintln(w)
 	}
-	_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
-	_, _ = fmt.Fprintln(w)
 	return nil
 }
 

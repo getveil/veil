@@ -401,7 +401,7 @@ func formatExitSummary(exitCode int) string {
 // substitute a fake without spinning up SQLite.
 type auditFooterSource interface {
 	Flush()
-	Summary(since time.Time) (total int, blocked int, hosts []string, lastInjection *audit.Row, err error)
+	Summary(since time.Time) (total int, blocked int, leaked int, hosts []string, lastInjection *audit.Row, err error)
 }
 
 // printSessionFooter writes the session-end summary block to w. Flushes the
@@ -411,7 +411,7 @@ type auditFooterSource interface {
 // the rows are still buffered (F-9).
 func printSessionFooter(w io.Writer, store auditFooterSource, sessionStart time.Time, sessionDuration time.Duration, exitCode int) {
 	store.Flush()
-	sessionTotal, sessionBlocked, sessionHosts, _, summaryErr := store.Summary(sessionStart)
+	sessionTotal, sessionBlocked, sessionLeaked, sessionHosts, _, summaryErr := store.Summary(sessionStart)
 	ui.Dim(w, "───────────────────────────────────────")
 	fmt.Fprintf(w, "%s %s\n", ui.Success.Sprint("veil"), formatExitSummary(exitCode))
 	fmt.Fprintf(w, "  Duration:    %s\n", formatDuration(sessionDuration))
@@ -423,6 +423,13 @@ func printSessionFooter(w io.Writer, store auditFooterSource, sessionStart time.
 		fmt.Fprintf(w, "  Injections:  %d across %s\n", sessionTotal, hostInfo)
 		if sessionBlocked > 0 {
 			fmt.Fprintf(w, "  Blocked:     %d\n", sessionBlocked)
+		}
+		// Leaks are distinct from injections: the request was refused before
+		// any real secret reached the wire. Surface them separately so a
+		// user trusting "Injections: N" never mistakes a placeholder leak
+		// for a successful swap.
+		if sessionLeaked > 0 {
+			fmt.Fprintf(w, "  Leaks:       %d\n", sessionLeaked)
 		}
 	} else {
 		fmt.Fprintf(w, "  Injections:  %s\n", ui.Muted.Sprint("(unavailable)"))
