@@ -36,6 +36,25 @@ func TestIsSecretLike_SecretKeyName(t *testing.T) {
 	}
 }
 
+func TestIsSecretLike_CIMetadataNotSecret(t *testing.T) {
+	// GitHub Actions injects these vars into every job. They are runner
+	// metadata, not credentials, and must not trip the secret-like heuristic
+	// even though their names contain "GITHUB". Misclassification triggers
+	// the deterministic-sentinel collision bug (see TestGenerate_NoDeterministicSentinelCollisionForShortValues).
+	for _, kv := range []struct{ name, value string }{
+		{"GITHUB_REF_NAME", "main"},
+		{"GITHUB_EVENT_NAME", "push"},
+		{"GITHUB_JOB", "test"},
+		{"GITHUB_REF_TYPE", "branch"},
+		{"GITHUB_REPOSITORY_OWNER", "8enji"},
+		{"GITHUB_WORKFLOW", "CI"},
+	} {
+		if IsSecretLike(kv.name, kv.value) {
+			t.Errorf("%s=%q should not be classified secret-like (CI metadata)", kv.name, kv.value)
+		}
+	}
+}
+
 func TestIsSecretLike_HighEntropyLong(t *testing.T) {
 	// 40-char high-entropy string.
 	value := "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"

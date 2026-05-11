@@ -122,8 +122,11 @@ func TestHostsForCredential_UnknownSecret(t *testing.T) {
 }
 
 func TestHostsForCredential_NameMatchGitHub(t *testing.T) {
-	// Name contains GITHUB but value has no prefix — should still match provider.
-	hosts := HostsForCredential("GITHUB_ENTERPRISE_TOKEN", "custom-token-value")
+	// Name contains GITHUB and value is credential-shaped (>= secretMinLength)
+	// but lacks a recognized prefix — name-only fallback still scopes to
+	// GitHub hosts. Short values like CI metadata (main, push) are excluded
+	// by the value-length gate so the provider doesn't misclassify them.
+	hosts := HostsForCredential("GITHUB_ENTERPRISE_TOKEN", "custom-token-value-1234567890")
 	if len(hosts) == 0 {
 		t.Fatal("expected hosts for name-matched GitHub credential")
 	}

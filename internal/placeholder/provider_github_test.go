@@ -28,8 +28,24 @@ func TestProviderGitHub(t *testing.T) {
 		})
 	}
 	t.Run("match_name", func(t *testing.T) {
-		if !prov.Match("GITHUB_TOKEN", "anything") {
-			t.Fatal("should match GITHUB in name")
+		// Name-only fallback requires a credential-shaped value length so CI
+		// metadata like GITHUB_REF_NAME=main isn't misclassified as a secret.
+		if !prov.Match("GITHUB_TOKEN", strings.Repeat("a", 40)) {
+			t.Fatal("should match GITHUB in name for credential-shaped value")
+		}
+	})
+	t.Run("no_match_short_value_with_github_in_name", func(t *testing.T) {
+		// GitHub Actions injects GITHUB_REF_NAME=main and similar metadata.
+		// These must not be classified as secrets.
+		for _, kv := range []struct{ name, value string }{
+			{"GITHUB_REF_NAME", "main"},
+			{"GITHUB_EVENT_NAME", "push"},
+			{"GITHUB_JOB", "test"},
+			{"GITHUB_REF_TYPE", "branch"},
+		} {
+			if prov.Match(kv.name, kv.value) {
+				t.Errorf("should not match CI metadata %s=%q", kv.name, kv.value)
+			}
 		}
 	})
 	t.Run("no_match", func(t *testing.T) {

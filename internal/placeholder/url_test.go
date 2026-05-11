@@ -99,7 +99,10 @@ func TestTryURL_LengthPreserved(t *testing.T) {
 	restore := setDeterministicRng(90)
 	defer restore()
 
-	input := "postgres://user:p+ss@host/db"
+	// Password must be longer than len(Sentinel) for length preservation —
+	// shorter passwords route through sentinelize's append branch to avoid
+	// producing a deterministic, zero-randomness placeholder.
+	input := "postgres://user:p4ssw0rd@host/db"
 	result, ok := tryURL(input)
 	if !ok {
 		t.Fatal("expected ok=true for postgres URL with password")

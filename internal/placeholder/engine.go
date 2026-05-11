@@ -43,15 +43,20 @@ var rng io.Reader = rand.Reader
 const Sentinel = "VEIL"
 
 // sentinelize overwrites len(Sentinel) bytes of s starting at offset with
-// Sentinel. If s is too short to host the sentinel at that offset, Sentinel
-// is appended instead so callers always receive a sentinel-bearing output
-// (detectability is the strong invariant; exact-length preservation is the
-// weak one).
+// Sentinel. If s is too short to host the sentinel at that offset, or if
+// overwriting would consume every byte of s (leaving the output with zero
+// randomness — a deterministic value that would defeat collision retry),
+// Sentinel is appended instead. Detectability is the strong invariant;
+// exact-length preservation is the weak one.
 func sentinelize(s string, offset int) string {
 	if offset < 0 {
 		offset = 0
 	}
-	if offset+len(Sentinel) > len(s) {
+	// Append when (a) the sentinel doesn't fit at offset, or (b) overwriting
+	// would clobber all of s — case (b) is the bug that lets
+	// Generate("GITHUB_EVENT_NAME", "push", seen) collide deterministically
+	// against any prior "VEIL" entry.
+	if offset+len(Sentinel) > len(s) || (offset == 0 && len(s) == len(Sentinel)) {
 		return s + Sentinel
 	}
 	b := []byte(s)

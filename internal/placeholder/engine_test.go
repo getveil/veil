@@ -128,6 +128,58 @@ func TestGenerateRetriesOnCollision(t *testing.T) {
 	}
 }
 
+func TestGenerate_NoDeterministicSentinelCollisionForShortValues(t *testing.T) {
+	// Regression: prior to the sentinelize fix, generating a placeholder for
+	// any 4-char value (== len(Sentinel)) that fell through to a 0-offset
+	// sentinel branch (charclass fallback, GitHub provider unprefixed) yielded
+	// the literal string "VEIL". A second call with another 4-char value of
+	// the same shape collided deterministically against the seen set and
+	// exhausted the retry budget — observed in CI as
+	//   "generating placeholder for GITHUB_EVENT_NAME: could not resolve collision".
+	seen := Set{}
+	// Use the name regex pathway via "TOKEN" so the value can be 4 chars and
+	// still reach Generate. GITHUB_* would also work but exercises the same
+	// path.
+	ph1, err := Generate("API_TOKEN", "main", seen)
+	if err != nil {
+		t.Fatalf("first Generate: %v", err)
+	}
+	if ph1 == Sentinel {
+		t.Fatalf("first placeholder is the bare sentinel %q — sentinelize destroyed all randomness", ph1)
+	}
+	seen[ph1] = struct{}{}
+
+	ph2, err := Generate("API_TOKEN", "push", seen)
+	if err != nil {
+		t.Fatalf("second Generate must not collide: %v", err)
+	}
+	if ph2 == ph1 {
+		t.Fatalf("second placeholder %q equals first %q — deterministic output", ph2, ph1)
+	}
+}
+
+func TestSentinelize_PreservesRandomnessForShortInput(t *testing.T) {
+	// sentinelize must not produce a sentinel-only output even when offset=0
+	// and len(s) == len(Sentinel). Doing so makes generateOnce deterministic
+	// and breaks Generate's collision retry budget.
+	out := sentinelize("abcd", 0)
+	if out == Sentinel {
+		t.Fatalf("sentinelize(%q, 0) = %q (sentinel only) — must preserve randomness", "abcd", out)
+	}
+	if !contains(out, Sentinel) {
+		t.Fatalf("sentinelize output %q must still contain sentinel %q", out, Sentinel)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGenerateReturnsCollisionErrorWhenSaturated(t *testing.T) {
 	// Build an 'existing' set that will catch every output by seeding with
 	// each candidate we observe. If the provider is deterministic (impossible
