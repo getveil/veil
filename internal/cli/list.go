@@ -108,7 +108,7 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		base := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
 		var tag string
 		switch {
-		case c.Scheme == "aws" || c.AWSAccessKeyID != "":
+		case isAWSCred(c):
 			tag = "(aws)"
 		case c.Scheme == "github_app" || c.GitHubAppID != 0:
 			tag = "(github app)"
@@ -128,8 +128,7 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 			base.hosts = "(none)"
 		}
 
-		isAWS := c.Scheme == "aws" || c.AWSAccessKeyID != ""
-		if expandAWS && isAWS {
+		if expandAWS && isAWSCred(c) {
 			// Row 1: AKID (anchors the credential's name/hosts/source/last).
 			r1 := base
 			r1.varName = "AWS_ACCESS_KEY_ID"
@@ -306,4 +305,11 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// isAWSCred reports whether c should be treated as an AWS credential for
+// display purposes. Centralizing the predicate keeps tag selection and
+// row expansion in lockstep.
+func isAWSCred(c *vault.Credential) bool {
+	return c.Scheme == "aws" || c.AWSAccessKeyID != ""
 }
