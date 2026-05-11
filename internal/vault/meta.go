@@ -26,10 +26,10 @@ func ReadProjectID(root string) (string, error) {
 	return meta.ProjectID, nil
 }
 
-// ReadVaultedFiles returns the absolute paths recorded in vault.meta. Returns
-// an empty slice if vault.meta is missing or the field was never written
-// (older meta files predate the registry).
-func ReadVaultedFiles(root string) ([]string, error) {
+// ReadVaultedFiles returns the entries recorded in vault.meta. Returns an
+// empty slice if vault.meta is missing or the field was never written (older
+// meta files predate the registry).
+func ReadVaultedFiles(root string) ([]VaultedFile, error) {
 	meta, err := readMeta(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -40,10 +40,11 @@ func ReadVaultedFiles(root string) ([]string, error) {
 	return meta.VaultedFiles, nil
 }
 
-// AddVaultedFile appends path to vault.meta's vaulted-files registry if it is
-// not already present. The path is converted to an absolute path before
-// storage so uninstall works regardless of the caller's cwd.
-func AddVaultedFile(root, path string) error {
+// AddVaultedFile appends an entry to vault.meta's vaulted-files registry if
+// the path is not already present. Path is converted to an absolute path
+// before storage so uninstall works regardless of the caller's cwd. Kind is
+// recorded so uninstall can dispatch the right classifier.
+func AddVaultedFile(root, path string, kind FileKind) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("vault.meta: abs path: %w", err)
@@ -52,12 +53,12 @@ func AddVaultedFile(root, path string) error {
 	if err != nil {
 		return err
 	}
-	for _, p := range meta.VaultedFiles {
-		if p == abs {
+	for _, entry := range meta.VaultedFiles {
+		if entry.Path == abs {
 			return nil
 		}
 	}
-	meta.VaultedFiles = append(meta.VaultedFiles, abs)
+	meta.VaultedFiles = append(meta.VaultedFiles, VaultedFile{Path: abs, Kind: kind})
 	return writeMeta(root, meta)
 }
 

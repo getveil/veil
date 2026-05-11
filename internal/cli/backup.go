@@ -30,12 +30,13 @@ func writeBackup(src string) error {
 // recordVaultedBackup writes src's backup AND registers src's absolute path
 // in vault.meta so uninstall can locate it even when src is outside root.
 // Registry-write failures are returned (not just logged) — losing track of a
-// vaulted file is the bug we're trying to prevent.
-func recordVaultedBackup(root, src string) error {
+// vaulted file is the bug we're trying to prevent. The kind is stored so
+// uninstall picks the right classifier without re-deriving from the basename.
+func recordVaultedBackup(root, src string, kind vault.FileKind) error {
 	if err := writeBackup(src); err != nil {
 		return err
 	}
-	return vault.AddVaultedFile(root, src)
+	return vault.AddVaultedFile(root, src, kind)
 }
 
 // isOrphanedBackup reports whether src has a .veil-backup that is NOT
@@ -55,8 +56,8 @@ func isOrphanedBackup(root, src string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, p := range registered {
-		if p == abs {
+	for _, entry := range registered {
+		if entry.Path == abs {
 			return false, nil
 		}
 	}

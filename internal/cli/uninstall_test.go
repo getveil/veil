@@ -779,6 +779,98 @@ func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 	}
 }
 
+// TestUninstallClassifiesMCPByRegisteredKindNotBasename is the regression
+// guard for the classifyPath bug. When VEIL_MCP_CONFIG_PATH points at a file
+// whose basename is NOT "claude_desktop_config.json", the prior code (which
+// classified by basename) routed the pair to classifyEnvPair — parsing JSON
+// as .env syntax. Reverse-substitution then failed to recognise the JSON
+// values as KV lines, so the file was reported as [modified] instead of
+// [restore], and the dry-run diff was nonsense. The fix records the kind in
+// the registry; this test asserts the post-fix behaviour: the round-trip
+// classifies as Unmodified and uninstall fully restores the original bytes.
+func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir()
+	// Non-canonical filename — anything other than claude_desktop_config.json.
+	mcpPath := filepath.Join(mcpDir, "mcp.json")
+	originalMCP := "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"npx\",\n      \"env\": {\n        \"GITHUB_TOKEN\": \"ghp_real1234567890abcdef1234567890abcdef\"\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("init did not create backup at non-canonical path: %v", err)
+	}
+
+	// Dry-run: the JSON file has only the secret modification (which Veil itself
+	// made via placeholder substitution). With the correct classifier this is
+	// classUnmodified ("[restore]"), and no diff is emitted. With the broken
+	// basename-based classifier it would be classModified ("[modified]") with a
+	// nonsense .env-shaped diff.
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+	plan := stdout.String()
+	mcpLine := findPlanLineFor(plan, mcpPath)
+	if mcpLine == "" {
+		t.Fatalf("dry-run plan did not include the MCP file %q; plan was:\n%s", mcpPath, plan)
+	}
+	if strings.Contains(mcpLine, "[modified]") {
+		t.Errorf("MCP file at non-canonical path was misclassified as modified (classifyEnvPair was used instead of classifyMCPPair); line: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+	if !strings.Contains(mcpLine, "[restore ]") {
+		t.Errorf("expected MCP file to be classified as [restore], got: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+
+	// Real uninstall: file restores to pre-Veil bytes byte-for-byte.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+	restored, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("MCP config missing after uninstall: %v", err)
+	}
+	if string(restored) != originalMCP {
+		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
+	}
+}
+
+// findPlanLineFor returns the dry-run plan line that ends with the given
+// path, or "" if none is found.
+func findPlanLineFor(plan, path string) string {
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), path) {
+			return line
+		}
+	}
+	return ""
+}
+
 // TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot is the F-12 regression
 // guard. The brief allows either a hard error OR a successful re-vault — what
 // must not happen is the silent-skip outcome (the old behaviour). This test

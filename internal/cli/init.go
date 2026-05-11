@@ -382,7 +382,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 	}
 
 	if !dryRun && configChanged {
-		if err := recordVaultedBackup(root, configPath); err != nil {
+		if err := recordVaultedBackup(root, configPath, vault.KindMCP); err != nil {
 			return 0, 0, cliErrorf("writing MCP config backup: %v", err)
 		}
 

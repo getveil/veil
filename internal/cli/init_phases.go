@@ -230,7 +230,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	if !dryRun && fileChanged {
-		if err := recordVaultedBackup(root, envPath); err != nil {
+		if err := recordVaultedBackup(root, envPath, vault.KindEnv); err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 		}
 		if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
