@@ -706,3 +706,245 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 		t.Errorf(".env after uninstall should equal original (edit lost)\ngot:  %q\nwant: %q", got, original)
 	}
 }
+
+// TestUninstallRestoresMCPConfigOutsideProjectRoot is the F-13 regression
+// guard. It initializes a project where the MCP config lives outside the
+// project root (via VEIL_MCP_CONFIG_PATH), then runs uninstall and confirms
+// the out-of-root file is restored to its original bytes AND its .veil-backup
+// is removed. The previous bug: discoverBackups only scanned the project root,
+// so the MCP file's backup survived uninstall and the placeholder remained.
+func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir() // deliberately outside `root`
+	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	originalMCP := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	postInit, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(postInit), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Fatal("init did not replace the real token; preconditions broken")
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("init did not create backup: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	restored, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("MCP config missing after uninstall: %v", err)
+	}
+	if string(restored) != originalMCP {
+		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); !os.IsNotExist(err) {
+		t.Errorf("MCP backup should be removed after uninstall, stat err: %v", err)
+	}
+}
+
+// TestUninstallClassifiesMCPByRegisteredKindNotBasename is the regression
+// guard for the classifyPath bug. When VEIL_MCP_CONFIG_PATH points at a file
+// whose basename is NOT "claude_desktop_config.json", the prior code (which
+// classified by basename) routed the pair to classifyEnvPair — parsing JSON
+// as .env syntax. Reverse-substitution then failed to recognise the JSON
+// values as KV lines, so the file was reported as [modified] instead of
+// [restore], and the dry-run diff was nonsense. The fix records the kind in
+// the registry; this test asserts the post-fix behaviour: the round-trip
+// classifies as Unmodified and uninstall fully restores the original bytes.
+func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir()
+	// Non-canonical filename — anything other than claude_desktop_config.json.
+	mcpPath := filepath.Join(mcpDir, "mcp.json")
+	originalMCP := "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"npx\",\n      \"env\": {\n        \"GITHUB_TOKEN\": \"ghp_real1234567890abcdef1234567890abcdef\"\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("init did not create backup at non-canonical path: %v", err)
+	}
+
+	// Dry-run: the JSON file has only the secret modification (which Veil itself
+	// made via placeholder substitution). With the correct classifier this is
+	// classUnmodified ("[restore]"), and no diff is emitted. With the broken
+	// basename-based classifier it would be classModified ("[modified]") with a
+	// nonsense .env-shaped diff.
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+	plan := stdout.String()
+	mcpLine := findPlanLineFor(plan, mcpPath)
+	if mcpLine == "" {
+		t.Fatalf("dry-run plan did not include the MCP file %q; plan was:\n%s", mcpPath, plan)
+	}
+	if strings.Contains(mcpLine, "[modified]") {
+		t.Errorf("MCP file at non-canonical path was misclassified as modified (classifyEnvPair was used instead of classifyMCPPair); line: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+	if !strings.Contains(mcpLine, "[restore ]") {
+		t.Errorf("expected MCP file to be classified as [restore], got: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+
+	// Real uninstall: file restores to pre-Veil bytes byte-for-byte.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+	restored, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("MCP config missing after uninstall: %v", err)
+	}
+	if string(restored) != originalMCP {
+		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
+	}
+}
+
+// findPlanLineFor returns the dry-run plan line that ends with the given
+// path, or "" if none is found.
+func findPlanLineFor(plan, path string) string {
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), path) {
+			return line
+		}
+	}
+	return ""
+}
+
+// TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot is the F-12 regression
+// guard. The brief allows either a hard error OR a successful re-vault — what
+// must not happen is the silent-skip outcome (the old behaviour). This test
+// asserts the chosen behaviour: re-vault from the orphan, ending up with the
+// same vaulted set as the first init.
+func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir() // outside root
+	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	originalMCP := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	// First init: vaults the MCP secret, leaves a backup behind.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Simulate a wiped registry: blow away .veil/ but leave the placeholder-
+	// filled MCP file and the .veil-backup in place. This is exactly the F-12
+	// scenario: an interrupted/older Veil left an orphan behind.
+	if err := os.RemoveAll(config.ProjectStateDir(root)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("preconditions: orphan backup missing: %v", err)
+	}
+
+	// Second init: must NOT silently skip. The orphan-reclaim path re-vaults
+	// using the backup as the source of truth.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("second init failed: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("re-init silently dropped the MCP secret (F-12 regression)")
+	}
+	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
+		t.Errorf("re-init captured wrong real value (must come from orphan backup); got %q", cred.Real)
+	}
+	if !strings.Contains(stderr.String(), "orphaned backup") {
+		t.Errorf("expected user-visible 'orphaned backup' notice on stderr, got: %s", stderr.String())
+	}
+}

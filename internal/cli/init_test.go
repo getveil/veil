@@ -770,16 +770,19 @@ func TestInitMCPCredentialNameFormat(t *testing.T) {
 	}
 }
 
-func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
+func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
+	// F-12 regression: an orphaned .veil-backup (no entry in vault.meta) means
+	// the prior Veil install was uninstalled or its state was wiped. Init must
+	// treat that backup as the source of truth and re-vault from it, rather
+	// than silently skipping (which would yield fewer secrets in the vault than
+	// the user expected).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-
-	envContent := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -787,7 +790,7 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
 	if err := os.MkdirAll(mcpDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	mcpContent := `{
+	originalContent := `{
   "mcpServers": {
     "github": {
       "command": "npx",
@@ -797,90 +800,52 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
     }
   }
 }`
+	// The "current" file is what a stale prior init left behind: placeholders
+	// instead of real values. The backup carries the real pre-Veil bytes.
+	staleCurrent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_VEIL_oldplaceholder"
+      }
+    }
+  }
+}`
 	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+	if err := os.WriteFile(mcpConfigPath, []byte(staleCurrent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcpConfigPath+".veil-backup", []byte(originalContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
 
-	// First init — creates backup.
-	cmd1 := NewRoot("test")
-	cmd1.SetOut(new(bytes.Buffer))
-	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir})
-	if err := cmd1.Execute(); err != nil {
-		t.Fatalf("first init failed: %v", err)
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with orphan backup failed: %v", err)
 	}
 
-	// Restore original config.
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(errBuf.String(), "orphaned backup") {
+		t.Errorf("expected 'orphaned backup' notice on stderr, got: %s", errBuf.String())
 	}
 
-	// Second init WITHOUT --force — should warn and skip MCP.
-	cmd2 := NewRoot("test")
-	out2 := new(bytes.Buffer)
-	errBuf2 := new(bytes.Buffer)
-	cmd2.SetOut(out2)
-	cmd2.SetErr(errBuf2)
-	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
-	// Note: --force is needed to get past "already initialized" check,
-	// but the backup already exists so processMCPConfig will still skip
-	// without force on the backup (force is shared). Since --force IS set,
-	// let's test the non-force case differently: pre-create the backup
-	// and run init on a fresh .veil dir.
-
-	// Actually, let's test this properly: create a fresh tmpDir with a
-	// pre-existing backup file, and run init (no --force needed since
-	// .veil doesn't exist yet).
-	tmpDir2 := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir2, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent2 := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir2, ".env"), []byte(envContent2), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir2 := filepath.Join(tmpDir2, "claude-config2")
-	if err := os.MkdirAll(mcpDir2, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpConfigPath2 := filepath.Join(mcpDir2, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath2, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Pre-create backup to simulate already-migrated state.
-	backupPath := mcpConfigPath2 + ".veil-backup"
-	if err := os.WriteFile(backupPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath2)
-
-	cmd3 := NewRoot("test")
-	out3 := new(bytes.Buffer)
-	errBuf3 := new(bytes.Buffer)
-	cmd3.SetOut(out3)
-	cmd3.SetErr(errBuf3)
-	cmd3.SetArgs([]string{"init", "--path", tmpDir2})
-
-	if err := cmd3.Execute(); err != nil {
-		t.Fatalf("init with existing backup failed: %v", err)
-	}
-
-	// Should have warning about existing backup.
-	errStr := errBuf3.String()
-	if !strings.Contains(errStr, "already has a backup") {
-		t.Errorf("expected backup warning on stderr, got: %s", errStr)
-	}
-
-	// MCP config should be unchanged (not re-migrated).
-	mcpData, err := os.ReadFile(mcpConfigPath2)
+	v, err := openVault(tmpDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("openVault: %v", err)
 	}
-	if !strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
-		t.Error("MCP config should be unchanged when backup exists without --force")
+	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not vaulted; orphan reclaim should have re-vaulted from backup")
+	}
+	if cred.Real != "ghp_test1234567890abcdef1234567890abcdef" {
+		t.Errorf("vaulted real value should come from the backup; got %q", cred.Real)
 	}
 }
 
@@ -1029,7 +994,12 @@ func TestInitForce_WipesVault(t *testing.T) {
 	}
 }
 
-func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
+func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
+	// F-12 regression: an orphaned .env.veil-backup (no entry in vault.meta)
+	// means a prior Veil install was uninstalled (or its state was wiped) but
+	// the backup was left behind. Init must restore from the backup and re-
+	// vault rather than silently skipping (which would leave the placeholder
+	// in .env unvaulted on the second pass).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
 	tmpDir := t.TempDir()
@@ -1037,13 +1007,13 @@ func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+	// "Current" .env is what a stale prior init left: a placeholder, not the
+	// real secret. The orphan backup carries the true pre-Veil bytes.
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Pre-seed a backup with a sentinel so we can verify it's not overwritten.
-	backupPath := envPath + ".veil-backup"
-	sentinel := []byte("sentinel\n")
-	if err := os.WriteFile(backupPath, sentinel, 0600); err != nil {
+	original := []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath+".veil-backup", original, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1057,27 +1027,29 @@ func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Backup must still contain the sentinel (unchanged).
-	got, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(sentinel) {
-		t.Errorf("backup overwritten; got %q, want %q", got, sentinel)
+	if !strings.Contains(stderr.String(), "orphaned backup") {
+		t.Errorf("expected 'orphaned backup' notice on stderr, got: %s", stderr.String())
 	}
 
-	// .env must still contain the real token (file was skipped, not processed).
-	envContents, err := os.ReadFile(envPath)
+	v, err := openVault(tmpDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("openVault: %v", err)
 	}
-	if !strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
-		t.Error(".env should have been skipped (real token still present)")
+	cred, ok := v.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not vaulted; orphan reclaim should have re-vaulted from backup")
+	}
+	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
+		t.Errorf("vaulted real value should come from the backup; got %q", cred.Real)
 	}
 
-	// Stderr should mention the skip.
-	if !strings.Contains(stderr.String(), "already has a backup") {
-		t.Errorf("expected 'already has a backup' warning on stderr, got: %s", stderr.String())
+	// New backup must contain the original (pre-Veil) bytes.
+	newBackup, err := os.ReadFile(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(newBackup) != string(original) {
+		t.Errorf("new backup should match original\ngot:  %q\nwant: %q", newBackup, original)
 	}
 }
 

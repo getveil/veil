@@ -106,25 +106,56 @@ var envCuratedNames = []string{
 }
 
 // discoverBackups returns every (original, backup) pair that uninstall
-// should consider. For .env files: iterates curatedNames, returns a pair
-// when either the original or the backup exists. For MCP: consults
-// mcpconfig.Discover() and returns a pair only if the MCP backup exists.
+// should consider.
+//
+// Source of truth is vault.meta's vaulted-files registry written by init —
+// every entry it lists is included if its backup is still on disk, regardless
+// of whether the original lives inside or outside the project root. This is
+// what lets us restore a Claude Desktop MCP config that lives under
+// ~/Library/Application Support/Claude (F-13). The registry also records
+// each entry's kind, so an MCP config at a non-canonical path (e.g. set via
+// VEIL_MCP_CONFIG_PATH) still routes to classifyMCPPair instead of being
+// misclassified by basename.
+//
+// For backward compatibility with vaults created before the registry existed
+// (vault.meta with no vaulted_files field), we also fall back to the legacy
+// heuristic: scan curated .env names inside root, plus mcpconfig.Discover().
+// Pairs already covered by the registry are not duplicated.
 func discoverBackups(root string) ([]backupPair, error) {
 	var pairs []backupPair
+	seen := make(map[string]bool)
+
+	registered, err := vault.ReadVaultedFiles(root)
+	if err != nil {
+		return nil, fmt.Errorf("reading vaulted-files registry: %w", err)
+	}
+	for _, entry := range registered {
+		backup := entry.Path + backupSuffix
+		if _, err := os.Stat(backup); err != nil {
+			continue
+		}
+		pairs = append(pairs, backupPair{original: entry.Path, backup: backup, kind: kindFromVault(entry.Kind)})
+		seen[entry.Path] = true
+	}
+
 	for _, name := range envCuratedNames {
 		orig := filepath.Join(root, name)
+		if seen[orig] {
+			continue
+		}
 		backup := orig + backupSuffix
 		if _, err := os.Stat(backup); err != nil {
 			continue
 		}
 		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
+		seen[orig] = true
 	}
 
 	mcpPath, err := mcpconfigDiscover()
 	if err != nil {
 		return nil, fmt.Errorf("discovering MCP config: %w", err)
 	}
-	if mcpPath != "" {
+	if mcpPath != "" && !seen[mcpPath] {
 		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
 			pairs = append(pairs, backupPair{
 				original: mcpPath,
@@ -134,6 +165,16 @@ func discoverBackups(root string) ([]backupPair, error) {
 		}
 	}
 	return pairs, nil
+}
+
+// kindFromVault maps a vault.FileKind to the local backupKind. Unknown kinds
+// (e.g. registry entries from a future schema) fall back to env so the
+// classifier path is at least byte-stable.
+func kindFromVault(k vault.FileKind) backupKind {
+	if k == vault.KindMCP {
+		return backupKindMCP
+	}
+	return backupKindEnv
 }
 
 // mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
