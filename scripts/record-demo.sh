@@ -37,7 +37,13 @@ export VEIL_BIN="$REPO_ROOT/bin/veil"
 
 cd "$WORK"
 OUT="$REPO_ROOT/demo/veil-demo.cast"
-asciinema rec --overwrite --command "bash $REPO_ROOT/scripts/demo.sh" "$OUT"
+
+# Sanitize env to a minimal whitelist so the recorder's shell env (which may
+# contain secret-like vars unrelated to the demo) does NOT leak into the cast
+# as warnings from veil's parent-env scanner.
+asciinema rec --overwrite --command \
+  "env -i HOME='$HOME' PATH='$PATH' USER='${USER:-$LOGNAME}' TERM=xterm-256color TMPDIR='${TMPDIR:-/tmp}' LANG=en_US.UTF-8 VEIL_BIN='$VEIL_BIN' bash $REPO_ROOT/scripts/demo.sh" \
+  "$OUT"
 
 echo
 echo "Cast saved to: $OUT"

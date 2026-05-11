@@ -12,9 +12,9 @@ Veil is a local CLI that sits between your AI coding agents and the network via 
 
 ## Demo
 
-[![asciicast](https://asciinema.org/a/REPLACE_WITH_CAST_ID.svg)](https://asciinema.org/a/REPLACE_WITH_CAST_ID)
+![Veil blocks an AI agent from leaking a GitHub token to the wrong host](.github/demo.gif)
 
-> Recording will be uploaded after the v0.1.0 release. To run it locally now: `make build && ./scripts/record-demo.sh`.
+> Want to run it yourself? `make build && ./scripts/record-demo.sh` records this end-to-end against a synthetic `.env`.
 
 ## Why this exists
 
