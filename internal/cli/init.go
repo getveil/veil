@@ -77,7 +77,7 @@ func initCmd() *cobra.Command {
 func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	w := cmd.OutOrStdout()
 	stdin := cmd.InOrStdin()
-	interactive := detectInteractive(w, stdin, yes)
+	interactive, announce := detectInteractive(stdin, yes)
 	// Wrap stdin so each prompt reads exactly one line, avoiding read-ahead
 	// that would consume input intended for later prompts.
 	in := newLineReader(stdin)
@@ -85,6 +85,9 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	root, err := resolveInitRoot()
 	if err != nil {
 		return cliError(err.Error(), "")
+	}
+	if announce {
+		ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
 	}
 
 	stateDir := config.ProjectStateDir(root)
