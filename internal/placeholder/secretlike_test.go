@@ -100,7 +100,7 @@ func TestIsSecretLike_LongButRepeating(t *testing.T) {
 // because they have moderate entropy (~4.0 bits/char) and exceed 20 chars.
 func TestIsSecretLike_FilePathNotFlagged(t *testing.T) {
 	cases := []string{
-		"/Users/ben/workspace/Veil/internal/placeholder/providers.go",
+		"/home/user/workspace/veil/internal/placeholder/providers.go",
 		"/home/alice/projects/foo/bar/baz/qux.py",
 		"/var/log/syslog.1.gz",
 		"~/.config/app/settings.json",

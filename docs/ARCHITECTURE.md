@@ -21,7 +21,7 @@ Three invariants hold across every stage of the roadmap:
 2. **One event model.** Every mediation event — credential swap, policy verdict, anomaly flag — emits the same envelope shape into the same store. The dataset is the asset ([`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5); it compounds only if the shape stays stable.
 3. **No agent cooperation required.** No SDK, no callback, no framework adoption. The agent reads its `.env`, constructs headers, makes requests; Veil is the wire beneath it.
 
-Any feature that would weaken these invariants is excluded, regardless of immediate utility.
+We exclude any feature that would weaken these invariants, regardless of immediate utility.
 
 ---
 
@@ -176,14 +176,14 @@ HTTP/HTTPS traffic from any tool that respects `HTTP_PROXY` / `HTTPS_PROXY`:
 | Raw TCP (Postgres, MySQL, Redis, MongoDB wire protocols) | Non-HTTP, bypasses HTTP proxy | Per-protocol handlers — Part II |
 | SSH | Does not use HTTP proxy env vars | Kernel interception — Part II |
 | QUIC / UDP | UDP bypasses TCP proxy | Kernel interception — Part II |
-| mTLS / client certificates | Credential used in TLS handshake, never at HTTP layer | Architectural constraint of the proxy model — see [findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) Class 4 |
+| mTLS / client certificates | Credential used in TLS handshake, never at HTTP layer | Architectural constraint of the proxy model |
 | HMAC webhook signatures | Credential used as signing key, never appears on wire (keyed-crypto, Class 2) | **Surfaced by mismatch detector**; native signing — Part II. AWS SigV4 and GitHub App JWT are now re-signed by dedicated signer functions (see "Signer functions" above). |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret is traded for a bearer token *before* the request we see | Ephemeral brokering — Part II |
-| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | By design — decompression risks exceed the gap |
+| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | Our design choice — decompression risks exceed the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in future release |
 | Windows | No proxy substrate yet | Part II |
 
-For a fuller treatment of what happens when mediation can't fire (and why the mismatch detector exists), see [`THREAT_MODEL.md`](THREAT_MODEL.md) and the [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md).
+For a fuller treatment of what happens when mediation can't fire (and why the mismatch detector exists), see [`THREAT_MODEL.md`](THREAT_MODEL.md).
 
 ---
 
@@ -194,7 +194,7 @@ The MVP in Part I is the *primitive*. Part II is how that primitive expands into
 ## Credential plane
 
 - **Next — OAuth 2.1 ephemeral brokering.** Tokens minted at call-time by the proxy against an upstream issuer, scoped per-operation, cached for the operation's lifetime, never persisted to the agent. MCP is standardizing on OAuth 2.1, which makes this the natural first target. Seam: the current injection point (`Injector.ProcessRequest`) gains an ephemeral-resolution branch ahead of the literal-match path.
-- **Horizon — additional signer adapters.** HMAC webhook signing, mTLS client-cert presentation. The proxy re-signs the request with the real credential after reconstructing the canonical form. Seam is the same transformation point as injection — "match a placeholder" becomes the narrow case of a broader "recognize a credential-shaped request, apply the correct transform." AWS SigV4 and GitHub App JWT now ship via this seam (see "Signer functions" in Part I). See [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) for the class-1/2/3 taxonomy this work follows.
+- **Horizon — additional signer adapters.** HMAC webhook signing, mTLS client-cert presentation. The proxy re-signs the request with the real credential after reconstructing the canonical form. Seam is the same transformation point as injection — "match a placeholder" becomes the narrow case of a broader "recognize a credential-shaped request, apply the correct transform." AWS SigV4 and GitHub App JWT now ship via this seam (see "Signer functions" in Part I).
 - **Horizon — external backing stores.** HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault. Plugs into the existing `Keystore` interface (`internal/vault/keystore.go`). The Keychain and age-file backends are two of N; no other component changes.
 
 ## Policy plane
@@ -215,7 +215,7 @@ Every audit-plane capability reuses the MVP event shape. New columns are added u
 
 - **Next — Windows.** Cooperative enforcement, same proxy model as macOS and Linux today. Mostly a distribution and CA-trust task, not an architecture change.
 - **Next — shared credential store for teams.** End-to-end encrypted sync between team members' keystores. Same `Credential` record shape; sync mechanism is a new peer-level component above the keystore interface.
-- **Horizon — kernel-level enforcement.** macOS `NETransparentProxyProvider` (system extension), Linux network namespaces + iptables `REDIRECT`. Non-bypassable by user-space code, per-process flow interception for all protocols. Closes the env-var bypass and the "non-standard HTTP client" bypass. Design is complete in [`docs/superpowers/specs/2026-04-14-egress-enforcement-design.md`](superpowers/specs/2026-04-14-egress-enforcement-design.md) (parked until funded). macOS requires an Apple Developer ID ($99/yr) and notarization; Linux requires a one-time `setcap CAP_NET_ADMIN` at install time.
+- **Horizon — kernel-level enforcement.** macOS `NETransparentProxyProvider` (system extension), Linux network namespaces + iptables `REDIRECT`. Non-bypassable by user-space code, per-process flow interception for all protocols. Closes the env-var bypass and the "non-standard HTTP client" bypass. Parked until funded. macOS requires an Apple Developer ID ($99/yr) and notarization; Linux requires a one-time `setcap CAP_NET_ADMIN` at install time.
 
 The existing proxy, injector, vault, and audit components are unchanged by kernel enforcement — the enforcement primitive wraps them in a non-bypassable traffic funnel.
 
@@ -254,12 +254,12 @@ The point of this layout is that none of Part II requires re-architecture. Every
 
 # Part IV — Explicitly out of scope
 
-Mirrors [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §4 — two adjacent categories are *not* Veil's territory:
+Mirrors [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §4 — two adjacent categories are *not* ours to cover:
 
-- **MCP supply-chain scanning.** MCPScan, Invariant Labs, and Snyk's agent-scan serve that market. Veil's mediation telemetry can complement scanners; Veil is not one.
-- **Agent-behavior / prompt observability.** Prompt Security, Lakera, and Lasso serve that market. Veil emits credential and access events; Veil does not monitor general agent behavior.
+- **MCP supply-chain scanning.** MCPScan, Invariant Labs, and Snyk's agent-scan serve that market. Our mediation telemetry can complement scanners; we are not one.
+- **Agent-behavior / prompt observability.** Prompt Security, Lakera, and Lasso serve that market. We emit credential and access events; we do not monitor general agent behavior.
 
-These are load-bearing exclusions. Staying narrow is what makes the primitive compound — the moat in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5 is one event type in one store, and that breaks if the architecture absorbs adjacent categories.
+We hold these as load-bearing exclusions. Staying narrow is what makes the primitive compound — the moat in [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) §5 is one event type in one store, and that breaks if the architecture absorbs adjacent categories.
 
 ---
 
@@ -268,5 +268,3 @@ These are load-bearing exclusions. Staying narrow is what makes the primitive co
 - [`PRODUCT_FINAL.md`](PRODUCT_FINAL.md) — vision, four-outcome model, compounding-dataset thesis.
 - [`MVP.md`](MVP.md) — shipping scope, CLI surface, success criteria.
 - [`THREAT_MODEL.md`](THREAT_MODEL.md) — what Veil protects against, what it doesn't, deployment notes for hardened setups.
-- [`superpowers/specs/2026-04-14-egress-enforcement-design.md`](superpowers/specs/2026-04-14-egress-enforcement-design.md) — parked kernel-enforcement design.
-- [`superpowers/findings/2026-04-13-transformed-credential-problem.md`](superpowers/findings/2026-04-13-transformed-credential-problem.md) — transformation-class taxonomy that shapes the credential plane roadmap.

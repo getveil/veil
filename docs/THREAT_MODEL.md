@@ -13,7 +13,7 @@ This document describes what Veil protects against, what it does *not* protect a
 ## What Veil does NOT protect against
 
 - **Same-UID tampering of the audit log.** The agent process runs as the same UID as Veil, so it has filesystem access to the audit DB. It can read, truncate, or forge rows. If your agent is compromised, its audit trail is untrustworthy.
-- **Long-running proxy holding credentials in memory.** While `veil run` is active, real secrets sit in the proxy's memory for routing. A memory read via `/proc/<pid>/mem` or a debugger can extract them. This is by design — format-preserving injection requires the real value.
+- **Long-running proxy holding credentials in memory.** While `veil run` is active, real secrets sit in the proxy's memory for routing. A memory read via `/proc/<pid>/mem` or a debugger can extract them. We accept this by design — format-preserving injection requires the real value.
 - **Non-HTTP exfiltration.** Veil only mediates `HTTP_PROXY` / `HTTPS_PROXY` traffic. An agent that opens a raw TCP connection, sends DNS queries with data embedded in names, or uses any other channel is out of scope.
 - **Agent direct vault reads.** If the agent runs tools (shell, file read) it may open `.veil/vault.bin` directly. The vault is encrypted, but the master key is obtainable via the OS keyring by any process running as the same user.
 - **System CA trust store compromise.** Veil installs its root CA into the user's trust store. Any process (not just the agent) running as that user will trust certificates signed by Veil's CA.

@@ -63,9 +63,9 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 | Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement | Kernel enforcement — [`ARCHITECTURE.md`](ARCHITECTURE.md) Part II |
 | HTTP/2 (gRPC), QUIC, raw TCP, SSH | Proxy is HTTP/1.1 CONNECT only | Per-protocol handlers / kernel interception — Part II |
 | HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. AWS SigV4 and GitHub App JWT are now re-signed natively (see §2). |
-| mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural — see [transformed-credential findings](superpowers/findings/2026-04-13-transformed-credential-problem.md) |
+| mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
-| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | By design — decompression risk exceeds the gap |
+| Compressed request bodies | `Content-Encoding` bodies forwarded un-inspected | Our design choice — decompression risk exceeds the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in a future release |
 | Windows | No proxy substrate yet | Part II |
 
@@ -75,7 +75,7 @@ The transform-mismatch detector deserves a specific note: when a request to a cr
 
 ## 6. Out of scope — by design
 
-These are not "not yet." They are load-bearing exclusions.
+These are not "not yet." We hold them as load-bearing exclusions.
 
 - **MCP supply-chain scanning.** MCPScan, Invariant Labs, Snyk's agent-scan serve that market.
 - **Agent-behavior / prompt observability.** Prompt Security, Lakera, Lasso serve that market.

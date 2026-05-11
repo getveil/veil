@@ -8,4 +8,6 @@ coverage.out
 .veil/
 .superpowers/
 .worktrees/
+.claude/
+docs/superpowers/
 tmp-test/
