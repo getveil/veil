@@ -67,6 +67,58 @@ func TestRunRequiresInit(t *testing.T) {
 	}
 }
 
+// TestVaultCommandsPostUninstall covers F-14: after uninstall (or before
+// init), commands that go through withVault must surface a friendly
+// "not initialized" message instead of leaking the missing-vault.meta path
+// from vault.Open. Each subtest creates a project with no .veil/ and asserts
+// the error is friendly, exits non-zero, and never mentions vault.meta or an
+// absolute path.
+func TestVaultCommandsPostUninstall(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"status", []string{"status"}},
+		{"list", []string{"list"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+			tmpDir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := NewRoot("test")
+			outBuf := new(bytes.Buffer)
+			errBuf := new(bytes.Buffer)
+			cmd.SetOut(outBuf)
+			cmd.SetErr(errBuf)
+			cmd.SetArgs(append(tc.args, "--path", tmpDir))
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for uninitialized project, got nil")
+			}
+			if code := ExitCodeFor(err); code == ExitSuccess {
+				t.Errorf("expected non-zero exit code, got %d", code)
+			}
+
+			combined := outBuf.String() + errBuf.String() + err.Error()
+			if !strings.Contains(combined, "not initialized") {
+				t.Errorf("expected 'not initialized' in output, got:\n%s", combined)
+			}
+			if strings.Contains(combined, "vault.meta") {
+				t.Errorf("output should not leak 'vault.meta'; got:\n%s", combined)
+			}
+			if strings.Contains(combined, tmpDir) {
+				t.Errorf("output should not leak the absolute project path %q; got:\n%s", tmpDir, combined)
+			}
+		})
+	}
+}
+
 func TestAddAndList(t *testing.T) {
 	root := initProject(t)
 
@@ -450,6 +502,33 @@ func TestListPlaceholder(t *testing.T) {
 	// The placeholder for OPENAI_API_KEY should start with sk-proj- (format-aware).
 	if !strings.Contains(output, "sk-proj-") {
 		t.Errorf("expected placeholder value with sk-proj- prefix, got: %s", output)
+	}
+}
+
+// TestList_MutuallyExclusiveFlagsError is the F-8 regression at the cobra
+// boundary. The cobra error must (1) be returned to the caller and (2) name
+// both flags so cmd/veil/main.go can surface it. Errors that exit run() with
+// IsAlreadyPrinted == false are the ones that get printed; cobra-internal
+// validation errors fall in that bucket.
+func TestList_MutuallyExclusiveFlagsError(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"list", "--path", root, "--placeholder", "--reveal", "--yes"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for --placeholder + --reveal")
+	}
+	msg := err.Error()
+	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if IsAlreadyPrinted(err) {
+		t.Error("cobra-internal flag-group error should not be marked as already printed")
 	}
 }
 

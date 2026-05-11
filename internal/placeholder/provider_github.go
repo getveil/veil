@@ -22,7 +22,7 @@ func init() {
 			}
 			return strings.Contains(strings.ToUpper(name), "GITHUB")
 		},
-		Generate: func(value string) string {
+		Generate: func(_, value string) string {
 			// Fine-grained PATs: github_pat_ + 22 alnum + _ + N alnum.
 			// Sentinel lands in the 22-char middle block (after "github_pat_").
 			if strings.HasPrefix(value, "github_pat_") {

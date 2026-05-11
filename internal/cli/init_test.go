@@ -98,6 +98,7 @@ func TestInitHappyPath(t *testing.T) {
 
 func TestInitDryRun(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -114,15 +115,27 @@ func TestInitDryRun(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--dry-run", "--yes", "--path", tmpDir})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init --dry-run failed: %v", err)
 	}
 
-	// .veil/ should be created (vault is still created).
-	if _, err := os.Stat(filepath.Join(tmpDir, ".veil")); err != nil {
-		t.Error(".veil/ directory should exist even in dry-run mode")
+	// F-3 regression: dry-run must not write any project state.
+	stateDir := filepath.Join(tmpDir, ".veil")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Errorf(".veil/ should not exist after --dry-run, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.meta")); !os.IsNotExist(err) {
+		t.Errorf("vault.meta should not exist after --dry-run, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.bin")); !os.IsNotExist(err) {
+		t.Errorf("vault.bin should not exist after --dry-run, stat err: %v", err)
+	}
+
+	// F-3 regression: dry-run must not write to the keystore.
+	if entries := snapshotTestKeystore(t); len(entries) != 0 {
+		t.Errorf("keystore should be empty after --dry-run, got %d entries: %v", len(entries), entries)
 	}
 
 	// .env file should be UNCHANGED.
@@ -176,6 +189,147 @@ func TestInitForce(t *testing.T) {
 	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
 	if err := cmd2.Execute(); err != nil {
 		t.Fatalf("init --force failed: %v", err)
+	}
+}
+
+// TestInitReinitDoesNotOrphanKeystoreEntries is the F-15 regression. After a
+// successful init, a second init (without --force) must fail before creating
+// any new keystore entry so the keystore still holds exactly one master-key
+// entry for the project.
+func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+	afterFirst := snapshotTestKeystore(t)
+	if len(afterFirst) != 1 {
+		t.Fatalf("expected exactly 1 keystore entry after first init, got %d: %v", len(afterFirst), afterFirst)
+	}
+
+	// Second init without --force should fail (project already initialized)
+	// and must not create a new keystore entry.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err == nil {
+		t.Fatal("expected second init to fail with 'already initialized'")
+	}
+
+	afterSecond := snapshotTestKeystore(t)
+	if len(afterSecond) != 1 {
+		t.Errorf("expected exactly 1 keystore entry after re-init attempt, got %d: %v",
+			len(afterSecond), afterSecond)
+	}
+	if afterSecond[0] != afterFirst[0] {
+		t.Errorf("keystore entry changed across re-init attempt: was %q, now %q",
+			afterFirst[0], afterSecond[0])
+	}
+}
+
+// TestInitForceCleansPriorKeystoreEntry verifies that an init --force run
+// deletes the previous projectID's master-key entry from the keystore, so
+// only the new entry remains. Without this cleanup, every --force would
+// leak an orphan entry (F-15).
+func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+	afterFirst := snapshotTestKeystore(t)
+	if len(afterFirst) != 1 {
+		t.Fatalf("expected 1 keystore entry after first init, got %d: %v", len(afterFirst), afterFirst)
+	}
+
+	// Restore .env content for the second pass to have something to vault.
+	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("init --force failed: %v", err)
+	}
+
+	afterForce := snapshotTestKeystore(t)
+	if len(afterForce) != 1 {
+		t.Errorf("expected 1 keystore entry after --force (prior orphan cleaned), got %d: %v",
+			len(afterForce), afterForce)
+	}
+}
+
+// TestUninstallEmptiesKeystoreForProject is the F-15 regression for the
+// uninstall path: after uninstall, the keystore must hold no master-key
+// entries belonging to this project.
+func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if got := snapshotTestKeystore(t); len(got) != 1 {
+		t.Fatalf("expected 1 keystore entry after init, got %d: %v", len(got), got)
+	}
+
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"uninstall", "--path", tmpDir, "--yes"})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	if got := snapshotTestKeystore(t); len(got) != 0 {
+		t.Errorf("expected keystore empty after uninstall, got %d entries: %v", len(got), got)
 	}
 }
 
@@ -616,16 +770,19 @@ func TestInitMCPCredentialNameFormat(t *testing.T) {
 	}
 }
 
-func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
+func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
+	// F-12 regression: an orphaned .veil-backup (no entry in vault.meta) means
+	// the prior Veil install was uninstalled or its state was wiped. Init must
+	// treat that backup as the source of truth and re-vault from it, rather
+	// than silently skipping (which would yield fewer secrets in the vault than
+	// the user expected).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-
-	envContent := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -633,7 +790,7 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
 	if err := os.MkdirAll(mcpDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	mcpContent := `{
+	originalContent := `{
   "mcpServers": {
     "github": {
       "command": "npx",
@@ -643,90 +800,52 @@ func TestInitMCPSkipsWhenBackupExists(t *testing.T) {
     }
   }
 }`
+	// The "current" file is what a stale prior init left behind: placeholders
+	// instead of real values. The backup carries the real pre-Veil bytes.
+	staleCurrent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_VEIL_oldplaceholder"
+      }
+    }
+  }
+}`
 	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+	if err := os.WriteFile(mcpConfigPath, []byte(staleCurrent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mcpConfigPath+".veil-backup", []byte(originalContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
 
-	// First init — creates backup.
-	cmd1 := NewRoot("test")
-	cmd1.SetOut(new(bytes.Buffer))
-	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir})
-	if err := cmd1.Execute(); err != nil {
-		t.Fatalf("first init failed: %v", err)
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with orphan backup failed: %v", err)
 	}
 
-	// Restore original config.
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(errBuf.String(), "orphaned backup") {
+		t.Errorf("expected 'orphaned backup' notice on stderr, got: %s", errBuf.String())
 	}
 
-	// Second init WITHOUT --force — should warn and skip MCP.
-	cmd2 := NewRoot("test")
-	out2 := new(bytes.Buffer)
-	errBuf2 := new(bytes.Buffer)
-	cmd2.SetOut(out2)
-	cmd2.SetErr(errBuf2)
-	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
-	// Note: --force is needed to get past "already initialized" check,
-	// but the backup already exists so processMCPConfig will still skip
-	// without force on the backup (force is shared). Since --force IS set,
-	// let's test the non-force case differently: pre-create the backup
-	// and run init on a fresh .veil dir.
-
-	// Actually, let's test this properly: create a fresh tmpDir with a
-	// pre-existing backup file, and run init (no --force needed since
-	// .veil doesn't exist yet).
-	tmpDir2 := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir2, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent2 := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir2, ".env"), []byte(envContent2), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir2 := filepath.Join(tmpDir2, "claude-config2")
-	if err := os.MkdirAll(mcpDir2, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpConfigPath2 := filepath.Join(mcpDir2, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath2, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Pre-create backup to simulate already-migrated state.
-	backupPath := mcpConfigPath2 + ".veil-backup"
-	if err := os.WriteFile(backupPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath2)
-
-	cmd3 := NewRoot("test")
-	out3 := new(bytes.Buffer)
-	errBuf3 := new(bytes.Buffer)
-	cmd3.SetOut(out3)
-	cmd3.SetErr(errBuf3)
-	cmd3.SetArgs([]string{"init", "--path", tmpDir2})
-
-	if err := cmd3.Execute(); err != nil {
-		t.Fatalf("init with existing backup failed: %v", err)
-	}
-
-	// Should have warning about existing backup.
-	errStr := errBuf3.String()
-	if !strings.Contains(errStr, "already has a backup") {
-		t.Errorf("expected backup warning on stderr, got: %s", errStr)
-	}
-
-	// MCP config should be unchanged (not re-migrated).
-	mcpData, err := os.ReadFile(mcpConfigPath2)
+	v, err := openVault(tmpDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("openVault: %v", err)
 	}
-	if !strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
-		t.Error("MCP config should be unchanged when backup exists without --force")
+	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not vaulted; orphan reclaim should have re-vaulted from backup")
+	}
+	if cred.Real != "ghp_test1234567890abcdef1234567890abcdef" {
+		t.Errorf("vaulted real value should come from the backup; got %q", cred.Real)
 	}
 }
 
@@ -875,7 +994,12 @@ func TestInitForce_WipesVault(t *testing.T) {
 	}
 }
 
-func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
+func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
+	// F-12 regression: an orphaned .env.veil-backup (no entry in vault.meta)
+	// means a prior Veil install was uninstalled (or its state was wiped) but
+	// the backup was left behind. Init must restore from the backup and re-
+	// vault rather than silently skipping (which would leave the placeholder
+	// in .env unvaulted on the second pass).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
 	tmpDir := t.TempDir()
@@ -883,13 +1007,13 @@ func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+	// "Current" .env is what a stale prior init left: a placeholder, not the
+	// real secret. The orphan backup carries the true pre-Veil bytes.
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Pre-seed a backup with a sentinel so we can verify it's not overwritten.
-	backupPath := envPath + ".veil-backup"
-	sentinel := []byte("sentinel\n")
-	if err := os.WriteFile(backupPath, sentinel, 0600); err != nil {
+	original := []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath+".veil-backup", original, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -903,27 +1027,29 @@ func TestInitEnvSkipsWhenBackupExists(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Backup must still contain the sentinel (unchanged).
-	got, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(sentinel) {
-		t.Errorf("backup overwritten; got %q, want %q", got, sentinel)
+	if !strings.Contains(stderr.String(), "orphaned backup") {
+		t.Errorf("expected 'orphaned backup' notice on stderr, got: %s", stderr.String())
 	}
 
-	// .env must still contain the real token (file was skipped, not processed).
-	envContents, err := os.ReadFile(envPath)
+	v, err := openVault(tmpDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("openVault: %v", err)
 	}
-	if !strings.Contains(string(envContents), "ghp_real1234567890abcdef1234567890abcdef") {
-		t.Error(".env should have been skipped (real token still present)")
+	cred, ok := v.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("GITHUB_TOKEN not vaulted; orphan reclaim should have re-vaulted from backup")
+	}
+	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
+		t.Errorf("vaulted real value should come from the backup; got %q", cred.Real)
 	}
 
-	// Stderr should mention the skip.
-	if !strings.Contains(stderr.String(), "already has a backup") {
-		t.Errorf("expected 'already has a backup' warning on stderr, got: %s", stderr.String())
+	// New backup must contain the original (pre-Veil) bytes.
+	newBackup, err := os.ReadFile(envPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if string(newBackup) != string(original) {
+		t.Errorf("new backup should match original\ngot:  %q\nwant: %q", newBackup, original)
 	}
 }
 
@@ -1285,6 +1411,51 @@ func TestInit_DryRunShowsGroupedAWS(t *testing.T) {
 	}
 	if string(gotBytes) != envContent {
 		t.Errorf(".env changed in dry-run:\n got = %q\nwant = %q", string(gotBytes), envContent)
+	}
+}
+
+// TestInit_NoNonInteractiveNoticeBeforeRootResolution verifies that
+// init does not print "Non-interactive mode: vaulting all detected
+// secrets" when the project-root precondition fails. Otherwise users
+// see a misleading "proceeding" notice immediately followed by an
+// error (regression for F-1).
+func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	// Use a tempdir that has no project marker (no .git, .veil, .env)
+	// and a HOME above it so FindProjectRoot stops before reaching the
+	// real project root above the test process's actual cwd.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "nowhere")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	// Provide a non-TTY *os.File for stdin so detectInteractive falls
+	// into the non-interactive branch (a *bytes.Buffer would be treated
+	// as interactive and bypass the bug).
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	_ = pw.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(pr)
+	cmd.SetArgs([]string{"init"}) // no --path, so resolveInitRoot uses cwd
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected init to fail without a project root, got nil")
+	}
+
+	if strings.Contains(out.String(), "Non-interactive mode") {
+		t.Errorf("non-interactive notice printed before precondition failure:\n%s", out.String())
 	}
 }
 

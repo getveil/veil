@@ -34,7 +34,7 @@ func TestProviderTwilio(t *testing.T) {
 
 	t.Run("generate_SK_prefix", func(t *testing.T) {
 		value := "SKabcdef1234567890abcdef1234567890"
-		result := prov.Generate(value)
+		result := prov.Generate("", value)
 		if !strings.HasPrefix(result, "SK") {
 			t.Fatalf("expected SK prefix, got: %s", result)
 		}
@@ -65,7 +65,7 @@ func TestProviderTwilio(t *testing.T) {
 		// Auth token matched by name, no SK prefix — 32 body chars with
 		// sentinel displacing 4 hex positions.
 		value := "abcdef1234567890abcdef1234567890"
-		result := prov.Generate(value)
+		result := prov.Generate("", value)
 		if len(result) != 32 {
 			t.Fatalf("expected length 32, got %d: %s", len(result), result)
 		}

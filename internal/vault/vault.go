@@ -16,6 +16,30 @@ import (
 type vaultMeta struct {
 	ProjectID string `json:"project_id"`
 	Version   int    `json:"version"`
+	// VaultedFiles is every file init has rewritten and has a .veil-backup
+	// for. Uninstall consumes this list so it can restore files that live
+	// outside the project root (e.g. Claude Desktop's MCP config). Each entry
+	// records the discovery kind ("env" or "mcp") so uninstall can dispatch
+	// the right classifier without re-deriving the kind from the basename.
+	VaultedFiles []VaultedFile `json:"vaulted_files,omitempty"`
+}
+
+// FileKind identifies which discovery mechanism produced a vaulted file
+// path. Stored in vault.meta so uninstall picks the matching classifier
+// regardless of the file's basename.
+type FileKind string
+
+const (
+	// KindEnv marks a .env-shaped file (KEY=value lines).
+	KindEnv FileKind = "env"
+	// KindMCP marks a Claude Desktop MCP JSON config file.
+	KindMCP FileKind = "mcp"
+)
+
+// VaultedFile is a single entry in the vaulted-files registry.
+type VaultedFile struct {
+	Path string   `json:"path"`
+	Kind FileKind `json:"kind"`
 }
 
 // Vault is an in-memory representation of an opened vault.
@@ -24,6 +48,10 @@ type Vault struct {
 	projectID   string
 	credentials []*Credential
 	keystore    Keystore
+	// dryRun, when true, makes Save() a no-op so dry-run flows can exercise
+	// Add() (and its duplicate/collision checks) without touching disk or
+	// the keystore.
+	dryRun bool
 }
 
 // Open reads and decrypts an existing vault from disk.
@@ -68,8 +96,12 @@ func Open(root string, ks Keystore) (*Vault, error) {
 	}, nil
 }
 
-// Save encrypts and atomically writes the vault to disk.
+// Save encrypts and atomically writes the vault to disk. When the vault was
+// constructed with NewInMemoryVault (dry-run mode), Save is a no-op.
 func (v *Vault) Save() error {
+	if v.dryRun {
+		return nil
+	}
 	data, err := json.Marshal(v.credentials)
 	if err != nil {
 		return fmt.Errorf("%w: marshal credentials: %w", ErrSave, err)
@@ -240,6 +272,21 @@ func addPlaceholders(_ placeholder.Set, c *Credential, emit func(string)) {
 // ProjectID returns the vault's project identifier.
 func (v *Vault) ProjectID() string {
 	return v.projectID
+}
+
+// NewInMemoryVault returns a Vault that lives entirely in memory: no .veil/
+// directory, no meta file, no keystore entry, no encrypted blob on disk.
+// Save() is a no-op so callers can exercise Add() (with its duplicate and
+// placeholder-collision checks) for dry-run previews. The returned vault
+// must not be re-opened later — it has no on-disk presence.
+func NewInMemoryVault(root, projectID string) *Vault {
+	return &Vault{
+		root:        root,
+		projectID:   projectID,
+		credentials: []*Credential{},
+		keystore:    NewMemKeystore(),
+		dryRun:      true,
+	}
 }
 
 // CreateVault initialises a new vault on disk: creates .veil/, vault.meta,

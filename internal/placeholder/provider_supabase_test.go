@@ -38,7 +38,7 @@ func TestProviderSupabase(t *testing.T) {
 	})
 
 	t.Run("generate_jwt_structure", func(t *testing.T) {
-		result := prov.Generate(anonKey)
+		result := prov.Generate("", anonKey)
 
 		parts := strings.Split(result, ".")
 		if len(parts) != 3 {
@@ -90,7 +90,7 @@ func TestProviderSupabase(t *testing.T) {
 	})
 
 	t.Run("generate_anon_role", func(t *testing.T) {
-		result := prov.Generate(anonKey)
+		result := prov.Generate("", anonKey)
 		parts := strings.Split(result, ".")
 		payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
 		var payload map[string]interface{}
@@ -106,8 +106,8 @@ func TestProviderSupabase(t *testing.T) {
 	})
 
 	t.Run("generate_different", func(t *testing.T) {
-		a := prov.Generate(anonKey)
-		b := prov.Generate(anonKey)
+		a := prov.Generate("", anonKey)
+		b := prov.Generate("", anonKey)
 		if a == b {
 			t.Fatal("expected different outputs")
 		}

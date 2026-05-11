@@ -20,22 +20,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// detectInteractive reports whether the init flow should prompt the user.
-// Returns false if --yes was passed or if stdin is not a TTY (in which case
-// a notice is printed to w).
-func detectInteractive(w io.Writer, stdin io.Reader, yes bool) bool {
+// detectInteractive reports whether the init flow should prompt the user
+// and whether the caller should announce non-interactive mode. announce is
+// true only when init fell back to non-interactive mode because stdin is
+// not a TTY (not when --yes was passed). Callers should defer printing the
+// announcement until after preconditions succeed, so users do not see a
+// "proceeding" notice before a precondition failure.
+func detectInteractive(stdin io.Reader, yes bool) (interactive, announce bool) {
 	if yes {
-		return false
+		return false, false
 	}
 	f, ok := stdin.(*os.File)
 	if !ok {
-		return true
+		return true, false
 	}
 	if isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd()) {
-		return true
+		return true, false
 	}
-	ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
-	return false
+	return false, true
 }
 
 // resolveInitRoot returns the project root to initialize. Falls back to
@@ -118,8 +120,24 @@ type secretLine struct {
 // set is shared across files so placeholder generation stays collision-free.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
-		ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
-		return 0, 0, nil
+		// An orphaned backup (one not in the current vault's registry) means
+		// this file was vaulted by a prior Veil instance whose state was wiped
+		// — the backup IS the source of truth, so use it instead of the
+		// current (placeholder-filled) .env. Without this, F-12 would silently
+		// capture fewer secrets than the previous init.
+		orphan, oerr := isOrphanedBackup(root, envPath)
+		if oerr != nil {
+			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", envPath), oerr)
+		}
+		if orphan {
+			if err := reclaimOrphanedBackup(envPath); err != nil {
+				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
+			}
+			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
+		} else {
+			ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-vault)", envPath)
+			return 0, 0, nil
+		}
 	}
 
 	envFile, err := scanner.ParseFile(envPath)
@@ -214,7 +232,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	if !dryRun && fileChanged {
-		if err := writeBackup(envPath); err != nil {
+		if err := recordVaultedBackup(root, envPath, vault.KindEnv); err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 		}
 		if err := atomicWriteFile(envPath, envFile.Bytes()); err != nil {
@@ -326,7 +344,10 @@ func vaultAWSGroup(
 ) (vaulted, scoped int, fileChanged bool, err error) {
 	w := cmd.OutOrStdout()
 
-	secretPh, err := placeholder.Generate(g.Name, g.AWS.SecretKey, seen)
+	// Pass SecretKeyVar (e.g. AWS_SECRET_ACCESS_KEY or PROD_AWS_SECRET_ACCESS_KEY)
+	// so the AWS provider's role-aware dispatch always picks a secret-style
+	// placeholder, regardless of the value's leading bytes.
+	secretPh, err := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
 	if err != nil {
 		return 0, 0, false, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
 	}

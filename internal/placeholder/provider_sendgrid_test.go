@@ -28,7 +28,7 @@ func TestProviderSendGrid(t *testing.T) {
 
 	t.Run("generate_structure", func(t *testing.T) {
 		value := "SG.abc123def456ghijklmnopqr.abcdefghijklmnopqrstuvwxyz01234567890ABCDEFG"
-		result := prov.Generate(value)
+		result := prov.Generate("", value)
 
 		if !strings.HasPrefix(result, "SG.") {
 			t.Fatalf("expected SG. prefix, got: %s", result)
@@ -54,8 +54,8 @@ func TestProviderSendGrid(t *testing.T) {
 
 	t.Run("generate_different", func(t *testing.T) {
 		value := "SG.abc123def456ghijklmnopqr.abcdefghijklmnopqrstuvwxyz01234567890ABCDEFG"
-		a := prov.Generate(value)
-		b := prov.Generate(value)
+		a := prov.Generate("", value)
+		b := prov.Generate("", value)
 		if a == b {
 			t.Fatal("expected different outputs")
 		}

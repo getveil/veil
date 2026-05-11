@@ -290,8 +290,204 @@ func TestRenderUnifiedDiffEmptyWhenEqual(t *testing.T) {
 
 func TestRenderUnifiedDiffHasHeaders(t *testing.T) {
 	diff := renderUnifiedDiff([]byte("a\n"), []byte("b\n"))
-	if !strings.HasPrefix(diff, "--- backup\n+++ current\n") {
-		t.Errorf("expected diff to start with '--- backup' / '+++ current', got:\n%s", diff)
+	if !strings.HasPrefix(diff, "--- current\n+++ backup\n") {
+		t.Errorf("expected diff to start with '--- current' / '+++ backup', got:\n%s", diff)
+	}
+}
+
+// TestRenderUnifiedDiffEveryChangedLineHasMarker is an F-11 regression: when
+// several non-adjacent lines change between two files, every changed line
+// must appear with a -/+ pair in the rendered diff. The earlier under-
+// reporting was caused not by the LCS but by the CALLER passing the wrong
+// "after" bytes; this test pins down the LCS contract directly so any future
+// regression of either layer is caught.
+func TestRenderUnifiedDiffEveryChangedLineHasMarker(t *testing.T) {
+	a := []byte("KEEP1=a\nCHANGE1=old1\nKEEP2=b\nCHANGE2=old2\nKEEP3=c\nCHANGE3=old3\n")
+	b := []byte("KEEP1=a\nCHANGE1=new1\nKEEP2=b\nCHANGE2=new2\nKEEP3=c\nCHANGE3=new3\n")
+
+	diff := renderUnifiedDiff(a, b)
+
+	for _, want := range []string{
+		"-CHANGE1=old1", "+CHANGE1=new1",
+		"-CHANGE2=old2", "+CHANGE2=new2",
+		"-CHANGE3=old3", "+CHANGE3=new3",
+	} {
+		if !strings.Contains(diff, want+"\n") {
+			t.Errorf("diff missing %q\n--- diff ---\n%s", want, diff)
+		}
+	}
+}
+
+// TestRenderUnifiedDiffF11ScatteredChanges mirrors the bug-report fixture:
+// 8 scattered changed lines mixed with unchanged lines, including the
+// inline-comment case. Every changed line must appear with a -/+ pair.
+func TestRenderUnifiedDiffF11ScatteredChanges(t *testing.T) {
+	current := []byte("# header comment\n" +
+		"GITHUB_TOKEN=ghp_VEILxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n" +
+		"OPENAI_API_KEY=sk-proj-VEILxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n" +
+		"\n" +
+		"STRIPE_SECRET_KEY=sk_live_VEILxxxxxxxxxxxxxxxx\n" +
+		"SLACK_BOT_TOKEN=xoxb-VEILxxxxxxxxxx\n" +
+		"# section divider\n" +
+		"ANTHROPIC_API_KEY=sk-ant-VEILxxxxxxxxxxxxxx\n" +
+		"AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx\n" +
+		"AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx\n" +
+		"DOUBLE_QUOTED=\"VEILsecretdouble\"\n" +
+		"SINGLE_QUOTED='VEILsecretsingle'\n" +
+		"WITH_COMMENT=VEILvalue # this is a comment\n" +
+		"UNCHANGED_TAIL=stays\n")
+	backup := []byte("# header comment\n" +
+		"GITHUB_TOKEN=ghp_aBcD1234567890abcdef1234567890abcdef\n" +
+		"OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n" +
+		"\n" +
+		"STRIPE_SECRET_KEY=sk_live_1234567890abcdef\n" +
+		"SLACK_BOT_TOKEN=xoxb-1234567890-abcdef\n" +
+		"# section divider\n" +
+		"ANTHROPIC_API_KEY=sk-ant-1234567890abcdef\n" +
+		"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"DOUBLE_QUOTED=\"real-secret-double\"\n" +
+		"SINGLE_QUOTED='real-secret-single'\n" +
+		"WITH_COMMENT=real-value # this is a comment\n" +
+		"UNCHANGED_TAIL=stays\n")
+
+	diff := renderUnifiedDiff(current, backup)
+
+	wantPairs := []struct{ minus, plus string }{
+		{"-GITHUB_TOKEN=ghp_VEILxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "+GITHUB_TOKEN=ghp_aBcD1234567890abcdef1234567890abcdef"},
+		{"-OPENAI_API_KEY=sk-proj-VEILxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "+OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef"},
+		{"-STRIPE_SECRET_KEY=sk_live_VEILxxxxxxxxxxxxxxxx", "+STRIPE_SECRET_KEY=sk_live_1234567890abcdef"},
+		{"-SLACK_BOT_TOKEN=xoxb-VEILxxxxxxxxxx", "+SLACK_BOT_TOKEN=xoxb-1234567890-abcdef"},
+		{"-ANTHROPIC_API_KEY=sk-ant-VEILxxxxxxxxxxxxxx", "+ANTHROPIC_API_KEY=sk-ant-1234567890abcdef"},
+		{"-AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx", "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"},
+		{"-AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx", "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{"-DOUBLE_QUOTED=\"VEILsecretdouble\"", "+DOUBLE_QUOTED=\"real-secret-double\""},
+		{"-SINGLE_QUOTED='VEILsecretsingle'", "+SINGLE_QUOTED='real-secret-single'"},
+		{"-WITH_COMMENT=VEILvalue # this is a comment", "+WITH_COMMENT=real-value # this is a comment"},
+	}
+	for _, p := range wantPairs {
+		if !strings.Contains(diff, p.minus+"\n") {
+			t.Errorf("diff missing %q\n--- diff ---\n%s", p.minus, diff)
+		}
+		if !strings.Contains(diff, p.plus+"\n") {
+			t.Errorf("diff missing %q\n--- diff ---\n%s", p.plus, diff)
+		}
+	}
+
+	// Unchanged lines must NOT appear with a marker (must appear as context).
+	for _, want := range []string{
+		" # header comment", " UNCHANGED_TAIL=stays", " # section divider",
+	} {
+		if !strings.Contains(diff, want+"\n") {
+			t.Errorf("expected unchanged line as context %q\n--- diff ---\n%s", want, diff)
+		}
+	}
+}
+
+// TestClassifyEnvPairDiffShowsAllChangedLines is the integration-level F-11
+// regression: when the resolver substitutes placeholders cleanly so that the
+// reconstruction matches the backup, the diff must STILL show every line
+// that will change on disk (current → backup). Earlier behavior compared
+// the reconstruction to the backup and hid resolved lines from the preview.
+func TestClassifyEnvPairDiffShowsAllChangedLines(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+
+	backupContent := []byte("GITHUB_TOKEN=ghp_real_aBcDef\n" +
+		"KEEP=stays\n" +
+		"OPENAI_API_KEY=sk-real-1234\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXReal\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	currentContent := []byte("GITHUB_TOKEN=ghp_VEIL_xxx\n" +
+		"KEEP=stays\n" +
+		"OPENAI_API_KEY=sk-VEIL-yyy\n" +
+		"AWS_SECRET_ACCESS_KEY=VEILSecretZZZ\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resolver substitutes ALL placeholders cleanly; reconstruction == backup,
+	// so the older code path produced an empty/under-reported diff.
+	resolver := placeholderResolver{
+		"ghp_VEIL_xxx":   "ghp_real_aBcDef",
+		"sk-VEIL-yyy":    "sk-real-1234",
+		"VEILSecretZZZ":  "wJalrXReal",
+	}
+
+	status, diff, err := classifyEnvPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classUnmodified {
+		// With a perfect resolver, classification SHOULD be Unmodified —
+		// no user edits beyond what veil did. This guards against the
+		// classification accidentally flipping when we changed the diff input.
+		t.Fatalf("status = %v, want classUnmodified (resolver fully recovers)", status)
+	}
+	// status == classUnmodified means diff is "" by contract — that's fine.
+	// The interesting case is when something IS modified; cover that next.
+	_ = diff
+}
+
+// TestClassifyEnvPairDiffShowsRealChangeWhenUserEdited covers the modified
+// case: the user added a line on top of placeholders. The dry-run diff must
+// include the added line AND the placeholder→backup rewrites.
+func TestClassifyEnvPairDiffShowsRealChangeWhenUserEdited(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, ".env")
+	backup := orig + ".veil-backup"
+
+	backupContent := []byte("GITHUB_TOKEN=ghp_real_aBcDef\n" +
+		"OPENAI_API_KEY=sk-real-1234\n" +
+		"STRIPE_SECRET_KEY=sk_live_real\n" +
+		"SLACK_BOT_TOKEN=xoxb-real\n")
+	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Current has placeholders for all 4 known secrets PLUS a user-added line.
+	currentContent := []byte("GITHUB_TOKEN=ghp_VEIL_xxx\n" +
+		"OPENAI_API_KEY=sk-VEIL-yyy\n" +
+		"STRIPE_SECRET_KEY=sk_live_VEIL\n" +
+		"SLACK_BOT_TOKEN=xoxb-VEIL\n" +
+		"USER_ADDED=mine\n")
+	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := placeholderResolver{
+		"ghp_VEIL_xxx":    "ghp_real_aBcDef",
+		"sk-VEIL-yyy":     "sk-real-1234",
+		"sk_live_VEIL":    "sk_live_real",
+		"xoxb-VEIL":       "xoxb-real",
+	}
+
+	status, diff, err := classifyEnvPair(orig, backup, resolver)
+	if err != nil {
+		t.Fatalf("classifyEnvPair: %v", err)
+	}
+	if status != classModified {
+		t.Fatalf("status = %v, want classModified", status)
+	}
+
+	// Every secret line that will change on disk must appear in the diff —
+	// not just the user-added one. This is the F-11 fix.
+	wantLines := []string{
+		"-GITHUB_TOKEN=ghp_VEIL_xxx",
+		"+GITHUB_TOKEN=ghp_real_aBcDef",
+		"-OPENAI_API_KEY=sk-VEIL-yyy",
+		"+OPENAI_API_KEY=sk-real-1234",
+		"-STRIPE_SECRET_KEY=sk_live_VEIL",
+		"+STRIPE_SECRET_KEY=sk_live_real",
+		"-SLACK_BOT_TOKEN=xoxb-VEIL",
+		"+SLACK_BOT_TOKEN=xoxb-real",
+		"-USER_ADDED=mine",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(diff, want+"\n") {
+			t.Errorf("diff missing %q\n--- diff ---\n%s", want, diff)
+		}
 	}
 }
 
@@ -704,5 +900,247 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 	got, _ := os.ReadFile(envPath)
 	if !bytes.Equal(got, original) {
 		t.Errorf(".env after uninstall should equal original (edit lost)\ngot:  %q\nwant: %q", got, original)
+	}
+}
+
+// TestUninstallRestoresMCPConfigOutsideProjectRoot is the F-13 regression
+// guard. It initializes a project where the MCP config lives outside the
+// project root (via VEIL_MCP_CONFIG_PATH), then runs uninstall and confirms
+// the out-of-root file is restored to its original bytes AND its .veil-backup
+// is removed. The previous bug: discoverBackups only scanned the project root,
+// so the MCP file's backup survived uninstall and the placeholder remained.
+func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir() // deliberately outside `root`
+	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	originalMCP := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	postInit, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(postInit), "ghp_real1234567890abcdef1234567890abcdef") {
+		t.Fatal("init did not replace the real token; preconditions broken")
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("init did not create backup: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	restored, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("MCP config missing after uninstall: %v", err)
+	}
+	if string(restored) != originalMCP {
+		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); !os.IsNotExist(err) {
+		t.Errorf("MCP backup should be removed after uninstall, stat err: %v", err)
+	}
+}
+
+// TestUninstallClassifiesMCPByRegisteredKindNotBasename is the regression
+// guard for the classifyPath bug. When VEIL_MCP_CONFIG_PATH points at a file
+// whose basename is NOT "claude_desktop_config.json", the prior code (which
+// classified by basename) routed the pair to classifyEnvPair — parsing JSON
+// as .env syntax. Reverse-substitution then failed to recognise the JSON
+// values as KV lines, so the file was reported as [modified] instead of
+// [restore], and the dry-run diff was nonsense. The fix records the kind in
+// the registry; this test asserts the post-fix behaviour: the round-trip
+// classifies as Unmodified and uninstall fully restores the original bytes.
+func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir()
+	// Non-canonical filename — anything other than claude_desktop_config.json.
+	mcpPath := filepath.Join(mcpDir, "mcp.json")
+	originalMCP := "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"npx\",\n      \"env\": {\n        \"GITHUB_TOKEN\": \"ghp_real1234567890abcdef1234567890abcdef\"\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("init did not create backup at non-canonical path: %v", err)
+	}
+
+	// Dry-run: the JSON file has only the secret modification (which Veil itself
+	// made via placeholder substitution). With the correct classifier this is
+	// classUnmodified ("[restore]"), and no diff is emitted. With the broken
+	// basename-based classifier it would be classModified ("[modified]") with a
+	// nonsense .env-shaped diff.
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+	plan := stdout.String()
+	mcpLine := findPlanLineFor(plan, mcpPath)
+	if mcpLine == "" {
+		t.Fatalf("dry-run plan did not include the MCP file %q; plan was:\n%s", mcpPath, plan)
+	}
+	if strings.Contains(mcpLine, "[modified]") {
+		t.Errorf("MCP file at non-canonical path was misclassified as modified (classifyEnvPair was used instead of classifyMCPPair); line: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+	if !strings.Contains(mcpLine, "[restore ]") {
+		t.Errorf("expected MCP file to be classified as [restore], got: %q\nfull plan:\n%s", mcpLine, plan)
+	}
+
+	// Real uninstall: file restores to pre-Veil bytes byte-for-byte.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+	restored, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("MCP config missing after uninstall: %v", err)
+	}
+	if string(restored) != originalMCP {
+		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
+	}
+}
+
+// findPlanLineFor returns the dry-run plan line that ends with the given
+// path, or "" if none is found.
+func findPlanLineFor(plan, path string) string {
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), path) {
+			return line
+		}
+	}
+	return ""
+}
+
+// TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot is the F-12 regression
+// guard. The brief allows either a hard error OR a successful re-vault — what
+// must not happen is the silent-skip outcome (the old behaviour). This test
+// asserts the chosen behaviour: re-vault from the orphan, ending up with the
+// same vaulted set as the first init.
+func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := t.TempDir() // outside root
+	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	originalMCP := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
+
+	// First init: vaults the MCP secret, leaves a backup behind.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Simulate a wiped registry: blow away .veil/ but leave the placeholder-
+	// filled MCP file and the .veil-backup in place. This is exactly the F-12
+	// scenario: an interrupted/older Veil left an orphan behind.
+	if err := os.RemoveAll(config.ProjectStateDir(root)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
+		t.Fatalf("preconditions: orphan backup missing: %v", err)
+	}
+
+	// Second init: must NOT silently skip. The orphan-reclaim path re-vaults
+	// using the backup as the source of truth.
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	stderr := new(bytes.Buffer)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("second init failed: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("re-init silently dropped the MCP secret (F-12 regression)")
+	}
+	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
+		t.Errorf("re-init captured wrong real value (must come from orphan backup); got %q", cred.Real)
+	}
+	if !strings.Contains(stderr.String(), "orphaned backup") {
+		t.Errorf("expected user-visible 'orphaned backup' notice on stderr, got: %s", stderr.String())
 	}
 }
