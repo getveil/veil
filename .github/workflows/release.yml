@@ -1,0 +1,61 @@
+# .github/workflows/release.yml
+# Triggered on v* tag push or manual workflow_dispatch.
+# Drives goreleaser to build, sign, and publish a tagged release.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist)'
+        required: true
+        type: string
+
+permissions:
+  contents: write       # create GitHub Release, upload assets
+  id-token: write       # cosign keyless OIDC + SLSA provenance
+  attestations: write   # attest-build-provenance
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for changelog generation
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/veil_*.tar.gz
+            dist/checksums.txt
