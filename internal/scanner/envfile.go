@@ -38,7 +38,11 @@ type Line struct {
 	Value  string     // only for KV — the decoded value (unquoted, unescaped)
 	Quoted QuoteStyle // only for KV
 	Export bool       // only for KV — true if the line started with "export "
-	dirty  bool       // true if Value has been modified via SetValue
+	// TrailingComment holds the trailing inline comment exactly as it appeared
+	// in the source (leading whitespace + "#" + text), or "" if there was none.
+	// Preserved on re-emission so dirty lines keep their inline comments.
+	TrailingComment string
+	dirty           bool // true if Value has been modified via SetValue
 }
 
 // EnvFile represents a parsed .env file with full round-trip fidelity.
@@ -131,44 +135,46 @@ func parseKV(raw string) (Line, bool) {
 
 	valRaw := kvPart[eqIdx+1:]
 
-	value, quoted, ok := parseValue(valRaw)
+	value, quoted, comment, ok := parseValue(valRaw)
 	if !ok {
 		return Line{}, false
 	}
 
 	return Line{
-		Raw:    raw,
-		Kind:   KVLine,
-		Key:    key,
-		Value:  value,
-		Quoted: quoted,
-		Export: export,
+		Raw:             raw,
+		Kind:            KVLine,
+		Key:             key,
+		Value:           value,
+		Quoted:          quoted,
+		Export:          export,
+		TrailingComment: comment,
 	}, true
 }
 
 // parseValue parses the value portion after the = sign.
-// Returns the decoded value, quote style, and ok=true on success.
-// Returns ("", 0, false) when the value has an unclosed quote that cannot be
-// recovered (e.g. an unclosed single-quote), signalling parseKV to demote the
-// line to a CommentLine.
-func parseValue(raw string) (string, QuoteStyle, bool) {
+// Returns the decoded value, quote style, the verbatim trailing comment
+// (leading whitespace + "#" + text, or "" if absent), and ok=true on success.
+// Returns ("", 0, "", false) when the value has an unclosed quote that cannot
+// be recovered (e.g. an unclosed single-quote), signalling parseKV to demote
+// the line to a CommentLine.
+func parseValue(raw string) (string, QuoteStyle, string, bool) {
 	// Check for single-quoted value.
 	trimmed := strings.TrimSpace(raw)
 	if strings.HasPrefix(trimmed, "'") {
-		content, ok := extractSingleQuoted(trimmed[1:])
+		content, rest, ok := extractSingleQuoted(trimmed[1:])
 		if ok {
-			return content, SingleQuote, true
+			return content, SingleQuote, extractTrailingComment(rest), true
 		}
 		// Unclosed single-quote: signal failure so the caller demotes to CommentLine.
-		return "", 0, false
+		return "", 0, "", false
 	}
 
 	// Check for double-quoted value
 	if strings.HasPrefix(trimmed, "\"") {
 		// Find the matching closing quote, respecting escapes
-		content, ok := extractDoubleQuoted(trimmed[1:])
+		content, rest, ok := extractDoubleQuoted(trimmed[1:])
 		if ok {
-			return unescapeDoubleQuoted(content), DoubleQuote, true
+			return unescapeDoubleQuoted(content), DoubleQuote, extractTrailingComment(rest), true
 		}
 		// Malformed double-quote — strip the opening quote and fall through
 		raw = strings.TrimPrefix(raw, "\"")
@@ -176,17 +182,18 @@ func parseValue(raw string) (string, QuoteStyle, bool) {
 
 	// Unquoted: trim whitespace, strip inline comments
 	val := strings.TrimSpace(raw)
-	val = stripInlineComment(val)
-	return val, Unquoted, true
+	val, comment := splitInlineComment(val)
+	return val, Unquoted, comment, true
 }
 
 // extractSingleQuoted extracts content from inside single quotes, honouring
 // the shell idiom backslash-quote (close quote, literal quote, open quote)
 // which lets users embed a literal single quote inside a single-quoted string.
 //
-// Input starts after the opening quote. Returns the literal content and
-// true on success; "" and false if the quote is unclosed.
-func extractSingleQuoted(s string) (string, bool) {
+// Input starts after the opening quote. Returns the literal content, the
+// remainder after the closing quote, and true on success; "", "" and false
+// if the quote is unclosed.
+func extractSingleQuoted(s string) (string, string, bool) {
 	var b strings.Builder
 	b.Grow(len(s))
 	i := 0
@@ -200,17 +207,18 @@ func extractSingleQuoted(s string) (string, bool) {
 				continue
 			}
 			// Plain closing quote.
-			return b.String(), true
+			return b.String(), s[i+1:], true
 		}
 		b.WriteByte(s[i])
 		i++
 	}
-	return "", false
+	return "", "", false
 }
 
 // extractDoubleQuoted extracts content from inside double quotes.
-// Input starts after the opening quote.
-func extractDoubleQuoted(s string) (string, bool) {
+// Input starts after the opening quote. Returns the inner content, the
+// remainder after the closing quote, and true on success.
+func extractDoubleQuoted(s string) (string, string, bool) {
 	var i int
 	for i < len(s) {
 		if s[i] == '\\' && i+1 < len(s) {
@@ -218,11 +226,11 @@ func extractDoubleQuoted(s string) (string, bool) {
 			continue
 		}
 		if s[i] == '"' {
-			return s[:i], true
+			return s[:i], s[i+1:], true
 		}
 		i++
 	}
-	return "", false
+	return "", "", false
 }
 
 // unescapeDoubleQuoted processes escape sequences in double-quoted values.
@@ -251,16 +259,35 @@ func unescapeDoubleQuoted(s string) string {
 	return b.String()
 }
 
-// stripInlineComment removes an inline # comment from an unquoted value.
-// A comment starts with # preceded by whitespace.
-func stripInlineComment(val string) string {
+// splitInlineComment splits an unquoted value at its inline comment.
+// Returns the value (with trailing whitespace before the # trimmed) and the
+// verbatim comment text including its leading whitespace and "#". Returns
+// (val, "") when no inline comment is present.
+func splitInlineComment(val string) (string, string) {
 	// Walk through looking for ' #' or '\t#'
 	for i := 1; i < len(val); i++ {
 		if val[i] == '#' && (val[i-1] == ' ' || val[i-1] == '\t') {
-			return strings.TrimRight(val[:i], " \t")
+			// Find the start of the run of whitespace preceding the '#'.
+			j := i
+			for j > 0 && (val[j-1] == ' ' || val[j-1] == '\t') {
+				j--
+			}
+			return val[:j], val[j:]
 		}
 	}
-	return val
+	return val, ""
+}
+
+// extractTrailingComment returns the verbatim trailing comment from the
+// remainder of a line after a closing quote. If the remainder contains only
+// whitespace, returns "". If it contains a "#"-prefixed comment (optionally
+// with leading whitespace), returns it verbatim.
+func extractTrailingComment(rest string) string {
+	trimmed := strings.TrimLeft(rest, " \t")
+	if trimmed == "" || trimmed[0] != '#' {
+		return ""
+	}
+	return rest
 }
 
 // Bytes reconstructs the file content from Lines with round-trip fidelity.
@@ -276,6 +303,16 @@ func (f *EnvFile) Bytes() []byte {
 			buf.WriteString(l.Key)
 			buf.WriteByte('=')
 			buf.WriteString(encodeValue(l.Value, l.Quoted))
+			// Re-attach the trailing inline comment. For unquoted values that
+			// gained a "#" pattern (and therefore got promoted to quoted via
+			// encodeValue's needsQuoting check), the comment is still safe to
+			// append — the value is now wrapped in quotes.
+			if l.TrailingComment != "" {
+				if !startsWithSpace(l.TrailingComment) {
+					buf.WriteByte(' ')
+				}
+				buf.WriteString(l.TrailingComment)
+			}
 		default:
 			// Emit the original line verbatim for round-trip fidelity.
 			buf.WriteString(l.Raw)
@@ -285,6 +322,10 @@ func (f *EnvFile) Bytes() []byte {
 		}
 	}
 	return buf.Bytes()
+}
+
+func startsWithSpace(s string) bool {
+	return len(s) > 0 && (s[0] == ' ' || s[0] == '\t')
 }
 
 // encodeValue re-encodes a value with the given quote style.

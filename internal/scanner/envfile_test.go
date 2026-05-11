@@ -491,3 +491,101 @@ func TestSetValue(t *testing.T) {
 		}
 	}
 }
+
+// TestTrailingCommentRoundTrip exercises F-4: inline trailing comments must
+// survive a SetValue/Bytes/re-parse cycle for unquoted, double-quoted, and
+// single-quoted values, and a "#" inside a quoted value must NOT be treated
+// as the start of a comment.
+func TestTrailingCommentRoundTrip(t *testing.T) {
+	src := "K1=val # comment\n" +
+		"K2=\"val\" # comment2\n" +
+		"K3='val' # comment3\n" +
+		"K4=\"val # not-comment\"\n"
+
+	tmp := filepath.Join(t.TempDir(), "trailing.env")
+	if err := os.WriteFile(tmp, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	wantInitial := []struct {
+		key, value, comment string
+	}{
+		{"K1", "val", " # comment"},
+		{"K2", "val", " # comment2"},
+		{"K3", "val", " # comment3"},
+		{"K4", "val # not-comment", ""},
+	}
+	linesByKey := map[string]*Line{}
+	for i := range f.Lines {
+		if f.Lines[i].Kind == KVLine {
+			linesByKey[f.Lines[i].Key] = &f.Lines[i]
+		}
+	}
+	for _, w := range wantInitial {
+		l, ok := linesByKey[w.key]
+		if !ok {
+			t.Fatalf("key %q not parsed", w.key)
+		}
+		if l.Value != w.value {
+			t.Errorf("%s initial value = %q, want %q", w.key, l.Value, w.value)
+		}
+		if l.TrailingComment != w.comment {
+			t.Errorf("%s initial TrailingComment = %q, want %q", w.key, l.TrailingComment, w.comment)
+		}
+	}
+
+	// Mark every KV line dirty by setting a new value.
+	newValues := map[string]string{
+		"K1": "newval1",
+		"K2": "newval2",
+		"K3": "newval3",
+		"K4": "newval4 # still-not-comment",
+	}
+	for k, v := range newValues {
+		if !f.SetValue(k, v) {
+			t.Fatalf("SetValue(%q): not found", k)
+		}
+	}
+
+	// Write the re-emitted bytes and re-parse.
+	tmp2 := filepath.Join(t.TempDir(), "trailing2.env")
+	if err := os.WriteFile(tmp2, f.Bytes(), 0o644); err != nil {
+		t.Fatalf("write modified: %v", err)
+	}
+	f2, err := ParseFile(tmp2)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+
+	wantFinal := []struct {
+		key, value, comment string
+	}{
+		{"K1", "newval1", " # comment"},
+		{"K2", "newval2", " # comment2"},
+		{"K3", "newval3", " # comment3"},
+		{"K4", "newval4 # still-not-comment", ""},
+	}
+	linesByKey2 := map[string]*Line{}
+	for i := range f2.Lines {
+		if f2.Lines[i].Kind == KVLine {
+			linesByKey2[f2.Lines[i].Key] = &f2.Lines[i]
+		}
+	}
+	for _, w := range wantFinal {
+		l, ok := linesByKey2[w.key]
+		if !ok {
+			t.Fatalf("key %q missing after re-parse", w.key)
+		}
+		if l.Value != w.value {
+			t.Errorf("%s round-trip value = %q, want %q", w.key, l.Value, w.value)
+		}
+		if l.TrailingComment != w.comment {
+			t.Errorf("%s round-trip TrailingComment = %q, want %q", w.key, l.TrailingComment, w.comment)
+		}
+	}
+}
