@@ -37,7 +37,7 @@ See [Architecture](ARCHITECTURE.md) for details.
 | 5 | GitHub API (`ghp_veil_…` → `api.github.com`) gets real PAT injected. | Supported |
 | 6 | Slack API (`xoxb-` → `api.slack.com`). | Supported |
 | 7 | OpenAI / Anthropic (`sk-veil_…`). | Supported |
-| 8 | AWS / GCP (STS, `oauth2.googleapis.com`). | Supported |
+| 8 | AWS SigV4 — re-signed at the proxy (including STS session tokens). Google Cloud — `AIza`-prefixed API keys via the `*.googleapis.com` wildcard; service-account JSON keys and OAuth refresh tokens require manual `veil add --host` scoping (case 9). | Partial |
 | 9 | Custom/internal API — manual `veil add --host api.mycompany.com`. | Supported (manual scoping) |
 | 10 | Parallel requests to multiple services; per-hostname credential. | Supported |
 | 11 | Host with no credential mapping (httpbin.org) — passthrough. | Supported |
@@ -71,7 +71,7 @@ the same proxy.
 | 23 | Agent launches via `veil run claude` — unaware of Veil; proxy vars in env. | Supported |
 | 24 | Long session (hours) — in-process proxy persists with the parent; audit store batched. | Supported |
 | 25 | Agent exits cleanly — `child.Wait()` returns; deferred cleanup tears down proxy, pidfile, CA bundle. | Supported |
-| 26 | Agent crashes or is killed — signal forwarder escalates SIGTERM → SIGKILL. Linux uses `Pdeathsig` for parent-death; macOS uses a pipe-based watchdog helper. | Supported |
+| 26 | Agent crashes or is killed — signal forwarder forwards SIGINT, then escalates: SIGTERM 5s later, SIGKILL 10s after the initial SIGINT. Linux uses `Pdeathsig` for parent-death; macOS uses a pipe-based watchdog helper. | Supported |
 | 27 | Multiple concurrent or sequential sessions — per-session pidfile (`proxy-<pid>.pid`), `veil status` enumerates all live sessions. | Supported |
 
 ## Edge cases
