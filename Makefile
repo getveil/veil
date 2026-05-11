@@ -10,7 +10,7 @@ test:
 	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test -tags testkeystore ./... -timeout 120s
 
 test-race:
-	CGO_ENABLED=0 VEIL_TEST_KEYSTORE=mem go test -tags testkeystore ./... -race -timeout 180s
+	CGO_ENABLED=1 VEIL_TEST_KEYSTORE=mem go test -tags testkeystore ./... -race -timeout 180s
 
 lint:
 	golangci-lint run

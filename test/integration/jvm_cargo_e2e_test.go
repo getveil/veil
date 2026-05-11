@@ -126,13 +126,18 @@ func TestE2E_JavaThroughVeil(t *testing.T) {
 		t.Fatalf("veil init: %v\n%s", err, out)
 	}
 
+	// Use example.com — RFC-reserved and rock-stable, with no rate limiting.
+	// What we're proving is that the JVM trusts Veil's MITM cert (via the
+	// JAVA_TOOL_OPTIONS truststore injection), not that any particular
+	// upstream service responds 200; an HTTPS TCP+TLS roundtrip that returns
+	// *any* HTTP response is sufficient evidence. api.github.com fails this
+	// in CI because GitHub returns 403 to unauthenticated runner IPs.
 	javaSrc := `public class Probe {
     public static void main(String[] args) throws Exception {
-        var url = new java.net.URL("https://api.github.com/");
-        try (var in = url.openStream()) {
-            byte[] buf = new byte[1024];
-            int n = in.read(buf);
-            if (n <= 0) throw new RuntimeException("empty response");
+        var conn = (java.net.HttpURLConnection) new java.net.URL("https://example.com/").openConnection();
+        int code = conn.getResponseCode();
+        if (code < 200 || code >= 400) {
+            throw new RuntimeException("unexpected response code: " + code);
         }
         System.out.println("ok");
     }
