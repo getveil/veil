@@ -14,7 +14,13 @@ if ! command -v vhs >/dev/null 2>&1; then
   exit 1
 fi
 
-WORK="$(mktemp -d -t veil-demo.XXXXXX)"
+# Use a stable demo-dir path so it can be pre-trusted in claude config
+# (avoids the workspace-trust dialog). On macOS /tmp resolves to /private/tmp;
+# we use /tmp here and the trust entry in ~/.claude.json points at the
+# canonical /private/tmp/veil-demo path.
+WORK="/tmp/veil-demo"
+rm -rf "$WORK"
+mkdir -p "$WORK"
 
 # Cleanup on exit: run veil uninstall to remove the demo's keychain entries,
 # then delete the working directory.
@@ -38,6 +44,35 @@ if command -v gh >/dev/null 2>&1; then
     sed -i.bak "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${REAL_GH_TOKEN}|" "$WORK/.env"
     rm -f "$WORK/.env.bak"
   fi
+fi
+
+# Pre-trust the demo dir in claude code's config so the workspace-trust
+# dialog doesn't appear in the recording. macOS resolves /tmp to /private/tmp
+# and claude stores trust under that canonical path.
+CLAUDE_JSON="$HOME/.claude.json"
+if [[ -f "$CLAUDE_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PY'
+import json, os
+p = os.path.expanduser('~/.claude.json')
+with open(p) as f:
+    d = json.load(f)
+key = '/private/tmp/veil-demo'
+projects = d.setdefault('projects', {})
+entry = projects.setdefault(key, {})
+if not entry.get('hasTrustDialogAccepted'):
+    entry['hasTrustDialogAccepted'] = True
+    entry.setdefault('hasCompletedProjectOnboarding', True)
+    entry.setdefault('projectOnboardingSeenCount', 1)
+    entry.setdefault('hasClaudeMdExternalIncludesApproved', True)
+    entry.setdefault('hasClaudeMdExternalIncludesWarningShown', True)
+    entry.setdefault('allowedTools', [])
+    entry.setdefault('mcpContextUris', [])
+    entry.setdefault('mcpServers', {})
+    entry.setdefault('enabledMcpjsonServers', [])
+    entry.setdefault('disabledMcpjsonServers', [])
+    with open(p, 'w') as f:
+        json.dump(d, f, indent=2)
+PY
 fi
 
 # Sanitize env to a minimal whitelist so the recorder's shell env (which may

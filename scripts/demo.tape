@@ -38,10 +38,10 @@ Set TypingSpeed 30ms
 # Show resumes after Enter so frames capture the cyan animation only.
 Hide
 Set TypingSpeed 0
-Type `say "Your project has secrets the AI agent shouldn't see:"`
+Type `say "Your project has a GitHub token the AI agent shouldn't see:"`
 Enter
 Show
-Sleep 2700ms
+Sleep 2900ms
 Set TypingSpeed 30ms
 
 Type "cat .env"
@@ -50,7 +50,7 @@ Sleep 2000ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Veil moves them into the OS keychain, leaves format-aware placeholders:"`
+Type `say "Veil moves it into the OS keychain, leaves a format-aware placeholder:"`
 Enter
 Show
 Sleep 3500ms
@@ -58,19 +58,19 @@ Set TypingSpeed 30ms
 
 Type "veil init --yes"
 Enter
-Sleep 2200ms
+Sleep 2400ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Three credentials vaulted. Veil tracks the proxy state too:"`
+Type `say "Inspect what's managed — names, hosts, and last-injected status:"`
 Enter
 Show
-Sleep 3100ms
+Sleep 3300ms
 Set TypingSpeed 30ms
 
-Type "veil status"
+Type "veil list"
 Enter
-Sleep 2200ms
+Sleep 2400ms
 
 # Load placeholders into the parent shell env so veil run can re-inject them
 # for the agent (claude). Hidden + line-erased.
@@ -83,34 +83,37 @@ Set TypingSpeed 30ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Now start an interactive Claude Code session through Veil:"`
+Type `say "Now open Claude Code through Veil — the demo dir is pre-trusted:"`
 Enter
 Show
-Sleep 3500ms
+Sleep 3700ms
 Set TypingSpeed 30ms
 
 Type "veil run -- claude --dangerously-skip-permissions"
 Enter
-Sleep 2500ms
+Sleep 4500ms
 
-# Hide the workspace-trust dialog Claude shows for unfamiliar dirs.
-# Default option is "Yes, I trust this folder" — just press Enter.
-Hide
-Sleep 3000ms
-Enter
-Sleep 3500ms
-Show
+# Brief pause so the viewer registers Claude's TUI before typing
+Sleep 800ms
 
-# Claude TUI is now ready for input
+# Type the question deliberately — feels like a person, not pasted
+Set TypingSpeed 55ms
 Type "What's my GitHub username?"
-Sleep 600ms
+Set TypingSpeed 30ms
+Sleep 700ms
 Enter
+
+# Wait for Claude to reason, call the tool, get the response, render
 Sleep 22000ms
+
+# Pause so the viewer can read the final response
+Sleep 2500ms
 
 # Exit Claude cleanly so veil prints its session summary
 Type "/exit"
+Sleep 400ms
 Enter
-Sleep 2000ms
+Sleep 2200ms
 
 Hide
 Set TypingSpeed 0
