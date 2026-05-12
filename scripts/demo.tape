@@ -83,15 +83,34 @@ Set TypingSpeed 30ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Now watch real Claude Code hit the GitHub API — it only ever sees the placeholder:"`
+Type `say "Now start an interactive Claude Code session through Veil:"`
 Enter
 Show
-Sleep 3900ms
+Sleep 3500ms
 Set TypingSpeed 30ms
 
-Type `veil run -- claude --print --dangerously-skip-permissions "What's my GitHub username?"`
+Type "veil run -- claude --dangerously-skip-permissions"
 Enter
-Sleep 25000ms
+Sleep 2500ms
+
+# Hide the workspace-trust dialog Claude shows for unfamiliar dirs.
+# Default option is "Yes, I trust this folder" — just press Enter.
+Hide
+Sleep 3000ms
+Enter
+Sleep 3500ms
+Show
+
+# Claude TUI is now ready for input
+Type "What's my GitHub username?"
+Sleep 600ms
+Enter
+Sleep 22000ms
+
+# Exit Claude cleanly so veil prints its session summary
+Type "/exit"
+Enter
+Sleep 2000ms
 
 Hide
 Set TypingSpeed 0
