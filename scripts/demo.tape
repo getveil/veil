@@ -72,7 +72,8 @@ Type "veil status"
 Enter
 Sleep 2200ms
 
-# Load placeholders into the shell env (hidden, then erase the typed line).
+# Load placeholders into the parent shell env so veil run can re-inject them
+# for the agent (claude). Hidden + line-erased.
 Hide
 Set TypingSpeed 0
 Type `set -a && . ./.env && set +a && printf '\033[2K\r\033[1A\033[2K\r'`
@@ -82,24 +83,24 @@ Set TypingSpeed 30ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Now watch Claude hit the GitHub API — it only ever sees the placeholder:"`
+Type `say "Now watch real Claude Code hit the GitHub API — it only ever sees the placeholder:"`
 Enter
 Show
-Sleep 3700ms
+Sleep 3900ms
 Set TypingSpeed 30ms
 
-Type "veil run -- ./claude"
+Type `veil run -- claude --print --dangerously-skip-permissions "What's my GitHub username?"`
 Enter
-Sleep 4500ms
+Sleep 25000ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Veil substituted the real token on the wire — see the audit log:"`
+Type `say "Veil swapped in the real token on the wire — see the audit log:"`
 Enter
 Show
 Sleep 3400ms
 Set TypingSpeed 30ms
 
-Type "veil log --since 1m"
+Type "veil log --since 1m --host api.github.com"
 Enter
 Sleep 3000ms
