@@ -50,19 +50,27 @@ Sleep 2000ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Veil migrates them into the OS keychain and leaves format-aware placeholders:"`
+Type `say "Veil moves them into the OS keychain, leaves format-aware placeholders:"`
 Enter
 Show
-Sleep 3700ms
+Sleep 3500ms
 Set TypingSpeed 30ms
 
 Type "veil init --yes"
 Enter
-Sleep 2000ms
+Sleep 2200ms
 
-Type "cat .env"
+Hide
+Set TypingSpeed 0
+Type `say "Three credentials vaulted. Veil tracks the proxy state too:"`
 Enter
-Sleep 2500ms
+Show
+Sleep 3100ms
+Set TypingSpeed 30ms
+
+Type "veil status"
+Enter
+Sleep 2200ms
 
 # Load placeholders into the shell env (hidden, then erase the typed line).
 Hide
@@ -74,22 +82,22 @@ Set TypingSpeed 30ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Now watch Veil block a leak — the agent tries to send the GitHub token to the wrong host:"`
+Type `say "Now watch Claude hit the GitHub API — it only ever sees the placeholder:"`
 Enter
 Show
-Sleep 4200ms
+Sleep 3700ms
 Set TypingSpeed 30ms
 
-Type `veil run -- curl -s -H "Authorization: token $GITHUB_TOKEN" https://httpbin.org/headers`
+Type "veil run -- ./claude"
 Enter
-Sleep 2800ms
+Sleep 4500ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Every block (and injection) is logged locally:"`
+Type `say "Veil substituted the real token on the wire — see the audit log:"`
 Enter
 Show
-Sleep 2500ms
+Sleep 3400ms
 Set TypingSpeed 30ms
 
 Type "veil log --since 1m"
