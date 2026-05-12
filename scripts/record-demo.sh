@@ -27,8 +27,7 @@ cleanup() {
 trap cleanup EXIT
 
 cp scripts/demo-fixture/.env.template "$WORK/.env"
-cp scripts/demo-fixture/fake-claude.sh "$WORK/claude"
-chmod +x "$WORK/claude"
+cp scripts/demo-fixture/CLAUDE.md "$WORK/CLAUDE.md"
 
 # Sanitize env to a minimal whitelist so the recorder's shell env (which may
 # contain secret-like vars unrelated to the demo) does NOT leak into the cast
