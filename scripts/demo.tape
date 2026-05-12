@@ -21,7 +21,7 @@ Type "cd $VEIL_DEMO_DIR && unset VEIL_DEMO_DIR"
 Enter
 Type `veil() { $VEIL_BIN "$@"; }`
 Enter
-Type `say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }`
+Type `say() { printf '\033[1A\033[2K\r\033[1;36m▸ %s\033[0m\n' "$*"; }`
 Enter
 Type `export PS1='\[\033[1;32m\]$\[\033[0m\] '`
 Enter
@@ -53,10 +53,11 @@ Type "cat .env"
 Enter
 Sleep 2500ms
 
-# Hidden: load the placeholders into the shell env so the visible command
-# below can reference $GITHUB_TOKEN directly.
+# Load placeholders into the shell env so the visible command below can
+# reference $GITHUB_TOKEN directly. The trailing printf erases the typed
+# line so the env-loading isn't part of the demo's visible flow.
 Hide
-Type "set -a && . ./.env && set +a"
+Type `set -a && . ./.env && set +a && printf '\033[2K\r\033[1A\033[2K\r'`
 Enter
 Show
 
