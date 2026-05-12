@@ -14,13 +14,16 @@ Set WindowBarSize 40
 Set Shell bash
 
 # Hidden setup: cd to isolated demo dir, alias veil to the built binary,
-# clean prompt. None of this appears in the recording.
+# define a `say` helper that prints colored narration, clean prompt. None
+# of this appears in the recording.
 Hide
 Type "cd $VEIL_DEMO_DIR && unset VEIL_DEMO_DIR"
 Enter
 Type `veil() { $VEIL_BIN "$@"; }`
 Enter
-Type `export PS1='$ '`
+Type `say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }`
+Enter
+Type `export PS1='\[\033[1;32m\]$\[\033[0m\] '`
 Enter
 Type "clear"
 Enter
@@ -28,19 +31,19 @@ Show
 
 # --- Demo ---
 
-Type "# Your project has secrets the AI agent shouldn't see:"
-Sleep 800ms
+Type `say "Your project has secrets the AI agent shouldn't see:"`
+Sleep 600ms
 Enter
-Sleep 300ms
+Sleep 400ms
 
 Type "cat .env"
 Enter
-Sleep 1500ms
+Sleep 1800ms
 
-Type "# Veil migrates them into the OS keychain and leaves format-aware placeholders:"
-Sleep 800ms
+Type `say "Veil migrates them into the OS keychain and leaves format-aware placeholders:"`
+Sleep 600ms
 Enter
-Sleep 300ms
+Sleep 400ms
 
 Type "veil init --yes"
 Enter
@@ -57,19 +60,19 @@ Type "set -a && . ./.env && set +a"
 Enter
 Show
 
-Type "# Now watch Veil block a leak — the agent tries to send the GitHub token to the wrong host:"
-Sleep 800ms
+Type `say "Now watch Veil block a leak — the agent tries to send the GitHub token to the wrong host:"`
+Sleep 600ms
 Enter
-Sleep 300ms
+Sleep 400ms
 
 Type `veil run -- curl -s -H "Authorization: token $GITHUB_TOKEN" https://httpbin.org/headers`
 Enter
-Sleep 2500ms
+Sleep 2800ms
 
-Type "# Every block (and injection) is logged locally:"
-Sleep 800ms
+Type `say "Every block (and injection) is logged locally:"`
+Sleep 600ms
 Enter
-Sleep 300ms
+Sleep 400ms
 
 Type "veil log --since 1m"
 Enter
