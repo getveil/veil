@@ -83,7 +83,7 @@ Set TypingSpeed 50ms
 
 Hide
 Set TypingSpeed 0
-Type `say "Now open Claude Code through Veil — the demo dir is pre-trusted:"`
+Type `say "Now open Claude Code through Veil:"`
 Enter
 Show
 Sleep 4000ms
@@ -103,8 +103,10 @@ Set TypingSpeed 50ms
 Sleep 700ms
 Enter
 
-# Wait for Claude to reason, call the tool, get the response, render
-Sleep 22000ms
+# Wait for Claude to reason, call the tool, get the response, render.
+# CLAUDE.md keeps responses tight (~5-9s). If a particular take is slower,
+# bump this and re-record.
+Sleep 9000ms
 
 # Pause 4 seconds after the response so viewers can read it
 Sleep 4000ms
