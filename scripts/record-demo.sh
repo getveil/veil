@@ -29,6 +29,17 @@ trap cleanup EXIT
 cp scripts/demo-fixture/.env.template "$WORK/.env"
 cp scripts/demo-fixture/CLAUDE.md "$WORK/CLAUDE.md"
 
+# Substitute a real GitHub token (from `gh auth`) into the demo .env so the
+# curl call returns real user data instead of 401. Falls back to the synthetic
+# value baked into .env.template if gh isn't available.
+if command -v gh >/dev/null 2>&1; then
+  REAL_GH_TOKEN=$(gh auth token 2>/dev/null || true)
+  if [[ -n "$REAL_GH_TOKEN" ]]; then
+    sed -i.bak "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${REAL_GH_TOKEN}|" "$WORK/.env"
+    rm -f "$WORK/.env.bak"
+  fi
+fi
+
 # Sanitize env to a minimal whitelist so the recorder's shell env (which may
 # contain secret-like vars unrelated to the demo) does NOT leak into the cast
 # as warnings from veil's parent-env scanner.
