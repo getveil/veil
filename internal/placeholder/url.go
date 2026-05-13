@@ -58,22 +58,40 @@ func tryURL(value string) (string, bool) {
 	}
 
 	// Find the password in the raw URL string.
-	// URL format: scheme://[user[:password]@]host/path
+	// URL format: scheme://[user[:password]@]host[:port][/path][?query][#fragment]
 	schemeEnd := strings.Index(value, "://")
 	if schemeEnd < 0 {
 		return "", false
 	}
 	authStart := schemeEnd + 3
 
-	// Find @ that ends the userinfo.
-	rest := value[authStart:]
-	atIdx := strings.Index(rest, "@")
+	// Bound the search to the authority. The authority terminates at the
+	// first '/', '?', or '#' after authStart, or at the end of the string.
+	// This matters when the password contains an unencoded '@' (security
+	// issue H1): without this bound, the userinfo/host boundary lookup
+	// could see an '@' from the path and mis-locate the split.
+	authEnd := len(value)
+	for i := authStart; i < len(value); i++ {
+		c := value[i]
+		if c == '/' || c == '?' || c == '#' {
+			authEnd = i
+			break
+		}
+	}
+	rest := value[authStart:authEnd]
+
+	// Find the LAST '@' inside the authority. This matches Go's net/url
+	// parser, which uses LastIndex so that unencoded '@' inside the
+	// password does not prematurely terminate the userinfo.
+	atIdx := strings.LastIndex(rest, "@")
 	if atIdx < 0 {
 		return "", false
 	}
 	userinfo := rest[:atIdx]
 
-	// Find : that separates user from password.
+	// Find the FIRST ':' inside the userinfo: it separates the username
+	// from the password. Use Index (not LastIndex) so passwords containing
+	// ':' are kept intact in rawPassword.
 	colonIdx := strings.Index(userinfo, ":")
 	if colonIdx < 0 {
 		return "", false
