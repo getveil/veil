@@ -72,116 +72,103 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 	return true, nil
 }
 
+// displayRelOr renders p relative to root for error messages, or returns
+// fallback when Rel fails or is degenerate. Callers that operate on paths
+// likely under root (init) pass filepath.Base(p); callers that may operate
+// on paths outside root (uninstall) pass the original path.
+func displayRelOr(root, p, fallback string) string {
+	rel, err := filepath.Rel(root, p)
+	if err != nil || rel == "" {
+		return fallback
+	}
+	return rel
+}
+
+// displayRel is displayRelOr with filepath.Base(p) as the fallback.
+func displayRel(root, p string) string {
+	return displayRelOr(root, p, filepath.Base(p))
+}
+
+// describeSymlink formats "<display> -> <target>" for a known symlink at p,
+// or just "<display>" when readlink fails.
+func describeSymlink(p, display string) string {
+	if target, err := os.Readlink(p); err == nil && target != "" {
+		return fmt.Sprintf("%s -> %s", display, target)
+	}
+	return display
+}
+
+// appendIfSymlink appends a "<display> -> <target>" entry to hits when p is a
+// symlink, otherwise returns hits unchanged. The caller decides the display
+// label (e.g. basename, project-relative, or full path).
+func appendIfSymlink(hits []string, p, display string) []string {
+	info, err := os.Lstat(p)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return hits
+	}
+	return append(hits, describeSymlink(p, display))
+}
+
+// firstSymlinkInChain walks from anchor down through subpath, Lstating each
+// intermediate component. Returns the first component that is a symlink, or
+// "" when the chain has none. Using EvalSymlinks would silently follow the
+// very attacker-controlled symlink the caller is trying to detect, so each
+// component is Lstat'd literally.
+func firstSymlinkInChain(anchor string, subpath []string) string {
+	current := anchor
+	for _, part := range subpath {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return ""
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return current
+		}
+	}
+	return ""
+}
+
 // refuseSymlinkedInputs refuses to vault any input that is a symbolic link
-// at the leaf OR whose parent chain contains a symlink that redirects the
-// path outside its expected root.
-//
-// Leaf symlink: a symlinked .env points outward from the project tree, often
-// to a location the user picked specifically to keep secrets out of source
-// control (e.g. `~/.config/secrets`). Vaulting it would replace the symlink
-// with a placeholder and write the cleartext target to `<root>/.env.veil-
-// backup` inside the project — strictly worse exposure than not running Veil.
-//
-// Parent symlink: os.Lstat resolves intermediate directory components even
-// when it does not follow the leaf, so a hostile parent-dir symlink (or any
-// of its own ancestors) would pass the leaf check but still cause the
-// subsequent read/write/rename to operate at an attacker-controlled
-// location. The canonical-parent check below catches that case.
-//
-// Aggregates ALL violating paths before returning so the user sees the full
-// picture in one error rather than fixing them one at a time.
+// at the leaf OR whose parent chain contains a symlink. Either case would
+// redirect the subsequent read/write/rename to an attacker-controlled
+// location: the symlink is replaced with a placeholder file inside the
+// project while cleartext lands at the link target — strictly worse exposure
+// than not running Veil. Aggregates every violation so the user fixes them
+// in one pass.
 func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string) error {
 	var hits []string
 
-	check := func(p string) {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			return
-		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil || rel == "" {
-			rel = p
-		}
-		target, lerr := os.Readlink(p)
-		if lerr != nil || target == "" {
-			hits = append(hits, rel)
-			return
-		}
-		hits = append(hits, fmt.Sprintf("%s -> %s", rel, target))
-	}
-
 	for _, p := range envPaths {
-		check(p)
+		hits = appendIfSymlink(hits, p, displayRel(root, p))
 	}
 	if mcpConfigPath != "" {
-		check(mcpConfigPath)
+		hits = appendIfSymlink(hits, mcpConfigPath, displayRel(root, mcpConfigPath))
 	}
 
-	// Parent-component check: walk from a trust anchor down to the leaf,
-	// Lstating each intermediate directory. A symlink at any of those
-	// components means subsequent read/write/rename operations land at an
-	// attacker-controlled location even though the leaf check passes
-	// (os.Lstat follows parent symlinks transparently). Using EvalSymlinks
-	// here would be self-defeating — it resolves the very attacker symlink
-	// we are trying to detect — so Lstat each component literally.
-	//
-	// For .env files: anchor is the project root the user passed. The
-	// scanner only looks at root itself today (no subdirectories), so the
-	// component walk is a no-op for current code; we keep it so a future
-	// nested scanner does not silently regress.
-	//
-	// For MCP config: anchor is the user's home (when using default
-	// discovery); skipped when the test-override env var is set, since the
-	// override path is explicitly user-chosen.
-	walkParents := func(anchor string, subpath []string) string {
-		current := anchor
-		for _, part := range subpath {
-			current = filepath.Join(current, part)
-			info, err := os.Lstat(current)
-			if err != nil {
-				return ""
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return current
-			}
+	checkChain := func(anchor string, subpath []string, leafDisplay string) {
+		hit := firstSymlinkInChain(anchor, subpath)
+		if hit == "" {
+			return
 		}
-		return ""
+		hits = append(hits, fmt.Sprintf("%s (parent %s)", leafDisplay, describeSymlink(hit, hit)))
 	}
+
+	// .env anchor is the project root. Scanner only looks at root itself
+	// today (no subdirs), so the walk is a no-op for current code; we keep
+	// it so a future nested scanner does not silently regress.
 	for _, p := range envPaths {
-		rel, relErr := filepath.Rel(root, filepath.Dir(p))
-		if relErr != nil || rel == "" || rel == "." {
+		rel, err := filepath.Rel(root, filepath.Dir(p))
+		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
 			continue
 		}
-		if strings.HasPrefix(rel, "..") {
-			continue
-		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if hit := walkParents(root, parts); hit != "" {
-			target, _ := os.Readlink(hit)
-			display, _ := filepath.Rel(root, p)
-			if display == "" {
-				display = p
-			}
-			if target != "" {
-				hits = append(hits, fmt.Sprintf("%s (parent %s -> %s)", display, hit, target))
-			} else {
-				hits = append(hits, fmt.Sprintf("%s (parent %s is a symlink)", display, hit))
-			}
-		}
+		checkChain(root, strings.Split(filepath.ToSlash(rel), "/"), displayRel(root, p))
 	}
+	// MCP anchor is the user's home (default discovery); skipped under the
+	// test-override env var since that path is explicitly user-chosen.
 	if mcpConfigPath != "" {
 		if anchor, subpath, ok, _ := mcpconfig.ParentAnchor(); ok {
-			if hit := walkParents(anchor, subpath); hit != "" {
-				target, _ := os.Readlink(hit)
-				if target != "" {
-					hits = append(hits, fmt.Sprintf("%s (parent %s -> %s)", mcpConfigPath, hit, target))
-				} else {
-					hits = append(hits, fmt.Sprintf("%s (parent %s is a symlink)", mcpConfigPath, hit))
-				}
-			}
+			checkChain(anchor, subpath, mcpConfigPath)
 		}
 	}
 
@@ -198,21 +185,39 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string)
 	)
 }
 
+// mcpSentinelHits returns "<rel>: <server>.<key>" entries for every value in
+// the MCP config at mcpConfigPath that already carries the placeholder
+// sentinel. Both env values and positional args are inspected. Parse errors
+// are non-fatal — downstream code surfaces them with better context.
+func mcpSentinelHits(root, mcpConfigPath string) []string {
+	cfg, err := mcpconfig.Parse(mcpConfigPath)
+	if err != nil {
+		return nil
+	}
+	rel := displayRel(root, mcpConfigPath)
+	var hits []string
+	for serverName, server := range cfg.Servers() {
+		for k, v := range server.Env {
+			if placeholder.IsSecretLike(k, v) && placeholder.ContainsSentinel(v) {
+				hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
+			}
+		}
+		for i, v := range server.Args {
+			if placeholder.IsSecretLike("", v) && placeholder.ContainsSentinel(v) {
+				hits = append(hits, fmt.Sprintf("%s: %s.args[%d]", rel, serverName, i))
+			}
+		}
+	}
+	return hits
+}
+
 // refusePlaceholderInputs scans the files init is about to vault and refuses
 // to proceed if any contains a value bearing the placeholder sentinel. Those
 // values were produced by a prior Generate call — re-running init over them
 // would overwrite the user's backup and keystore with placeholder strings,
-// destroying every copy of the original secret Veil controls.
-//
-// Files that already have a sibling .veil-backup AND are not being --force'd
-// are skipped: processEnvFile / processMCPConfig short-circuit those with the
-// "already has a backup (use --force to re-vault)" path, so they never reach
-// the destructive scan-and-rewrite step. The check still fires for them under
-// --force because that is precisely the data-loss scenario.
-//
-// Errors from parsing individual files are non-fatal here — downstream code
-// will surface them with better context. The goal is only to catch the
-// sentinel before any destructive operation runs.
+// destroying every copy of the original secret Veil controls. Files with an
+// existing sibling .veil-backup are skipped unless --force is set, since the
+// downstream "already has a backup" short-circuit makes them safe.
 func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath string, force bool) error {
 	var hits []string
 
@@ -224,51 +229,19 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath strin
 		if err != nil {
 			continue
 		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil || rel == "" {
-			rel = filepath.Base(p)
-		}
+		rel := displayRel(root, p)
 		for _, line := range f.Lines {
 			if line.Kind != scanner.KVLine {
 				continue
 			}
-			if !placeholder.IsSecretLike(line.Key, line.Value) {
-				continue
-			}
-			if placeholder.ContainsSentinel(line.Value) {
+			if placeholder.IsSecretLike(line.Key, line.Value) && placeholder.ContainsSentinel(line.Value) {
 				hits = append(hits, fmt.Sprintf("%s: %s", rel, line.Key))
 			}
 		}
 	}
 
 	if mcpConfigPath != "" && (force || !backupExists(mcpConfigPath)) {
-		if cfg, err := mcpconfig.Parse(mcpConfigPath); err == nil {
-			rel, relErr := filepath.Rel(root, mcpConfigPath)
-			if relErr != nil || rel == "" {
-				rel = filepath.Base(mcpConfigPath)
-			}
-			for serverName, server := range cfg.Servers() {
-				for k, v := range server.Env {
-					if !placeholder.IsSecretLike(k, v) {
-						continue
-					}
-					if placeholder.ContainsSentinel(v) {
-						hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
-					}
-				}
-				// Args are vaulted by processMCPConfig in the same pass as env;
-				// they must be checked here too or --force would overwrite
-				// the backup and keystore with the args-side placeholder.
-				for i, v := range server.Args {
-					if !placeholder.IsSecretLike("", v) {
-						continue
-					}
-					if placeholder.ContainsSentinel(v) {
-						hits = append(hits, fmt.Sprintf("%s: %s.args[%d]", rel, serverName, i))
-					}
-				}
-			}
-		}
+		hits = append(hits, mcpSentinelHits(root, mcpConfigPath)...)
 	}
 
 	if len(hits) == 0 {
@@ -295,10 +268,7 @@ func filterEnvPaths(in io.Reader, w io.Writer, root string, envPaths []string, i
 	_, _ = fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
 	names := make([]string, len(envPaths))
 	for i, p := range envPaths {
-		rel, _ := filepath.Rel(root, p)
-		if rel == "" {
-			rel = filepath.Base(p)
-		}
+		rel := displayRel(root, p)
 		names[i] = rel
 		_, _ = fmt.Fprintf(w, "  %s\n", rel)
 	}
@@ -338,7 +308,7 @@ type secretLine struct {
 // Write order per file (atomicity boundary):
 //  1. build creds in memory
 //  2. build .env bytes in memory
-//  3. writeBackupOnly(envPath)
+//  3. writeBackup(envPath)
 //  4. v.AddBatch(creds)
 //  5. registerVaultedFile(root, envPath, KindEnv)
 //  6. atomicWriteFile(envPath, bytes)
@@ -347,11 +317,9 @@ type secretLine struct {
 // cleartext .env via needsEnvRewrite and replays step 6 only.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
-		// An orphaned backup (one not in the current vault's registry) means
-		// this file was vaulted by a prior Veil instance whose state was wiped
-		// — the backup IS the source of truth, so use it instead of the
-		// current (placeholder-filled) .env. Without this, F-12 would silently
-		// capture fewer secrets than the previous init.
+		// An orphaned backup (one not in the current vault's registry)
+		// indicates a prior Veil install whose state is gone — the backup is
+		// the source of truth, not the placeholder-filled .env on disk.
 		orphan, oerr := isOrphanedBackup(root, envPath)
 		if oerr != nil {
 			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", envPath), oerr)
@@ -361,14 +329,9 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
 			}
 			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
-			// The crashed run may have committed credentials to the vault
-			// before crashing between AddBatch and registerVaultedFile. Those
-			// credentials are now orphaned: no .env references them (the
-			// reclaimed file holds cleartext) and the next pass will try to
-			// vault the same names again, hitting ErrDuplicateCredential.
-			// Wipe any pre-existing credential whose name matches a secret-
-			// like key in the just-restored .env so the re-run is truly
-			// fresh.
+			// A crashed run may have committed credentials between AddBatch
+			// and registerVaultedFile. Wipe them before re-vaulting so the
+			// imminent AddBatch doesn't hit ErrDuplicateCredential.
 			if err := cleanupStaleVaultedCreds(cmd, v, envPath); err != nil {
 				return 0, 0, wrapErr(fmt.Sprintf("cleaning stale vault credentials for %s", envPath), err)
 			}
@@ -441,8 +404,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 
 	// --force: clear any existing entries that would otherwise collide. A
 	// duplicate at AddBatch time means a prior partial run stranded a cred
-	// without a matching backup/rewrite — silently skipping it here is the
-	// stranded-credential bug we're closing.
+	// without a matching backup/rewrite; skipping silently would strand it.
 	if force {
 		for _, c := range creds {
 			if v.HasCredential(c.Name) {
@@ -453,7 +415,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		}
 	}
 
-	if err := writeBackupOnly(envPath); err != nil {
+	if err := writeBackup(envPath); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 	}
 	if err := v.AddBatch(creds); err != nil {
@@ -749,10 +711,7 @@ func selectEnvKeys(
 		return groups, secrets
 	}
 
-	rel, _ := filepath.Rel(root, envPath)
-	if rel == "" {
-		rel = filepath.Base(envPath)
-	}
+	rel := displayRel(root, envPath)
 
 	total := len(secrets)
 	for _, g := range groups {

@@ -220,7 +220,7 @@ func TestProcessEnvFileRecoversAfterMetaBeforeRewrite(t *testing.T) {
 }
 
 // TestProcessEnvFileOrphanReclaimCleansStaleVaultCreds simulates a crash
-// between writeBackupOnly and registerVaultedFile: the backup exists, the
+// between writeBackup and registerVaultedFile: the backup exists, the
 // vault already has credentials with names matching .env keys (from the
 // crashed run), but vault.meta has no entry. The next init must reclaim
 // the orphaned backup AND remove the stale vault credentials so the re-run

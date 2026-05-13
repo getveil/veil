@@ -4,6 +4,8 @@
 // (who reads them, what values are valid) stay with the consuming package.
 package envkeys
 
+import "slices"
+
 // TestKeystoreToggle, when set to "mem" in a binary built with the
 // testkeystore build tag, causes Veil to use an in-process MemKeystore
 // instead of the platform keychain. Production binaries (built without
@@ -35,13 +37,19 @@ var VeilInternalKeys = []string{
 	MCPConfigOverride,
 }
 
-// ProxyKeys lists every environment variable that configures an HTTP proxy.
-// The runner strips these from the child environment before injecting its
-// own loopback proxy URL.
-var ProxyKeys = []string{
-	"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-	"NO_PROXY", "no_proxy",
-}
+// HTTPProxyKeys lists the HTTP_PROXY/HTTPS_PROXY name variants (upper and
+// lower case). The runner strips these and re-injects its own loopback proxy
+// URL under each name.
+var HTTPProxyKeys = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
+
+// NoProxyKeys lists the NO_PROXY name variants. The runner strips these and
+// re-injects the merged skip-host list under each name.
+var NoProxyKeys = []string{"NO_PROXY", "no_proxy"}
+
+// ProxyKeys lists every environment variable that configures an HTTP proxy
+// (both URL-bearing and skip-list-bearing). The runner strips these from the
+// child environment before injecting its own values.
+var ProxyKeys = slices.Concat(HTTPProxyKeys, NoProxyKeys)
 
 // CAKeys lists environment variables that configure CA certificate bundles
 // across common runtimes (Node, curl, Python requests, httplib2, OpenSSL,
@@ -55,3 +63,7 @@ var CAKeys = []string{
 	"HTTPLIB2_CA_CERTS",
 	"CARGO_HTTP_CAINFO",
 }
+
+// JavaToolOptions is the env var the JVM consults at startup. The runner
+// merges Veil's truststore flags with any pre-existing value before re-export.
+const JavaToolOptions = "JAVA_TOOL_OPTIONS"

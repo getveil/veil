@@ -109,12 +109,9 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return wrapErr("discovering MCP config", err)
 	}
-	// Precompute shell-env candidates so the early-exit gate considers all three
-	// sources (SEC-1 covers shell-only projects that have no .env or MCP config).
-	// Empty-valued candidates (name-match only, no actual secret to capture) are
-	// discarded here because processShellEnv would drop them anyway, and they
-	// would otherwise wrongly bypass the early-exit gate for projects with no
-	// real sources.
+	// Precompute shell-env candidates so the early-exit gate considers all
+	// three sources. Empty-valued candidates are dropped so they don't
+	// wrongly bypass that gate; processShellEnv drops them anyway.
 	shellCandidates := scanner.ScanEnviron(os.Environ())
 	shellCandidates = nonEmptyShellCandidates(shellCandidates)
 	if len(envPaths) == 0 && mcpConfigPath == "" && len(shellCandidates) == 0 {
@@ -132,24 +129,12 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	_, _ = fmt.Fprintln(w)
 
-	// Refuse to operate on symlinked inputs. Following the symlink would
-	// replace the link itself with a placeholder file (os.Rename targets the
-	// symlink, not its referent) and dump cleartext at <root>/<name>.veil-backup
-	// — materializing the secret INSIDE the project tree while leaving the
-	// user's external file untouched. That is strictly more exposure than
-	// not running Veil. Runs BEFORE the placeholder check, keystore build, and
-	// vault creation so no destructive step fires for a refused project.
+	// Both gates run BEFORE buildKeystore / CreateVault so a refused project
+	// never reaches the destructive keystore-delete / vault-recreate path
+	// that --force would otherwise trigger.
 	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigPath); err != nil {
 		return err
 	}
-
-	// Refuse to operate on inputs that already carry the placeholder sentinel.
-	// Without this guard, --force would treat the existing placeholders as
-	// fresh secrets, overwrite the .veil-backup with the placeholder-laden
-	// file, and store the placeholder strings as "real" values in a freshly-
-	// minted keystore entry — destroying the user's originals in every layer
-	// Veil controls. Runs BEFORE buildKeystore / CreateVault so the destructive
-	// keystore-delete + vault-recreate that --force triggers is also avoided.
 	if err := refusePlaceholderInputs(root, envPaths, mcpConfigPath, force); err != nil {
 		return err
 	}
@@ -206,14 +191,10 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		}
 	}
 
-	// Scan shell environment for secret-like exports that never made it into
-	// a .env file. Closes SEC-1 residual gap: shell-exported secrets would
-	// otherwise never enter the vault and would pass through to the agent.
-	// processShellEnv re-filters candidates against the vault (to skip names
-	// already captured by an earlier phase) and drops empty values, so the
-	// raw candidate count from ScanEnviron is only used as a fast-path check
-	// for "was there anything at all to look at." Candidates were precomputed
-	// above so the early-exit gate could see them.
+	// Shell-exported secrets that never made it into a .env file would
+	// otherwise pass through to the agent. processShellEnv re-filters
+	// candidates against the vault (skipping names captured in an earlier
+	// phase) and drops empty values.
 	if len(shellCandidates) > 0 {
 		ui.Phase(w, "Scanning shell environment...")
 		n, s, err := processShellEnv(w, in, v, shellCandidates, dryRun, interactive)
@@ -301,11 +282,9 @@ func plural(n int, singular, pluralForm string) string {
 // rewrites the config with placeholders. Returns the number of secrets vaulted
 // and the number auto-scoped to hosts.
 func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, configPath string, force, dryRun, interactive bool) (int, int, error) {
-	// Check for existing backup. An orphaned backup (one not in the current
-	// vault's registry) means this file was vaulted by a prior Veil instance
-	// whose state is gone — the backup IS the source of truth, so use it
-	// instead of the current (placeholder-filled) config. Without this, F-12
-	// would silently capture fewer secrets than the previous init.
+	// An orphaned backup (one not in the current vault's registry) means
+	// this file was vaulted by a prior Veil install whose state is gone, so
+	// the backup is the source of truth — reclaim it before re-vaulting.
 	if backupExists(configPath) && !force {
 		orphan, oerr := isOrphanedBackup(root, configPath)
 		if oerr != nil {
@@ -329,16 +308,16 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 
 	w := cmd.OutOrStdout()
 
-	// Collect secret-like entries per server. Both env values and positional
-	// args are scanned: real MCP configs commonly pass credentials via args
-	// (e.g. `["--token", "ghp_..."]` or a DSN like `"postgres://u:pw@h"`),
-	// and missing those leaves cleartext in claude_desktop_config.json after
-	// init.
+	// Both env values and positional args are scanned: real MCP configs
+	// commonly pass credentials via args (e.g. `["--token", "ghp_..."]` or a
+	// DSN). Args carry no key name, so detection passes "" — using the
+	// preceding flag as a synthetic name would falsely vault values like
+	// `--token-expiry 3600` since the key-name heuristic has no length floor.
+	// argIndex < 0 marks an env entry; >= 0 is the position in server.Args.
 	type mcpSecret struct {
 		server   string
-		isArg    bool   // true => args[argIndex], false => Env[key]
 		key      string // env key, or "args[i]" label for display/credname
-		argIndex int    // meaningful only when isArg
+		argIndex int
 		value    string
 	}
 	var allSecrets []mcpSecret
@@ -350,13 +329,8 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 				}
 				continue
 			}
-			allSecrets = append(allSecrets, mcpSecret{server: serverName, key: key, value: value})
+			allSecrets = append(allSecrets, mcpSecret{server: serverName, key: key, argIndex: -1, value: value})
 		}
-		// Args carry no key name, so detection passes "" — value-based signals
-		// only (provider patterns, URL-with-password, entropy). Using the
-		// preceding flag as a synthetic name would falsely vault values like
-		// `--token-expiry 3600` because the key-name heuristic has no length
-		// floor.
 		for i, value := range server.Args {
 			if !placeholder.IsSecretLike("", value) {
 				if flagVerbose {
@@ -366,7 +340,6 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 			}
 			allSecrets = append(allSecrets, mcpSecret{
 				server:   serverName,
-				isArg:    true,
 				key:      fmt.Sprintf("args[%d]", i),
 				argIndex: i,
 				value:    value,
@@ -379,80 +352,69 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 		return 0, 0, nil
 	}
 
-	// Interactive MCP selection.
-	// keyOf uses a NUL byte separator to avoid collisions with colons that
-	// may legitimately appear in server names derived from JSON keys. The
-	// source kind (env vs arg) is part of the namespace so that, for example,
-	// an arg label like "args[0]" never collides with an env var that
-	// happens to share the same string.
-	selectedKeys := make(map[string]bool) // key = "server\x00<kind>\x00key"
-	keyOf := func(s mcpSecret) string {
+	// Selection identity uses NUL separators to avoid colliding with colons
+	// in server names, and includes a kind tag so an arg labeled "args[0]"
+	// cannot collide with an env var of the same string.
+	idOf := func(s mcpSecret) string {
 		kind := "env"
-		if s.isArg {
+		if s.argIndex >= 0 {
 			kind = "arg"
 		}
 		return s.server + "\x00" + kind + "\x00" + s.key
 	}
+	selectedIDs := make(map[string]bool)
 	if interactive {
 		_, _ = fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
 		names := make([]string, len(allSecrets))
 		for i, s := range allSecrets {
-			redacted := redactValue(s.value)
 			label := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-			_, _ = fmt.Fprintf(w, "  %-32s %s\n", label, ui.Muted.Sprint(redacted))
+			_, _ = fmt.Fprintf(w, "  %-32s %s\n", label, ui.Muted.Sprint(redactValue(s.value)))
 			names[i] = label
 		}
 		_, _ = fmt.Fprintln(w)
-		choice := promptYNS(in, w, "Vault all MCP secrets?")
-		switch choice {
+		switch promptYNS(in, w, "Vault all MCP secrets?") {
 		case choiceYes:
 			for _, s := range allSecrets {
-				selectedKeys[keyOf(s)] = true
+				selectedIDs[idOf(s)] = true
 			}
 		case choiceNo:
 			return 0, 0, nil
 		case choiceSelect:
-			selected := promptMultiSelect(in, w, names)
-			selectedSet := make(map[string]bool)
-			for _, name := range selected {
-				selectedSet[name] = true
+			picked := make(map[string]bool)
+			for _, n := range promptMultiSelect(in, w, names) {
+				picked[n] = true
 			}
 			for _, s := range allSecrets {
-				label := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-				if selectedSet[label] {
-					selectedKeys[keyOf(s)] = true
+				if picked[fmt.Sprintf("mcp:%s:%s", s.server, s.key)] {
+					selectedIDs[idOf(s)] = true
 				}
 			}
 		}
 	} else {
 		for _, s := range allSecrets {
-			selectedKeys[keyOf(s)] = true
+			selectedIDs[idOf(s)] = true
 		}
 	}
 
-	var count int
-	var scoped int
+	var count, scoped int
 	configChanged := false
 	seen := make(placeholder.Set)
 
 	for _, s := range allSecrets {
-		if !selectedKeys[keyOf(s)] {
+		if !selectedIDs[idOf(s)] {
 			continue
 		}
-		serverName, key, value := s.server, s.key, s.value
-
-		ph, err := placeholder.Generate(key, value, seen)
+		ph, err := placeholder.Generate(s.key, s.value, seen)
 		if err != nil {
-			return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", serverName, key, err), "")
+			return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", s.server, s.key, err), "")
 		}
 
-		credName := fmt.Sprintf("mcp:%s:%s", serverName, key)
-
-		credHosts := placeholder.HostsForCredential(key, value)
+		credName := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
+		credHosts := placeholder.HostsForCredential(s.key, s.value)
 		cred := &vault.Credential{
 			ID:           vault.NewID(),
 			Name:         credName,
-			Real:         value,
+			Real:         s.value,
 			Placeholder:  ph,
 			Source:       "init",
 			AllowedHosts: credHosts,
@@ -475,10 +437,10 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 		if dryRun {
 			_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
 		} else {
-			if s.isArg {
-				mcpCfg.SetArg(serverName, s.argIndex, ph)
+			if s.argIndex >= 0 {
+				mcpCfg.SetArg(s.server, s.argIndex, ph)
 			} else {
-				mcpCfg.SetEnvValue(serverName, key, ph)
+				mcpCfg.SetEnvValue(s.server, s.key, ph)
 			}
 			configChanged = true
 		}
@@ -489,7 +451,6 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 			return 0, 0, cliErrorf("writing MCP config backup: %v", err)
 		}
 
-		// Write updated config.
 		newData, err := mcpCfg.Bytes()
 		if err != nil {
 			return 0, 0, cliError(fmt.Sprintf("serializing MCP config: %v", err), "")

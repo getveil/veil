@@ -94,10 +94,9 @@ func TestWriteBackupErrorsWhenSourceMissing(t *testing.T) {
 	}
 }
 
-func TestWriteBackupOnlyCreatesBackupNoRegistration(t *testing.T) {
+func TestWriteBackupCreatesBackupNoRegistration(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	root := t.TempDir()
-	// CreateVault so vault.meta exists for the registration step.
 	if _, err := vault.CreateVault(root, "proj-only-backup", vault.NewMemKeystore()); err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
@@ -106,21 +105,19 @@ func TestWriteBackupOnlyCreatesBackupNoRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeBackupOnly(src); err != nil {
-		t.Fatalf("writeBackupOnly: %v", err)
+	if err := writeBackup(src); err != nil {
+		t.Fatalf("writeBackup: %v", err)
 	}
 	if !backupExists(src) {
 		t.Error("expected .veil-backup to exist")
 	}
 
-	// vault.meta should NOT have an entry yet — this orphan state is what the
-	// per-file refactor exploits.
 	entries, err := vault.ReadVaultedFiles(root)
 	if err != nil {
 		t.Fatalf("ReadVaultedFiles: %v", err)
 	}
 	if len(entries) != 0 {
-		t.Errorf("expected no vaulted-file entries after writeBackupOnly, got %d: %+v", len(entries), entries)
+		t.Errorf("expected no vaulted-file entries after writeBackup, got %d: %+v", len(entries), entries)
 	}
 }
 
@@ -156,7 +153,7 @@ func TestRegisterVaultedFileRecordsInMeta(t *testing.T) {
 	}
 }
 
-func TestWriteBackupOnlyPlusRegisterEqualsRecordVaultedBackup(t *testing.T) {
+func TestWriteBackupPlusRegisterEqualsRecordVaultedBackup(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	root := t.TempDir()
 	if _, err := vault.CreateVault(root, "proj-combo", vault.NewMemKeystore()); err != nil {
@@ -167,8 +164,8 @@ func TestWriteBackupOnlyPlusRegisterEqualsRecordVaultedBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := writeBackupOnly(src); err != nil {
-		t.Fatalf("writeBackupOnly: %v", err)
+	if err := writeBackup(src); err != nil {
+		t.Fatalf("writeBackup: %v", err)
 	}
 	if err := registerVaultedFile(root, src, vault.KindMCP); err != nil {
 		t.Fatalf("registerVaultedFile: %v", err)
