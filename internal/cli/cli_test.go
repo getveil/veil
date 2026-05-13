@@ -1329,6 +1329,29 @@ func TestSkipRemoveNotFound(t *testing.T) {
 	}
 }
 
+// Regression: a bare "*" in skip_hosts becomes NO_PROXY=*, which Go's httpproxy
+// (and curl/requests) treat as bypass-all — silently disabling Veil for the
+// project. The skip command must reject it.
+func TestSkipRejectsBareWildcard(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"skip", "--path", root, "*"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected veil skip \"*\" to fail")
+	}
+
+	hosts, err := skiphost.Load(config.SkipHostsFile(root))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(hosts) != 0 {
+		t.Errorf("expected no hosts persisted, got %v", hosts)
+	}
+}
+
 func TestAddWithUserFlag(t *testing.T) {
 	root := initProject(t)
 
