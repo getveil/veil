@@ -391,7 +391,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"CARGO_HTTP_CAINFO=/old/cargo-ca.pem",
 	}
 
-	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, nil)
 
 	env := make(map[string]string)
 	for _, kv := range result {
@@ -450,7 +450,7 @@ func TestBuildChildEnv(t *testing.T) {
 }
 
 func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", []string{"staging.internal.com", "*.metrics.corp"}, nil)
+	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", []string{"staging.internal.com", "*.metrics.corp"}, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -475,7 +475,7 @@ func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
 }
 
 func TestBuildChildEnv_EmptySkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -502,7 +502,7 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 		{Name: "AWS_ACCESS_KEY_ID", Placeholder: "VEIL_AWS_BBB"},
 	})
@@ -547,7 +547,7 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
@@ -579,7 +579,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_API_KEY_XYZ"},
 	}
 
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, vaultEntries)
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, vaultEntries)
 
 	if len(stripped) != 1 || stripped[0] != "OPENAI_API_KEY" {
 		t.Fatalf("stripped = %v, want [OPENAI_API_KEY]", stripped)
@@ -609,7 +609,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, []vaultEntry{
 		{Name: "openai_api_key", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
@@ -671,10 +671,11 @@ func TestRunChildJavaTruststore(t *testing.T) {
 // TestBuildChildEnv_InjectsJavaToolOptions verifies that buildChildEnv emits
 // JAVA_TOOL_OPTIONS pointing at the per-session PKCS12 truststore when no
 // pre-existing value is set. Veil's flags include the truststore path, type,
-// and the conventional "changeit" password.
+// and the per-session random password — both rendered as double-quoted
+// segments so a path or password containing whitespace would still parse.
 func TestBuildChildEnv_InjectsJavaToolOptions(t *testing.T) {
 	base := []string{"PATH=/usr/bin"}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", "test-pw", nil, nil)
 
 	var got string
 	for _, kv := range env {
@@ -686,7 +687,7 @@ func TestBuildChildEnv_InjectsJavaToolOptions(t *testing.T) {
 	if got == "" {
 		t.Fatal("JAVA_TOOL_OPTIONS not set in child env")
 	}
-	want := "-Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	want := `-Djavax.net.ssl.trustStore="/tmp/ts.p12" -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword="test-pw"`
 	if got != want {
 		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q", got, want)
 	}
@@ -701,7 +702,7 @@ func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
 		"PATH=/usr/bin",
 		"JAVA_TOOL_OPTIONS=-Xmx2g -Dfoo=bar",
 	}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", "test-pw", nil, nil)
 
 	var got string
 	count := 0
@@ -714,7 +715,7 @@ func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("JAVA_TOOL_OPTIONS set %d times, want exactly 1", count)
 	}
-	want := "-Xmx2g -Dfoo=bar -Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	want := `-Xmx2g -Dfoo=bar -Djavax.net.ssl.trustStore="/tmp/ts.p12" -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword="test-pw"`
 	if got != want {
 		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q", got, want)
 	}
@@ -726,7 +727,7 @@ func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
 // pathological concatenation.
 func TestBuildChildEnv_EmptyJavaToolOptionsTreatedAsUnset(t *testing.T) {
 	base := []string{"JAVA_TOOL_OPTIONS="}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", "test-pw", nil, nil)
 
 	var got string
 	for _, kv := range env {
@@ -735,7 +736,7 @@ func TestBuildChildEnv_EmptyJavaToolOptionsTreatedAsUnset(t *testing.T) {
 			break
 		}
 	}
-	want := "-Djavax.net.ssl.trustStore=/tmp/ts.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit"
+	want := `-Djavax.net.ssl.trustStore="/tmp/ts.p12" -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword="test-pw"`
 	if got != want {
 		t.Fatalf("JAVA_TOOL_OPTIONS = %q, want %q (no leading space)", got, want)
 	}
