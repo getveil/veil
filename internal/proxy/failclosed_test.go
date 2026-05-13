@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/base64"
 	"io"
 	"net/http"
@@ -334,5 +335,128 @@ func TestFailClosedGuard_LeakedURL(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
 		t.Fatalf("upstream received %d requests; must be 0", got)
+	}
+}
+
+// TestFailClosedGuard_OversizedInjectableBody verifies that a request whose
+// body exceeds bodyCap and whose Content-Type is injectable (e.g.
+// application/json) is rejected with 502 — NOT silently truncated and
+// forwarded. Previously the code did io.ReadAll(io.LimitReader(req.Body,
+// bodyCap+1)) but then proceeded to inject and forward the truncated body,
+// corrupting legitimate requests larger than 10 MiB without surfacing an error.
+func TestFailClosedGuard_OversizedInjectableBody(t *testing.T) {
+	var upstreamHits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv, _, _ := testSetup(t)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// Build a body of bodyCap + 100 bytes of valid JSON (no placeholder).
+	// The exact contents don't matter — what matters is that the body
+	// is larger than bodyCap and the Content-Type triggers injection.
+	overhead := []byte(`{"data":"`)
+	tail := []byte(`"}`)
+	padLen := bodyCap + 100 - len(overhead) - len(tail)
+	pad := bytes.Repeat([]byte("A"), padLen)
+	body := append(append([]byte{}, overhead...), pad...)
+	body = append(body, tail...)
+	if len(body) != bodyCap+100 {
+		t.Fatalf("test body has wrong size: %d, want %d", len(body), bodyCap+100)
+	}
+
+	// Use a longer timeout because shipping a >10 MiB POST through the loopback
+	// proxy can legitimately take longer than the 5-second default in httpClient.
+	client := httpClient(srv.Addr())
+	client.Timeout = 30 * time.Second
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(respBody))
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+		t.Fatalf("upstream received %d requests; must be 0 when body exceeds inject limit", got)
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(respBody), "exceeds") || !strings.Contains(string(respBody), "inject limit") {
+		t.Errorf("response body = %q, want it to mention exceeds/inject limit", string(respBody))
+	}
+	if got := resp.Header.Get("X-Veil-Error"); got == "" {
+		t.Errorf("X-Veil-Error header is empty; expected the error class to be set")
+	}
+}
+
+// TestFailClosedGuard_BoundaryBodyExactlyAtCap verifies that a body of exactly
+// bodyCap bytes is forwarded successfully. bodyCap bytes is allowed; the
+// reject threshold is strictly greater than bodyCap.
+func TestFailClosedGuard_BoundaryBodyExactlyAtCap(t *testing.T) {
+	var upstreamHits int32
+	var receivedLen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		b, _ := io.ReadAll(r.Body)
+		receivedLen = len(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv, _, _ := testSetup(t)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// Body of exactly bodyCap bytes (valid JSON).
+	overhead := []byte(`{"data":"`)
+	tail := []byte(`"}`)
+	padLen := bodyCap - len(overhead) - len(tail)
+	pad := bytes.Repeat([]byte("A"), padLen)
+	body := append(append([]byte{}, overhead...), pad...)
+	body = append(body, tail...)
+	if len(body) != bodyCap {
+		t.Fatalf("test body has wrong size: %d, want %d", len(body), bodyCap)
+	}
+
+	// Use a longer timeout because a 10 MiB POST is much larger than the
+	// 5-second default in httpClient and may legitimately exceed it on
+	// slow CI runners.
+	client := httpClient(srv.Addr())
+	client.Timeout = 30 * time.Second
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (body=%q), want 200 — bodyCap bytes must be allowed",
+			resp.StatusCode, string(respBody))
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 1 {
+		t.Fatalf("upstream received %d requests; want 1", got)
+	}
+	if receivedLen != bodyCap {
+		t.Errorf("upstream received %d bytes; want %d (no truncation)", receivedLen, bodyCap)
 	}
 }
