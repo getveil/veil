@@ -91,23 +91,41 @@ Veil isn't a replacement for a secrets manager — it sits beside one. Secrets m
 
 ## FAQ
 
-**How is this different from Doppler / Infisical / 1Password CLI?**
+<details>
+<summary><strong>How is this different from Doppler / Infisical / 1Password CLI?</strong></summary>
+
 They inject secrets *into your app at runtime*. Veil hides secrets *from the agent that's writing your app*. They're complementary: use both. The threat models differ — secrets managers protect against credentials leaking through your application's logs and configs; Veil protects against credentials leaking through an AI agent's context window, tool calls, or training data.
+</details>
 
-**Does the AI agent need to know about Veil?**
+<details>
+<summary><strong>Does the AI agent need to know about Veil?</strong></summary>
+
 No. That's the design. Any HTTP client that respects `HTTP_PROXY` / `HTTPS_PROXY` works unchanged — Claude Code, Cursor, `curl`, language SDKs that use the standard env-var conventions. The agent sees placeholders and routes outbound calls through Veil; Veil substitutes the real credentials at the network boundary.
+</details>
 
-**Veil MITMs TLS. Is that safe?**
+<details>
+<summary><strong>Veil MITMs TLS. Is that safe?</strong></summary>
+
 Yes, with caveats. Veil installs a CA cert in your **user-scoped** trust store (not system-wide) and only uses it for the proxy on `localhost`. The CA's private key is generated locally and never leaves your machine. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full assumptions.
+</details>
 
-**What if a malicious agent ignores `HTTP_PROXY`?**
+<details>
+<summary><strong>What if a malicious agent ignores <code>HTTP_PROXY</code>?</strong></summary>
+
 Then Veil doesn't protect you. Veil is not a sandbox. It assumes a *cooperative-but-curious* agent — one that follows standard HTTP conventions but might leak secrets it has seen. If you're worried about a hostile agent with arbitrary code execution, you need OS-level isolation, not a proxy.
+</details>
 
-**Does it work with non-HTTP protocols (WebSockets, gRPC)?**
+<details>
+<summary><strong>Does it work with non-HTTP protocols (WebSockets, gRPC)?</strong></summary>
+
 HTTPS-over-CONNECT and plain HTTP today. WebSockets that upgrade through the proxy traverse it but Veil does not inject into the WS frame body. gRPC over HTTP/2 is on the roadmap. If you need this, [open an issue](https://github.com/8enji/veil/issues/new).
+</details>
 
-**Is this production-ready?**
+<details>
+<summary><strong>Is this production-ready?</strong></summary>
+
 No. Pre-1.0. Designed for **dev-machine** use with AI coding agents. Veil is not a substitute for runtime secret management in production services.
+</details>
 
 ## Project structure
 
