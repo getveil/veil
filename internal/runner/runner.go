@@ -140,9 +140,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	for _, c := range creds {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
-	env, strippedVault := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, cfg.SkipHosts, entries)
+	env, strippedVault, strippedInternal := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
+	}
+	if len(strippedInternal) > 0 {
+		printStrippedInternalWarning(os.Stderr, len(strippedInternal))
 	}
 
 	// 6b. Belt-and-suspenders: scan for secret-like env vars that slipped past
@@ -237,7 +240,14 @@ type vaultEntry struct {
 // in their shell. The names of env vars actually stripped because of the
 // vault match are returned (using the original casing from the environment),
 // so the caller can surface a startup warning.
-func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string) {
+//
+// strippedInternal returns the names of Veil's own control env vars
+// (envkeys.VeilInternalKeys) that were present in environ and removed from
+// the child. These are control variables — never reinjected — and the
+// caller surfaces a separate, muted notice for them. VEIL_PASSPHRASE in
+// particular would let the agent decrypt the vault on Linux file-keystore
+// systems, so silent leakage would defeat Veil's core guarantee.
+func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -248,6 +258,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 
 	stripped := make([]string, 0, len(environ))
 	strippedVault := make([]string, 0)
+	strippedInternal := make([]string, 0)
 	reinject := make([]string, 0)
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
@@ -256,6 +267,10 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 			continue
 		}
 		if isProxyEnvKey(key) || isCAEnvKey(key) || strings.EqualFold(key, "JAVA_TOOL_OPTIONS") {
+			continue
+		}
+		if isVeilInternalEnvKey(key) {
+			strippedInternal = append(strippedInternal, key)
 			continue
 		}
 		if ph, hit := vaultMap[strings.ToUpper(key)]; hit {
@@ -306,7 +321,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 	// reaching the vault branch, so there is no collision with the proxy/CA
 	// vars we just appended.
 	env = append(env, reinject...)
-	return env, strippedVault
+	return env, strippedVault, strippedInternal
 }
 
 // isProxyEnvKey returns true if the given key is a proxy-related environment
@@ -324,6 +339,20 @@ func isProxyEnvKey(key string) bool {
 // variable that should be stripped and replaced with Veil's combined bundle.
 func isCAEnvKey(key string) bool {
 	for _, k := range envkeys.CAKeys {
+		if strings.EqualFold(key, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// isVeilInternalEnvKey returns true if the given key is one of Veil's own
+// control variables that must not be inherited by the agent child. The
+// canonical risk is VEIL_PASSPHRASE on Linux file-keystore systems: if it
+// reaches the agent, the agent can read master.key.age from disk and
+// decrypt every vault entry without privilege escalation.
+func isVeilInternalEnvKey(key string) bool {
+	for _, k := range envkeys.VeilInternalKeys {
 		if strings.EqualFold(key, k) {
 			return true
 		}
@@ -377,6 +406,18 @@ func printStrippedEnvWarning(w *os.File, names []string) {
 		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
 	}
 	_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("the agent will see Veil's placeholders instead."))
+}
+
+// printStrippedInternalWarning announces that Veil's own control vars
+// (VEIL_PASSPHRASE et al.) were present in the parent environment and have
+// been removed before exec. Muted, single-line, unnamed — the user set
+// these intentionally for Veil's use, so this is implementation detail, not
+// an alarm. Format:
+//
+//	  removed N veil-internal var(s) from agent environment
+func printStrippedInternalWarning(w *os.File, count int) {
+	msg := fmt.Sprintf("removed %d veil-internal var(s) from agent environment", count)
+	_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint(msg))
 }
 
 // formatStartupWarning returns a warning message if credCount is zero, or empty string otherwise.

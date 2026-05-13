@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 
 	"filippo.io/age"
+
+	"github.com/getveil/veil/internal/envkeys"
 )
 
 // FileKeystore stores master keys in an age-encrypted JSON file, protected by
@@ -34,9 +36,9 @@ func (f *FileKeystore) SetWorkFactor(logN int) {
 
 // passphrase returns the encryption passphrase or an error if unset.
 func passphrase() (string, error) {
-	p := os.Getenv("VEIL_PASSPHRASE")
+	p := os.Getenv(envkeys.Passphrase)
 	if p == "" {
-		return "", fmt.Errorf("%w: VEIL_PASSPHRASE is not set (required for age-encrypted key file)", ErrKeystoreUnavailable)
+		return "", fmt.Errorf("%w: %s is not set (required for age-encrypted key file)", ErrKeystoreUnavailable, envkeys.Passphrase)
 	}
 	return p, nil
 }
