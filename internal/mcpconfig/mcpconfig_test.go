@@ -194,6 +194,79 @@ func TestSetEnvValueAndBytes(t *testing.T) {
 	}
 }
 
+func TestSetArgAndBytes(t *testing.T) {
+	content := `{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgres://user:pw@host/db"],
+      "env": {}
+    }
+  }
+}`
+	tmpFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Parse(tmpFile)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	cfg.SetArg("postgres", 2, "postgres://user:placeholder@host/db")
+
+	out, err := cfg.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes failed: %v", err)
+	}
+
+	tmpFile2 := filepath.Join(t.TempDir(), "config2.json")
+	if err := os.WriteFile(tmpFile2, out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Parse(tmpFile2)
+	if err != nil {
+		t.Fatalf("re-parse failed: %v", err)
+	}
+
+	args := cfg2.Servers()["postgres"].Args
+	if len(args) != 3 {
+		t.Fatalf("expected 3 args, got %d: %v", len(args), args)
+	}
+	if args[0] != "-y" || args[1] != "@modelcontextprotocol/server-postgres" {
+		t.Errorf("unrelated args mutated: %v", args)
+	}
+	if args[2] != "postgres://user:placeholder@host/db" {
+		t.Errorf("args[2] = %q, want %q", args[2], "postgres://user:placeholder@host/db")
+	}
+}
+
+func TestSetArgOutOfBoundsIsNoOp(t *testing.T) {
+	content := `{
+  "mcpServers": {
+    "x": {
+      "command": "x",
+      "args": ["a", "b"]
+    }
+  }
+}`
+	cfg, err := ParseBytes([]byte(content))
+	if err != nil {
+		t.Fatalf("ParseBytes failed: %v", err)
+	}
+
+	// Out-of-range indices and unknown server names must not panic.
+	cfg.SetArg("x", -1, "ignored")
+	cfg.SetArg("x", 99, "ignored")
+	cfg.SetArg("missing", 0, "ignored")
+
+	args := cfg.Servers()["x"].Args
+	if len(args) != 2 || args[0] != "a" || args[1] != "b" {
+		t.Errorf("args mutated unexpectedly: %v", args)
+	}
+}
+
 func TestBytesPreservesUnknownTopLevelKeys(t *testing.T) {
 	content := `{
   "mcpServers": {

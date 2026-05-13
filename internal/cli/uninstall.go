@@ -346,8 +346,10 @@ func classifyMCPPair(original, backup string, resolver placeholderResolver) (cla
 }
 
 // expectedOriginalMCP parses the current MCP config bytes, substitutes
-// placeholders with real values in every server's env map, and re-serializes
-// using mcpconfig's canonical formatting.
+// placeholders with real values in every server's env map and args slice,
+// and re-serializes using mcpconfig's canonical formatting. Args are
+// substituted alongside env so a config that was vaulted with secrets in
+// either location classifies as classUnmodified against its backup.
 func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, error) {
 	cfg, err := mcpconfig.ParseBytes(current)
 	if err != nil {
@@ -358,6 +360,11 @@ func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, 
 			for key, value := range server.Env {
 				if real, ok := resolver[value]; ok {
 					cfg.SetEnvValue(serverName, key, real)
+				}
+			}
+			for i, value := range server.Args {
+				if real, ok := resolver[value]; ok {
+					cfg.SetArg(serverName, i, real)
 				}
 			}
 		}

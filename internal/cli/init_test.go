@@ -1788,3 +1788,270 @@ func TestInitRefusesSymlinkedEnv(t *testing.T) {
 		t.Error(".veil/ must not be created when init refuses the input")
 	}
 }
+
+// TestInitVaultsMCPArgsToken covers H2: real MCP configs commonly pass
+// credentials via positional args (e.g. `args: ["--token", "ghp_..."]`).
+// Before the fix, processMCPConfig only scanned server.Env, so the token
+// stayed cleartext in claude_desktop_config.json after veil init.
+func TestInitVaultsMCPArgsToken(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// .env so init has work to do besides the MCP config.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalToken := "ghp_test1234567890abcdef1234567890abcdef"
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github", "--token", "` + originalToken + `"]
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpStr := string(mcpData)
+	if strings.Contains(mcpStr, originalToken) {
+		t.Errorf("token survived in args; cleartext leaked in MCP config:\n%s", mcpStr)
+	}
+	// The benign flanking arg must be preserved verbatim.
+	if !strings.Contains(mcpStr, `"--token"`) {
+		t.Errorf("--token flag arg lost during rewrite:\n%s", mcpStr)
+	}
+
+	backupData, err := os.ReadFile(mcpConfigPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if !strings.Contains(string(backupData), originalToken) {
+		t.Error("backup should contain the original token")
+	}
+}
+
+// TestInitVaultsMCPArgsDSN covers the other H2 variant: a postgres-style DSN
+// embedded as a positional arg. The existing IsSecretLike already detects
+// URL-with-password values, but processMCPConfig never inspected args so the
+// DSN (and its embedded password) stayed cleartext after init.
+func TestInitVaultsMCPArgsDSN(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalPassword := "s3cret-db-password-xyz"
+	originalDSN := "postgres://app_user:" + originalPassword + "@db.internal.example.com:5432/prod"
+	mcpContent := `{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "` + originalDSN + `"]
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpStr := string(mcpData)
+	if strings.Contains(mcpStr, originalPassword) {
+		t.Errorf("DSN password leaked in MCP config:\n%s", mcpStr)
+	}
+	// Structural fidelity: the placeholder DSN must still parse back as a
+	// postgres URL anchored at the same host so the MCP server still routes.
+	if !strings.Contains(mcpStr, "postgres://app_user:") {
+		t.Errorf("DSN structure not preserved (username/scheme):\n%s", mcpStr)
+	}
+	if !strings.Contains(mcpStr, "@db.internal.example.com:5432/prod") {
+		t.Errorf("DSN structure not preserved (host/path):\n%s", mcpStr)
+	}
+
+	backupData, err := os.ReadFile(mcpConfigPath + ".veil-backup")
+	if err != nil {
+		t.Fatalf("backup not created: %v", err)
+	}
+	if !strings.Contains(string(backupData), originalDSN) {
+		t.Error("backup should contain the original DSN with the real password")
+	}
+}
+
+// TestInitSkipsBenignMCPArgs covers the false-positive boundary: non-secret
+// args (subcommand strings, low-entropy flag values) must not get vaulted.
+// Using empty key for IsSecretLike means args are vaulted only when their
+// value alone trips a provider/URL/entropy signal — flag names like
+// "--port" don't drag innocent values into the vault.
+func TestInitSkipsBenignMCPArgs(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/data", "--port", "3306"]
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// File must be byte-identical: nothing in the filesystem server's args
+	// is secret-shaped, so no .veil-backup should have been written.
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mcpData) != mcpContent {
+		t.Errorf("MCP config mutated despite no secret-shaped args:\ngot:  %q\nwant: %q", mcpData, mcpContent)
+	}
+	if _, err := os.Stat(mcpConfigPath + ".veil-backup"); err == nil {
+		t.Error("backup must not be created when there are no MCP secrets")
+	}
+}
+
+// TestInitForce_RefusesPlaceholderInMCPArgs covers the --force re-vault
+// scenario for args. Once init has replaced a real secret in args with a
+// sentinel-bearing placeholder, a subsequent --force run must refuse rather
+// than overwrite the backup and keystore with the placeholder, which would
+// destroy every copy of the original secret Veil controlled.
+func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Need an .env so init proceeds to vault the MCP config; otherwise the
+	// "nothing to do" short-circuit may run instead.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalToken := "ghp_5KsHJk2lQmN8pR4tWxY7zA1bC3dE5fG7hI9j"
+	mcpContent := `{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github", "--token", "` + originalToken + `"]
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	// First init: vaults the token from args.
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	backupPath := mcpConfigPath + ".veil-backup"
+	backupBefore, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("first init did not create backup: %v", err)
+	}
+	if !strings.Contains(string(backupBefore), originalToken) {
+		t.Fatalf("first init backup missing original token: %s", backupBefore)
+	}
+
+	// Re-run with --force: refusePlaceholderInputs must catch the sentinel
+	// in args and abort before the destructive rewrite.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--force", "--yes"})
+	if err := cmd2.Execute(); err == nil {
+		t.Fatal("expected --force to refuse re-vaulting placeholder-laden MCP args, got nil error")
+	}
+
+	// Backup and the previously-vaulted token must still be intact.
+	backupAfter, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("backup gone after --force: %v", err)
+	}
+	if !bytes.Equal(backupBefore, backupAfter) {
+		t.Errorf("--force destroyed backup:\nbefore: %q\nafter:  %q", backupBefore, backupAfter)
+	}
+}
