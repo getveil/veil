@@ -136,7 +136,7 @@ GoReleaser's first push has somewhere to land.
       veil list                             # both secrets vaulted
       veil status                           # clean status
       veil uninstall --dry-run              # plan visible
-      veil uninstall                        # restores originals
+      veil uninstall --yes                  # restores originals (non-interactive)
       cat .env                              # originals back
       cd / && rm -rf /tmp/veil-smoke
       ```
