@@ -104,9 +104,9 @@ Sleep 700ms
 Enter
 
 # Wait for Claude to reason, call the tool, get the response, render.
-# CLAUDE.md keeps responses tight (~5-9s). If a particular take is slower,
-# bump this and re-record.
-Sleep 9000ms
+# CLAUDE.md keeps responses tight. If a particular take is slower, bump
+# this and re-record.
+Sleep 6000ms
 
 # Pause 4 seconds after the response so viewers can read it
 Sleep 4000ms
