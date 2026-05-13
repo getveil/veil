@@ -42,6 +42,60 @@ jobs:
       - name: tests (race)
         run: make test-race
 
+  test-integration:
+    name: test-integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    # The integration target runs the production keystore path (no -tags
+    # testkeystore, no VEIL_TEST_KEYSTORE=mem). The passphrase is harmless on
+    # macOS (Keychain doesn't read it) and is required on Linux if the
+    # keyring probe fails and we fall through to the file-keystore fallback.
+    env:
+      VEIL_PASSPHRASE: ci-test-passphrase-not-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install gnome-keyring (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus gnome-keyring
+
+      - name: tests (integration, linux)
+        if: matrix.os == 'ubuntu-latest'
+        # Run dbus and gnome-keyring-daemon under dbus-run-session so they
+        # are guaranteed alive for the entire test invocation. Earlier
+        # versions started the daemon in a separate step and propagated
+        # env vars via $GITHUB_ENV, which proved unreliable on hosted
+        # runners — the daemon could die between steps and the test job
+        # would silently fall through to the file-keystore fallback,
+        # masking real Linux keyring regressions.
+        #
+        # VEIL_REQUIRE_KEYRING=1 instructs the backend-selection test in
+        # internal/vault/keystore_integration_test.go to FAIL if AutoKeystore
+        # ever returns the file fallback on Linux CI. That turns a silent
+        # degraded mode into a loud failure.
+        env:
+          VEIL_REQUIRE_KEYRING: "1"
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n "$VEIL_PASSPHRASE" | gnome-keyring-daemon --unlock
+            eval "$(echo -n "$VEIL_PASSPHRASE" | gnome-keyring-daemon --start --components=secrets)"
+            make test-integration
+          '
+
+      - name: tests (integration, macos)
+        if: matrix.os == 'macos-latest'
+        run: make test-integration
+
   lint:
     name: lint
     runs-on: ubuntu-latest

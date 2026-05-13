@@ -80,8 +80,34 @@ func writeMeta(root string, meta vaultMeta) error {
 	if err != nil {
 		return fmt.Errorf("vault.meta: marshal: %w", err)
 	}
-	if err := os.WriteFile(config.VaultMetaFile(root), data, 0600); err != nil {
-		return fmt.Errorf("vault.meta: write: %w", err)
+	target := config.VaultMetaFile(root)
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, ".vault-meta-*.tmp")
+	if err != nil {
+		return fmt.Errorf("vault.meta: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault.meta: write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault.meta: sync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault.meta: close temp: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault.meta: chmod: %w", err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("vault.meta: rename: %w", err)
 	}
 	return nil
 }
