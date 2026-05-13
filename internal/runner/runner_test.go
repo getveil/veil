@@ -391,7 +391,7 @@ func TestBuildChildEnv(t *testing.T) {
 		"CARGO_HTTP_CAINFO=/old/cargo-ca.pem",
 	}
 
-	result, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+	result, _, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/fake-bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
 
 	env := make(map[string]string)
 	for _, kv := range result {
@@ -450,7 +450,7 @@ func TestBuildChildEnv(t *testing.T) {
 }
 
 func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", []string{"staging.internal.com", "*.metrics.corp"}, nil)
+	env, _, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", []string{"staging.internal.com", "*.metrics.corp"}, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -475,7 +475,7 @@ func TestBuildChildEnv_MergesSkipHosts(t *testing.T) {
 }
 
 func TestBuildChildEnv_EmptySkipHosts(t *testing.T) {
-	env, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+	env, _, _ := buildChildEnv([]string{"HOME=/home/user"}, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
 
 	var noProxy string
 	for _, kv := range env {
@@ -502,7 +502,7 @@ func TestBuildChildEnv_StripsVaultNamedEnvVar(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIAREAL",
 		"OTHER_VAR=keep-me",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped, _ := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 		{Name: "AWS_ACCESS_KEY_ID", Placeholder: "VEIL_AWS_BBB"},
 	})
@@ -547,7 +547,7 @@ func TestBuildChildEnv_PassesThroughNonMatchingVar(t *testing.T) {
 		"HOME=/home/user",
 		"LANG=en_US.UTF-8",
 	}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped, _ := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
@@ -579,7 +579,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 		{Name: "OPENAI_API_KEY", Placeholder: "VEIL_OPENAI_API_KEY_XYZ"},
 	}
 
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, vaultEntries)
+	env, stripped, _ := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, vaultEntries)
 
 	if len(stripped) != 1 || stripped[0] != "OPENAI_API_KEY" {
 		t.Fatalf("stripped = %v, want [OPENAI_API_KEY]", stripped)
@@ -609,7 +609,7 @@ func TestBuildChildEnv_ReinjectsPlaceholderForStrippedVar(t *testing.T) {
 // a shell-exported "OPENAI_API_KEY".
 func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	base := []string{"OPENAI_API_KEY=shell-value"}
-	env, stripped := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
+	env, stripped, _ := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, []vaultEntry{
 		{Name: "openai_api_key", Placeholder: "VEIL_OPENAI_KEY_AAA"},
 	})
 
@@ -620,6 +620,86 @@ func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 	}
 	if len(stripped) != 1 || stripped[0] != "OPENAI_API_KEY" {
 		t.Fatalf("stripped = %v, want [OPENAI_API_KEY]", stripped)
+	}
+}
+
+// TestBuildChildEnv_StripsVeilInternalKeys verifies that Veil's own control
+// env vars never reach the agent. On Linux file-keystore systems VEIL_PASSPHRASE
+// is sufficient (with read access to master.key.age) to decrypt the entire
+// vault — so it must be stripped even though it is not a vault credential name.
+// VEIL_TEST_KEYSTORE and VEIL_MCP_CONFIG_PATH could be used by an agent that
+// shells out to "veil" to redirect Veil's own behavior; strip them too.
+func TestBuildChildEnv_StripsVeilInternalKeys(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"VEIL_PASSPHRASE=correct-horse-battery-staple",
+		"VEIL_TEST_KEYSTORE=mem",
+		"VEIL_MCP_CONFIG_PATH=/tmp/agent-controlled.json",
+		"OTHER_VAR=keep-me",
+	}
+	env, _, strippedInternal := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+
+	leakValues := []string{"correct-horse-battery-staple", "mem", "/tmp/agent-controlled.json"}
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if k == "VEIL_PASSPHRASE" || k == "VEIL_TEST_KEYSTORE" || k == "VEIL_MCP_CONFIG_PATH" {
+			t.Fatalf("veil-internal var %s reached agent env: %s", k, kv)
+		}
+		for _, leak := range leakValues {
+			if v == leak {
+				t.Fatalf("veil-internal value %q leaked under key %s", leak, k)
+			}
+		}
+	}
+
+	wantInternal := map[string]bool{
+		"VEIL_PASSPHRASE":      true,
+		"VEIL_TEST_KEYSTORE":   true,
+		"VEIL_MCP_CONFIG_PATH": true,
+	}
+	if len(strippedInternal) != len(wantInternal) {
+		t.Fatalf("strippedInternal = %v, want all three keys", strippedInternal)
+	}
+	for _, n := range strippedInternal {
+		if !wantInternal[n] {
+			t.Errorf("unexpected stripped-internal name %q", n)
+		}
+	}
+
+	// OTHER_VAR and PATH must pass through.
+	foundOther, foundPath := false, false
+	for _, kv := range env {
+		if kv == "OTHER_VAR=keep-me" {
+			foundOther = true
+		}
+		if kv == "PATH=/usr/bin" {
+			foundPath = true
+		}
+	}
+	if !foundOther {
+		t.Error("OTHER_VAR was stripped; only veil-internal vars should be")
+	}
+	if !foundPath {
+		t.Error("PATH was stripped; only veil-internal vars should be")
+	}
+}
+
+// TestBuildChildEnv_VeilInternalCaseInsensitive verifies stripping is
+// case-insensitive: veil_passphrase (lowercase) still must not reach the agent.
+func TestBuildChildEnv_VeilInternalCaseInsensitive(t *testing.T) {
+	base := []string{"veil_passphrase=secret"}
+	env, _, strippedInternal := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", nil, nil)
+
+	for _, kv := range env {
+		if strings.Contains(kv, "secret") {
+			t.Fatalf("case-insensitive match should have stripped: %s", kv)
+		}
+	}
+	if len(strippedInternal) != 1 {
+		t.Fatalf("strippedInternal = %v, want 1 entry", strippedInternal)
 	}
 }
 
@@ -674,7 +754,7 @@ func TestRunChildJavaTruststore(t *testing.T) {
 // and the conventional "changeit" password.
 func TestBuildChildEnv_InjectsJavaToolOptions(t *testing.T) {
 	base := []string{"PATH=/usr/bin"}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
 
 	var got string
 	for _, kv := range env {
@@ -701,7 +781,7 @@ func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
 		"PATH=/usr/bin",
 		"JAVA_TOOL_OPTIONS=-Xmx2g -Dfoo=bar",
 	}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
 
 	var got string
 	count := 0
@@ -726,7 +806,7 @@ func TestBuildChildEnv_MergesJavaToolOptions(t *testing.T) {
 // pathological concatenation.
 func TestBuildChildEnv_EmptyJavaToolOptionsTreatedAsUnset(t *testing.T) {
 	base := []string{"JAVA_TOOL_OPTIONS="}
-	env, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
+	env, _, _ := buildChildEnv(base, "http://127.0.0.1:9999", "/tmp/bundle.pem", "/tmp/ts.p12", nil, nil)
 
 	var got string
 	for _, kv := range env {

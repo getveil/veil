@@ -58,4 +58,34 @@ func TestToggleConstants(t *testing.T) {
 	if MCPConfigOverride != "VEIL_MCP_CONFIG_PATH" {
 		t.Errorf("MCPConfigOverride = %q, want VEIL_MCP_CONFIG_PATH", MCPConfigOverride)
 	}
+	if Passphrase != "VEIL_PASSPHRASE" {
+		t.Errorf("Passphrase = %q, want VEIL_PASSPHRASE", Passphrase)
+	}
+}
+
+// TestVeilInternalKeysCoverage guards against silent drift: any new Veil-
+// internal env var that the runner must strip from the child environment
+// has to be added here so isVeilInternalEnvKey picks it up automatically.
+// VEIL_PASSPHRASE in particular is load-bearing — its absence here would
+// silently re-open the file-keystore vault-decryption attack.
+func TestVeilInternalKeysCoverage(t *testing.T) {
+	want := map[string]bool{
+		"VEIL_PASSPHRASE":      true,
+		"VEIL_TEST_KEYSTORE":   true,
+		"VEIL_MCP_CONFIG_PATH": true,
+	}
+	got := make(map[string]bool, len(VeilInternalKeys))
+	for _, k := range VeilInternalKeys {
+		got[k] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("VeilInternalKeys missing %q", k)
+		}
+	}
+	for k := range got {
+		if !want[k] {
+			t.Errorf("VeilInternalKeys has unexpected %q", k)
+		}
+	}
 }

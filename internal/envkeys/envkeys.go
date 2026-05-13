@@ -15,6 +15,26 @@ const TestKeystoreToggle = "VEIL_TEST_KEYSTORE"
 // set it.
 const MCPConfigOverride = "VEIL_MCP_CONFIG_PATH"
 
+// Passphrase is the env var Veil reads to decrypt the age-encrypted master
+// key file on Linux when no Secret Service is available
+// (internal/vault/keystore_file.go). Knowing this passphrase plus read
+// access to ~/.local/state/veil/master.key.age is sufficient to recover
+// every credential in the vault — so it must never reach a child agent.
+const Passphrase = "VEIL_PASSPHRASE"
+
+// VeilInternalKeys lists every Veil-internal environment variable that
+// must be stripped from the agent's environment. The agent has no
+// legitimate use for any of these, and leaving them would let an agent
+// process either decrypt the vault (Passphrase) or redirect Veil's own
+// behavior (TestKeystoreToggle, MCPConfigOverride) if it shells out
+// to "veil". No placeholder is reinjected — these are control variables,
+// not user secrets.
+var VeilInternalKeys = []string{
+	Passphrase,
+	TestKeystoreToggle,
+	MCPConfigOverride,
+}
+
 // ProxyKeys lists every environment variable that configures an HTTP proxy.
 // The runner strips these from the child environment before injecting its
 // own loopback proxy URL.
