@@ -181,9 +181,10 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		}
 
 		requestID := ulid.Make().String()
+		rawURL := req.URL.String()
 
 		newURL, newHeader, newBody, injections := inj.ProcessRequest(
-			requestID, req.Method, req.URL.String(), req.Header, body)
+			requestID, req.Method, rawURL, req.Header, body)
 
 		// --- Fail-closed signer guard ---
 		// If any signer (AWS SigV4, GitHub App JWT, …) emitted a
@@ -211,7 +212,11 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		// user can diagnose the miss without the secret reaching the wire.
 		if leakLocation, leaked := detectLeak(newURL, newHeader, newBody); leaked {
 			if auditStore != nil {
-				host, urlPath, _ := parseRequestURL(newURL)
+				// Use rawURL (pre-swap) to match injector.go:92. The post-swap
+				// newURL may contain a real secret in the path if the URL swap
+				// succeeded but the leak fired elsewhere — persisting that to
+				// SQLite would leak the live credential via `veil log --json`.
+				host, urlPath, _ := parseRequestURL(rawURL)
 				auditStore.Record(audit.Injection{
 					Timestamp: time.Now(),
 					RequestID: requestID,
