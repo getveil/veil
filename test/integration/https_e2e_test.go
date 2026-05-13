@@ -37,9 +37,10 @@ import (
 //   - upstream received the real secret (proving injection happened through MITM).
 //   - audit log has a non-blocked injection entry for GITHUB_TOKEN.
 //
-// The veil binary is built with CGO_ENABLED=0 (see buildVeil), so Go's
-// crypto/x509 uses root_unix.go on both darwin and linux — SSL_CERT_FILE is
-// honored identically across platforms.
+// Veil's proxy explicitly honors $SSL_CERT_FILE when wiring its outbound
+// TLS config (see proxy.upstreamRootCAs). Go's stdlib only reads that env
+// var on non-darwin Unix, so Veil layers it on top of x509.SystemCertPool
+// to give consistent cross-platform behavior.
 //
 // We use a hostname ("localhost") rather than an IP because Veil's MITM leaf
 // only populates DNSNames, not IPAddresses; curl strictly validates IP SANs.

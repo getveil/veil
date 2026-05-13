@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -82,6 +83,18 @@ type Server struct {
 func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentCmd string) (*Server, error) {
 	px := goproxy.NewProxyHttpServer()
 	px.Logger = log.New(&mitmFilterWriter{out: os.Stderr}, "", log.LstdFlags)
+
+	// goproxy's default Tr.TLSClientConfig has InsecureSkipVerify=true. That
+	// would hand the real credentials we're about to inject to any upstream
+	// presenting any cert — exactly the MITM (hostile WiFi, DNS hijack,
+	// captive portal) that Veil's threat model assumes can exist between us
+	// and the API. Replace the default with a verifying config that also
+	// honors SSL_CERT_FILE (matching curl/Python/Node/runner.buildChildEnv
+	// conventions; Go's stdlib only reads it on non-darwin Unix).
+	px.Tr.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    upstreamRootCAs(),
+	}
 
 	// Set the CA certificate that goproxy uses for MITM leaf signing.
 	goproxy.GoproxyCa = tls.Certificate{
@@ -281,6 +294,29 @@ func (s *Server) Stop() error {
 		return s.listener.Close()
 	}
 	return nil
+}
+
+// upstreamRootCAs returns the cert pool used to verify upstream TLS. It
+// starts from the platform system pool (macOS keychain / system store) and
+// appends certs from $SSL_CERT_FILE when set. Returning nil falls back to
+// the stdlib default; we only construct a custom pool if SSL_CERT_FILE adds
+// something. Errors are silent: a missing or unreadable bundle just leaves
+// the pool unchanged, which is the conservative choice for a verifier.
+func upstreamRootCAs() *x509.CertPool {
+	path := os.Getenv("SSL_CERT_FILE")
+	if path == "" {
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	pool.AppendCertsFromPEM(pem)
+	return pool
 }
 
 // stripHostPort removes the port from a host:port string. If there is no
