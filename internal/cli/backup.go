@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/getveil/veil/internal/vault"
 )
@@ -18,31 +17,24 @@ func backupExists(src string) bool {
 	return err == nil
 }
 
-// writeBackup copies src to src+".veil-backup" at mode 0600. If the backup
-// already exists as a regular file it is overwritten. If it exists as a
-// symlink the open fails with ELOOP and writeBackup returns an error — a
-// hostile cloned repo that pre-plants a `.env.veil-backup` symlink (pointing
-// at e.g. ~/.ssh/authorized_keys) would otherwise have the cleartext .env
-// silently redirected to the symlink target by os.WriteFile, since the
-// project's .gitignore — which lists *.veil-backup — is only written at the
-// end of init.
+// writeBackup copies src to src+".veil-backup" at mode 0600. The write goes
+// through vault.WriteFileNoFollow, which fails with ELOOP if backupPath is a
+// symlink — a hostile cloned repo that pre-plants a `.env.veil-backup`
+// symlink (pointing at e.g. ~/.ssh/authorized_keys) would otherwise have
+// the cleartext .env silently redirected to the symlink target by
+// os.WriteFile, since the project's .gitignore — which lists *.veil-backup
+// — is only written at the end of init. The helper also fchmods to 0600
+// even when the backup pre-exists with widened perms.
 func writeBackup(src string) error {
 	data, err := os.ReadFile(src) // #nosec G304 -- src is a vaulted project file path
 	if err != nil {
 		return err
 	}
 	backupPath := src + backupSuffix
-	// O_NOFOLLOW makes open(2) fail with ELOOP if backupPath is a symlink,
-	// closing the TOCTOU window between an Lstat+Write pair.
-	f, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- derived backup path
-	if err != nil {
+	if err := vault.WriteFileNoFollow(backupPath, data, 0o600); err != nil {
 		return fmt.Errorf("opening backup %s: %w", backupPath, err)
 	}
-	if _, werr := f.Write(data); werr != nil {
-		_ = f.Close()
-		return werr
-	}
-	return f.Close()
+	return nil
 }
 
 // writeBackupOnly creates the .veil-backup sidecar for src. No metadata
