@@ -3,11 +3,47 @@ package skiphost
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 )
 
 const header = "# Managed by veil skip\n"
+
+// ErrInvalidHost is returned when a host entry fails validation.
+var ErrInvalidHost = errors.New("invalid skip host")
+
+// Validate checks that host is safe to splice into NO_PROXY. It rejects entries
+// that would either disable proxying entirely (the bare "*" wildcard, which Go's
+// httpproxy and curl/requests treat as "bypass everything") or corrupt the
+// comma-delimited NO_PROXY format (commas, whitespace, control chars). It also
+// rejects empty and pure-punctuation entries. Legitimate NO_PROXY forms are
+// permitted: hostnames, IPs, CIDR notation, leading-dot, and wildcard subdomain
+// patterns like "*.internal.corp.com".
+func Validate(host string) error {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" {
+		return fmt.Errorf("%w: empty entry", ErrInvalidHost)
+	}
+	if trimmed == "*" {
+		return fmt.Errorf("%w: %q matches all hosts and would disable proxying", ErrInvalidHost, trimmed)
+	}
+	hasAlnum := false
+	for _, r := range trimmed {
+		switch {
+		case r == ',':
+			return fmt.Errorf("%w: %q contains a comma (NO_PROXY delimiter)", ErrInvalidHost, trimmed)
+		case r <= ' ' || r == 0x7f:
+			return fmt.Errorf("%w: %q contains whitespace or control characters", ErrInvalidHost, trimmed)
+		case (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasAlnum = true
+		}
+	}
+	if !hasAlnum {
+		return fmt.Errorf("%w: %q has no alphanumeric characters", ErrInvalidHost, trimmed)
+	}
+	return nil
+}
 
 // Load reads the skip_hosts file and returns the list of hosts.
 // Returns an empty slice if the file does not exist.
@@ -35,7 +71,12 @@ func Save(path string, hosts []string) error {
 
 // Add appends a host to the skip_hosts file. Returns true if the host was added,
 // false if it was already present (duplicate). Creates the file if it does not exist.
+// Returns ErrInvalidHost if host fails validation.
 func Add(path string, host string) (bool, error) {
+	if err := Validate(host); err != nil {
+		return false, err
+	}
+	host = strings.TrimSpace(host)
 	hosts, err := Load(path)
 	if err != nil {
 		return false, err
@@ -71,12 +112,18 @@ func Remove(path string, host string) (bool, error) {
 	return true, Save(path, filtered)
 }
 
-// parse extracts host entries from file content, skipping blank lines and comments.
+// parse extracts host entries from file content, skipping blank lines, comments,
+// and entries that fail Validate. Silently filtering invalid entries is
+// defense-in-depth: a hand-edited "*" in the file would otherwise disable all
+// proxying when spliced into NO_PROXY at runtime.
 func parse(content string) []string {
 	var hosts []string
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if Validate(line) != nil {
 			continue
 		}
 		hosts = append(hosts, line)

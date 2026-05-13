@@ -42,8 +42,14 @@ func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string, allowEnvS
 		return wrapErr("reading skip hosts", err)
 	}
 
-	// Merge ephemeral --skip flags.
-	skipHosts = append(skipHosts, ephemeralSkip...)
+	// Merge ephemeral --skip flags, validating each so a stray "*" cannot
+	// disable proxying via NO_PROXY.
+	for _, h := range ephemeralSkip {
+		if err := skiphost.Validate(h); err != nil {
+			return cliError(fmt.Sprintf("invalid --skip value: %v", err), "")
+		}
+		skipHosts = append(skipHosts, h)
+	}
 
 	result, err := runner.Run(cmd.Context(), runner.Config{
 		Root:            root,
