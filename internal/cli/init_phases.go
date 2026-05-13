@@ -72,14 +72,21 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 	return true, nil
 }
 
-// refuseSymlinkedInputs refuses to vault any input that is a symbolic link.
-// A symlinked .env points outward from the project tree, often to a location
-// the user picked specifically to keep secrets out of source control (e.g.
-// `~/.config/secrets`). Vaulting that symlink would replace it with a
-// placeholder file inside the project and write the cleartext target to
-// `<root>/.env.veil-backup` — strictly worse exposure than not running Veil
-// at all, since the cleartext is now materialized inside the working tree
-// while the user's external file remains untouched (and unaware).
+// refuseSymlinkedInputs refuses to vault any input that is a symbolic link
+// at the leaf OR whose parent chain contains a symlink that redirects the
+// path outside its expected root.
+//
+// Leaf symlink: a symlinked .env points outward from the project tree, often
+// to a location the user picked specifically to keep secrets out of source
+// control (e.g. `~/.config/secrets`). Vaulting it would replace the symlink
+// with a placeholder and write the cleartext target to `<root>/.env.veil-
+// backup` inside the project — strictly worse exposure than not running Veil.
+//
+// Parent symlink: os.Lstat resolves intermediate directory components even
+// when it does not follow the leaf, so a hostile parent-dir symlink (or any
+// of its own ancestors) would pass the leaf check but still cause the
+// subsequent read/write/rename to operate at an attacker-controlled
+// location. The canonical-parent check below catches that case.
 //
 // Aggregates ALL violating paths before returning so the user sees the full
 // picture in one error rather than fixing them one at a time.
@@ -113,16 +120,81 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string)
 		check(mcpConfigPath)
 	}
 
+	// Parent-component check: walk from a trust anchor down to the leaf,
+	// Lstating each intermediate directory. A symlink at any of those
+	// components means subsequent read/write/rename operations land at an
+	// attacker-controlled location even though the leaf check passes
+	// (os.Lstat follows parent symlinks transparently). Using EvalSymlinks
+	// here would be self-defeating — it resolves the very attacker symlink
+	// we are trying to detect — so Lstat each component literally.
+	//
+	// For .env files: anchor is the project root the user passed. The
+	// scanner only looks at root itself today (no subdirectories), so the
+	// component walk is a no-op for current code; we keep it so a future
+	// nested scanner does not silently regress.
+	//
+	// For MCP config: anchor is the user's home (when using default
+	// discovery); skipped when the test-override env var is set, since the
+	// override path is explicitly user-chosen.
+	walkParents := func(anchor string, subpath []string) string {
+		current := anchor
+		for _, part := range subpath {
+			current = filepath.Join(current, part)
+			info, err := os.Lstat(current)
+			if err != nil {
+				return ""
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return current
+			}
+		}
+		return ""
+	}
+	for _, p := range envPaths {
+		rel, relErr := filepath.Rel(root, filepath.Dir(p))
+		if relErr != nil || rel == "" || rel == "." {
+			continue
+		}
+		if strings.HasPrefix(rel, "..") {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if hit := walkParents(root, parts); hit != "" {
+			target, _ := os.Readlink(hit)
+			display, _ := filepath.Rel(root, p)
+			if display == "" {
+				display = p
+			}
+			if target != "" {
+				hits = append(hits, fmt.Sprintf("%s (parent %s -> %s)", display, hit, target))
+			} else {
+				hits = append(hits, fmt.Sprintf("%s (parent %s is a symlink)", display, hit))
+			}
+		}
+	}
+	if mcpConfigPath != "" {
+		if anchor, subpath, ok, _ := mcpconfig.ParentAnchor(); ok {
+			if hit := walkParents(anchor, subpath); hit != "" {
+				target, _ := os.Readlink(hit)
+				if target != "" {
+					hits = append(hits, fmt.Sprintf("%s (parent %s -> %s)", mcpConfigPath, hit, target))
+				} else {
+					hits = append(hits, fmt.Sprintf("%s (parent %s is a symlink)", mcpConfigPath, hit))
+				}
+			}
+		}
+	}
+
 	if len(hits) == 0 {
 		return nil
 	}
 	return cliError(
 		fmt.Sprintf(
-			"%s a symbolic link: %s. Vaulting a symlinked input would replace the symlink with a placeholder file and write cleartext to its sibling .veil-backup inside the project — strictly worse exposure than not running Veil.",
+			"%s a symbolic link or has a symlinked parent: %s. Vaulting a symlinked input — or one whose parent chain redirects outside the expected location — would replace the symlink with a placeholder file and write cleartext to a sibling .veil-backup that may land outside the project, exposing secrets to an attacker-controlled location.",
 			plural(len(hits), "input is", "inputs are"),
 			strings.Join(hits, ", "),
 		),
-		"Replace the symlink with a regular file (e.g. `cp -L` to materialize the target) and re-run, or remove the symlink so Veil leaves the external file alone.",
+		"Replace the symlink with a regular file (e.g. `cp -L` to materialize the target) and re-run, or remove the symlinked parent so Veil operates on the canonical path.",
 	)
 }
 

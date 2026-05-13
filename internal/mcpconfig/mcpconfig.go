@@ -65,6 +65,37 @@ func claudeConfigDir(goos, home string) (string, error) {
 	}
 }
 
+// ParentAnchor returns the trust anchor (the user's home directory) the init
+// guard should walk down from to verify the discovered config path has no
+// symlinked parent component, plus the relative subpath the verifier should
+// traverse (which the guard reconstructs into per-step Lstat targets so that
+// e.g. ~/Library/Application Support/Claude being swapped for a symlink is
+// detected BEFORE the leaf check is reached). Returns ok=false when the
+// override env var is set (the user explicitly chose a path; no anchor) or
+// the platform has no canonical location.
+//
+// Resolving the assembled path with EvalSymlinks would be self-defeating —
+// the resolution silently follows the very attacker-controlled symlink we
+// are trying to detect — so we hand the guard the un-resolved components
+// and let it Lstat each one.
+func ParentAnchor() (anchor string, subpath []string, ok bool, err error) {
+	if os.Getenv(envkeys.MCPConfigOverride) != "" {
+		return "", nil, false, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, false, err
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return home, []string{"Library", "Application Support", "Claude"}, true, nil
+	case "linux":
+		return home, []string{".config", "Claude"}, true, nil
+	default:
+		return "", nil, false, nil
+	}
+}
+
 // ServerConfig represents a single MCP server entry.
 type ServerConfig struct {
 	Command string            `json:"command"`
