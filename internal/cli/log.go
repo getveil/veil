@@ -113,7 +113,11 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		return nil
 	}
 
-	// Collect plain-text row data for column width calculation.
+	// Collect plain-text row data for column width calculation. All
+	// agent-influenced fields are sanitized before they reach stdout so a
+	// compromised agent (or malicious upstream host) cannot smuggle ANSI
+	// control sequences into the operator's terminal during post-incident
+	// review. The timestamp is formatted from a time.Time and is safe.
 	type logRow struct {
 		timestamp, host, method, credential, location, signerErr string
 		suspect                                                  bool
@@ -125,11 +129,11 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	for i, r := range rows {
 		logRows[i] = logRow{
 			timestamp:  ui.RelativeTime(r.Timestamp),
-			host:       r.Host,
-			method:     r.Method,
-			credential: r.CredentialName,
-			location:   r.Location,
-			signerErr:  r.SignerError,
+			host:       sanitizeForTerminal(r.Host),
+			method:     sanitizeForTerminal(r.Method),
+			credential: sanitizeForTerminal(r.CredentialName),
+			location:   sanitizeForTerminal(r.Location),
+			signerErr:  sanitizeForTerminal(r.SignerError),
 			suspect:    r.SuspectFlag,
 		}
 		if r.SignerError != "" {
@@ -214,6 +218,55 @@ type logEntry struct {
 	Suspect     bool   `json:"suspect"`
 	AuthSignal  string `json:"auth_signal,omitempty"`
 	SignerError string `json:"signer_error,omitempty"`
+}
+
+// sanitizeForTerminal scrubs bytes that could let a compromised agent or
+// malicious upstream host inject control sequences into the operator's
+// terminal when `veil log` renders a row. Audit-log fields like Host,
+// Method, CredentialName, Location, and SignerError are populated from
+// agent-observed HTTP requests and must be treated as untrusted.
+//
+// The replacement is a 1:1 byte substitution so callers can sanitize
+// before computing column widths without rechecking lengths after.
+//
+//   - C0 controls (0x00-0x1F) -> '?'. Tabs and newlines have no business in
+//     a single-cell table column anyway.
+//   - DEL (0x7F)              -> '?'
+//   - C1 controls (0x80-0x9F) -> '?'. Some terminals treat 0x9B as CSI.
+//
+// Printable ASCII and the UTF-8 lead/continuation bytes for code points
+// at or above U+00A0 pass through untouched. (UTF-8 lead bytes start at
+// 0xC2 and continuation bytes at 0x80-0xBF; we deliberately replace the
+// raw 0x80-0x9F range because no valid UTF-8 sequence can begin with
+// those bytes, and any continuation byte at that value only appears
+// after a lead byte we have also kept.) The net effect is that valid
+// UTF-8 strings round-trip and only invalid/control bytes are scrubbed.
+//
+// JSON output is intentionally NOT sanitized: machine consumers need the
+// raw bytes to investigate.
+func sanitizeForTerminal(s string) string {
+	// Fast path: scan first; allocate only if we find something to replace.
+	needsScrub := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
+			needsScrub = true
+			break
+		}
+	}
+	if !needsScrub {
+		return s
+	}
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
+			b[i] = '?'
+			continue
+		}
+		b[i] = c
+	}
+	return string(b)
 }
 
 // parseSince parses a --since value as either a Go duration (with 'd' suffix

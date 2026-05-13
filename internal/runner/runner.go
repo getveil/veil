@@ -86,7 +86,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read ca bundle: %w", err)
 	}
-	javaTruststorePath, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
+	javaTruststorePath, javaTruststorePassword, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
 	if err != nil {
 		return nil, fmt.Errorf("build java truststore: %w", err)
 	}
@@ -140,7 +140,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	for _, c := range creds {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
-	env, strippedVault, strippedInternal := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, cfg.SkipHosts, entries)
+	env, strippedVault, strippedInternal := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -233,13 +233,15 @@ type vaultEntry struct {
 }
 
 // NO_PROXY list. javaTruststorePath is the per-session PKCS12 that JVM
-// children use via JAVA_TOOL_OPTIONS. vaultEntries is the set of credentials
-// loaded from the vault; any env var whose key matches (case-insensitively)
-// has its real value stripped and replaced with the credential's placeholder,
-// so the child process cannot observe the real secret that the user exported
-// in their shell. The names of env vars actually stripped because of the
-// vault match are returned (using the original casing from the environment),
-// so the caller can surface a startup warning.
+// children use via JAVA_TOOL_OPTIONS. javaTruststorePassword is the random
+// password BuildJavaTruststoreIn returned alongside that path. vaultEntries
+// is the set of credentials loaded from the vault; any env var whose key
+// matches (case-insensitively) has its real value stripped and replaced
+// with the credential's placeholder, so the child process cannot observe
+// the real secret that the user exported in their shell. The names of env
+// vars actually stripped because of the vault match are returned (using
+// the original casing from the environment), so the caller can surface a
+// startup warning.
 //
 // strippedInternal returns the names of Veil's own control env vars
 // (envkeys.VeilInternalKeys) that were present in environ and removed from
@@ -247,7 +249,7 @@ type vaultEntry struct {
 // caller surfaces a separate, muted notice for them. VEIL_PASSPHRASE in
 // particular would let the agent decrypt the vault on Linux file-keystore
 // systems, so silent leakage would defeat Veil's core guarantee.
-func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
+func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -281,7 +283,7 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath st
 		stripped = append(stripped, kv)
 	}
 
-	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath)
+	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath, javaTruststorePassword)
 	javaToolOpts := veilJavaFlags
 	for _, kv := range environ {
 		k, v, ok := strings.Cut(kv, "=")

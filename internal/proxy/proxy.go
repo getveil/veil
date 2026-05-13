@@ -134,6 +134,11 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		var body []byte
 		if req.Body != nil && ShouldInjectBody(req.Header.Get("Content-Type")) {
 			var err error
+			// Read up to bodyCap+1 bytes so we can detect bodies that exceed
+			// the cap without buffering an unbounded payload. If the result is
+			// longer than bodyCap, the body is too large to scan for
+			// placeholders; we must refuse the request rather than forward a
+			// silently-truncated copy (H9).
 			body, err = io.ReadAll(io.LimitReader(req.Body, int64(bodyCap)+1))
 			_ = req.Body.Close()
 			if err != nil {
@@ -143,6 +148,22 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 				warnBodyReadOnce(req.Host, err)
 				return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
 					"veil: upstream body read failed")
+			}
+			// H9: oversize body. ShouldInjectBody returned true, so this is an
+			// injectable content type (JSON, XML, form, text/*, etc.). We MUST
+			// NOT forward a truncated copy upstream: that silently corrupts
+			// the request and may also defeat placeholder scanning (a
+			// placeholder might sit past the truncation point). Binary uploads
+			// take a different code path (ShouldInjectBody returns false) and
+			// stream through unmodified regardless of size.
+			if len(body) > bodyCap {
+				ui.Warnf(os.Stderr,
+					"veil: refusing to forward request to %s — body exceeds 10 MiB inject limit; split the request",
+					req.Host)
+				resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
+					"veil: request body exceeds 10 MiB inject limit; cannot scan for placeholders")
+				resp.Header.Set("X-Veil-Error", "body_too_large")
+				return req, resp
 			}
 		}
 
