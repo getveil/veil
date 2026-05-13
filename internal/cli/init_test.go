@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/skiphost"
 	"github.com/getveil/veil/internal/vault"
@@ -2053,5 +2054,187 @@ func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 	}
 	if !bytes.Equal(backupBefore, backupAfter) {
 		t.Errorf("--force destroyed backup:\nbefore: %q\nafter:  %q", backupBefore, backupAfter)
+	}
+}
+
+// TestInitRefusesPrePlantedBackupSymlink covers the regression where a
+// hostile cloned repo pre-plants `.env.veil-backup` as a symlink pointing
+// at e.g. ~/.ssh/authorized_keys. Prior to the writeBackup hardening,
+// os.WriteFile followed the symlink and dumped the cleartext .env into
+// the attacker-chosen target — the project's .gitignore (which lists
+// *.veil-backup) is only updated at the END of init, so the malicious
+// symlink isn't filtered out before the destructive write runs.
+func TestInitRefusesPrePlantedBackupSymlink(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	// Stand-in for the attacker's chosen exfiltration target (e.g. ~/.ssh/
+	// authorized_keys). Pre-populate it with a known marker so we can prove
+	// init did not overwrite it.
+	externalDir := t.TempDir()
+	exfilTarget := filepath.Join(externalDir, "victim-file")
+	originalMarker := "ORIGINAL_CONTENT_MUST_NOT_BE_OVERWRITTEN\n"
+	if err := os.WriteFile(exfilTarget, []byte(originalMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(projectDir, ".env")
+	envContent := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	if err := os.WriteFile(envPath, []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The malicious sidecar — exactly what a hostile clone could ship.
+	backupPath := envPath + ".veil-backup"
+	if err := os.Symlink(exfilTarget, backupPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	// --force so the orphan-backup short-circuit doesn't make init bail
+	// early; we need it to reach the writeBackup call to exercise the fix.
+	cmd.SetArgs([]string{"init", "--path", projectDir, "--yes", "--force"})
+
+	execErr := cmd.Execute()
+
+	// The exfiltration target MUST be untouched regardless of whether init
+	// errored or succeeded — this is the load-bearing assertion.
+	got, err := os.ReadFile(exfilTarget)
+	if err != nil {
+		t.Fatalf("read exfil target: %v", err)
+	}
+	if string(got) != originalMarker {
+		t.Fatalf("exfil target was overwritten via symlink follow:\n got:  %q\nwant: %q\ninit err: %v", got, originalMarker, execErr)
+	}
+
+	// And init must surface a clear error rather than silently succeeding.
+	if execErr == nil {
+		t.Fatal("expected init to fail when .env.veil-backup is a pre-existing symlink")
+	}
+}
+
+// TestReclaimOrphanedBackupRefusesSymlink covers the second half of C2:
+// the orphan-recovery path calls os.Rename on .env.veil-backup → .env,
+// and rename(2) renames the symlink itself. A pre-planted symlinked
+// orphan would have replaced the real .env with a dangling symlink, after
+// which subsequent writeBackup / atomicWriteFile would leak or clobber
+// the symlink target. The Lstat guard refuses up front.
+func TestReclaimOrphanedBackupRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, ".env")
+	if err := os.WriteFile(src, []byte("KEY=value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink the would-be backup to an external file the attacker controls.
+	external := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(external, []byte("external"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, src+backupSuffix); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+
+	if err := reclaimOrphanedBackup(src); err == nil {
+		t.Fatal("expected reclaimOrphanedBackup to refuse a symlinked backup")
+	}
+	// .env must remain the original regular file — rename must not have
+	// replaced it with a symlink.
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error(".env was replaced by a symlink — reclaim must refuse before rename")
+	}
+}
+
+// TestInitRefusesSymlinkedParentDir covers C3: a parent directory of the
+// MCP config that is itself a symlink redirects the leaf write to an
+// attacker-controlled location, even though the leaf Lstat passes (Lstat
+// follows parent symlinks). The fix walks each parent component from the
+// trust anchor down and refuses if any is a symlink.
+func TestInitRefusesSymlinkedParentDir(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	// Build a fake home where Library/Application Support/Claude is a
+	// symlink to an attacker-chosen directory. We need os.UserHomeDir to
+	// return our fake home so mcpconfig.ParentAnchor anchors the walk
+	// there, NOT at the developer's real home.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Real Claude dir layout under fakeHome.
+	libDir := filepath.Join(fakeHome, "Library", "Application Support")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The malicious redirect: Claude/ is a symlink to /tmp/attacker/.
+	attackerDir := t.TempDir()
+	exfilSentinel := filepath.Join(attackerDir, "claude_desktop_config.json")
+	if err := os.WriteFile(exfilSentinel, []byte(`{"mcpServers":{"x":{"command":"x","env":{"OPENAI_API_KEY":"sk-real-secret-xxxxxxxx"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudeSymlink := filepath.Join(libDir, "Claude")
+	if err := os.Symlink(attackerDir, claudeSymlink); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+
+	// Pin discovery to the symlinked-parent path so the test exercises the
+	// real discovery code path (not the override hook). The leaf is a
+	// regular file at the resolved location, so a leaf-only Lstat passes —
+	// the parent-walk is the only line of defense.
+	t.Setenv("VEIL_MCP_CONFIG_PATH", "") // ensure default discovery
+	// Sanity: discovery sees the leaf via the symlinked parent.
+	discovered, err := mcpconfig.Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if discovered == "" {
+		t.Fatalf("discovery returned empty — fake home layout is wrong")
+	}
+
+	projectDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Need a vaultable .env so init actually runs the MCP phase.
+	envPath := filepath.Join(projectDir, ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"init", "--path", projectDir, "--yes"})
+
+	execErr := cmd.Execute()
+	if execErr == nil {
+		t.Fatal("expected init to refuse symlinked parent dir, got nil error")
+	}
+
+	// Critical: no .veil-backup must have been written next to the
+	// attacker's file. If it was, the cleartext MCP config has been
+	// duplicated into the attacker dir.
+	if _, err := os.Stat(exfilSentinel + ".veil-backup"); err == nil {
+		t.Errorf("attacker dir received a cleartext .veil-backup: refusal must precede any write")
+	}
+
+	// And the attacker's "config" must be unmodified (no placeholder rewrite).
+	got, err := os.ReadFile(exfilSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("sk-real-secret")) {
+		t.Errorf("attacker file was rewritten — placeholder substitution leaked through symlinked parent")
 	}
 }
