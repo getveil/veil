@@ -1,6 +1,7 @@
 veil
 bin/
 dist/
+completions/
 demo/
 coverage.out
 *.test

@@ -52,4 +52,4 @@ release:
 	CGO_ENABLED=0 goreleaser release --clean
 
 release-snapshot:
-	CGO_ENABLED=0 goreleaser release --snapshot --clean --skip=publish
+	CGO_ENABLED=0 goreleaser release --snapshot --clean --skip=publish,sign
