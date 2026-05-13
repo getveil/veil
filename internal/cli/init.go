@@ -132,6 +132,17 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	_, _ = fmt.Fprintln(w)
 
+	// Refuse to operate on inputs that already carry the placeholder sentinel.
+	// Without this guard, --force would treat the existing placeholders as
+	// fresh secrets, overwrite the .veil-backup with the placeholder-laden
+	// file, and store the placeholder strings as "real" values in a freshly-
+	// minted keystore entry — destroying the user's originals in every layer
+	// Veil controls. Runs BEFORE buildKeystore / CreateVault so the destructive
+	// keystore-delete + vault-recreate that --force triggers is also avoided.
+	if err := refusePlaceholderInputs(root, envPaths, mcpConfigPath, force); err != nil {
+		return err
+	}
+
 	ks, err := buildKeystore()
 	if err != nil {
 		return wrapErr("keystore", err)

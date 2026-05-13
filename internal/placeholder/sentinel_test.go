@@ -71,3 +71,32 @@ func TestSentinelConstIsExported(t *testing.T) {
 		t.Fatalf("Sentinel %q shorter than 4 chars; detection is too weak", Sentinel)
 	}
 }
+
+// TestContainsSentinel locks in the contract used by the init pipeline to
+// refuse re-vaulting its own placeholders.
+func TestContainsSentinel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty", "", false},
+		{"plain_secret", "ghp_5KsHJk2lQmN8pR4tWxY7zA1bC3dE5fG7hI9j", false},
+		{"sentinel_at_start", Sentinel + "xyz", true},
+		{"sentinel_after_prefix", "ghp_" + Sentinel + "abc", true},
+		{"generated_placeholder_round_trip", "", true}, // filled in below
+	}
+	ph, err := Generate("GITHUB_TOKEN", "ghp_"+strings.Repeat("a", 36), nil)
+	if err != nil {
+		t.Fatalf("Generate seed: %v", err)
+	}
+	cases[len(cases)-1].in = ph
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ContainsSentinel(tc.in); got != tc.want {
+				t.Fatalf("ContainsSentinel(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

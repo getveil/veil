@@ -12,6 +12,7 @@ import (
 
 	"github.com/getveil/veil/internal/cli/correlate"
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/scanner"
@@ -69,6 +70,82 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 		return false, nil
 	}
 	return true, nil
+}
+
+// refusePlaceholderInputs scans the files init is about to vault and refuses
+// to proceed if any contains a value bearing the placeholder sentinel. Those
+// values were produced by a prior Generate call — re-running init over them
+// would overwrite the user's backup and keystore with placeholder strings,
+// destroying every copy of the original secret Veil controls.
+//
+// Files that already have a sibling .veil-backup AND are not being --force'd
+// are skipped: processEnvFile / processMCPConfig short-circuit those with the
+// "already has a backup (use --force to re-vault)" path, so they never reach
+// the destructive scan-and-rewrite step. The check still fires for them under
+// --force because that is precisely the data-loss scenario.
+//
+// Errors from parsing individual files are non-fatal here — downstream code
+// will surface them with better context. The goal is only to catch the
+// sentinel before any destructive operation runs.
+func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath string, force bool) error {
+	var hits []string
+
+	for _, p := range envPaths {
+		if !force && backupExists(p) {
+			continue
+		}
+		f, err := scanner.ParseFile(p)
+		if err != nil {
+			continue
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil || rel == "" {
+			rel = filepath.Base(p)
+		}
+		for _, line := range f.Lines {
+			if line.Kind != scanner.KVLine {
+				continue
+			}
+			if !placeholder.IsSecretLike(line.Key, line.Value) {
+				continue
+			}
+			if placeholder.ContainsSentinel(line.Value) {
+				hits = append(hits, fmt.Sprintf("%s: %s", rel, line.Key))
+			}
+		}
+	}
+
+	if mcpConfigPath != "" && (force || !backupExists(mcpConfigPath)) {
+		if cfg, err := mcpconfig.Parse(mcpConfigPath); err == nil {
+			rel, relErr := filepath.Rel(root, mcpConfigPath)
+			if relErr != nil || rel == "" {
+				rel = filepath.Base(mcpConfigPath)
+			}
+			for serverName, server := range cfg.Servers() {
+				for k, v := range server.Env {
+					if !placeholder.IsSecretLike(k, v) {
+						continue
+					}
+					if placeholder.ContainsSentinel(v) {
+						hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
+					}
+				}
+			}
+		}
+	}
+
+	if len(hits) == 0 {
+		return nil
+	}
+	return cliError(
+		fmt.Sprintf(
+			"%s already %s Veil placeholders: %s. Re-vaulting would overwrite the backup and keystore with these placeholders, destroying your original secrets.",
+			plural(len(hits), "input", "inputs"),
+			plural(len(hits), "contains", "contain"),
+			strings.Join(hits, ", "),
+		),
+		"Run `veil uninstall` to restore the originals from their .veil-backup sidecars, then `veil init` again.",
+	)
 }
 
 // filterEnvPaths asks the user to narrow the set of .env files to scan when

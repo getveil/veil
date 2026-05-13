@@ -1021,13 +1021,23 @@ func TestInitForce_WipesVault(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
-	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
+	envContent := []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n")
+	envPath := filepath.Join(dir, ".env")
+	_ = os.WriteFile(envPath, envContent, 0644)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"init", "--path", dir, "--yes"})
 	_ = cmd.Execute()
+
+	// Restore the original .env so the --force re-init has the real secret
+	// to re-vault. Without this, init now refuses to re-vault the placeholder-
+	// laden .env to prevent the data-loss bug regressed by
+	// TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted.
+	if err := os.WriteFile(envPath, envContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cmd2 := NewRoot("test")
 	cmd2.SetOut(new(bytes.Buffer))
@@ -1042,9 +1052,12 @@ func TestInitForce_WipesVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open vault: %v", err)
 	}
-	creds := v.List()
-	if len(creds) != 0 {
-		t.Logf("note: %d creds found (may be from re-scanning placeholders)", len(creds))
+	cred, ok := v.Get("OPENAI_API_KEY")
+	if !ok {
+		t.Fatal("OPENAI_API_KEY missing from vault after --force")
+	}
+	if cred.Real != "sk-proj-1234567890abcdef" {
+		t.Fatalf("--force re-vault did not preserve real value: got %q", cred.Real)
 	}
 }
 
@@ -1599,5 +1612,103 @@ func TestInit_VaultedAWSCredentialResignsViaProxy(t *testing.T) {
 	}
 	if strings.Contains(newAuth, "Signature=ignored") {
 		t.Errorf("Authorization signature was not recomputed, got: %s", newAuth)
+	}
+}
+
+// TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted is the regression
+// for the data-loss bug where `veil init --force` re-scanned a .env that already
+// contained Veil placeholders, treated the placeholders as fresh secrets
+// (they bear valid provider prefixes and pass length/charset/entropy checks),
+// and wrote them as the new "real" values into both .env.veil-backup and the
+// keystore — destroying every copy of the user's original secrets that Veil
+// controlled. The fix refuses to vault values that carry the placeholder
+// sentinel and surfaces an actionable error instead.
+func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	resetTestKeystoreForTest(t)
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	originalSecret := "ghp_5KsHJk2lQmN8pR4tWxY7zA1bC3dE5fG7hI9j"
+	originalEnv := []byte("GITHUB_TOKEN=" + originalSecret + "\n")
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, originalEnv, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First init: vaults the real secret normally.
+	cmd1 := NewRoot("test")
+	cmd1.SetOut(new(bytes.Buffer))
+	cmd1.SetErr(new(bytes.Buffer))
+	cmd1.SetArgs([]string{"init", "--path", dir, "--yes"})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	v1, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("openVault after first init: %v", err)
+	}
+	cred1, ok := v1.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("first init did not vault GITHUB_TOKEN")
+	}
+	if cred1.Real != originalSecret {
+		t.Fatalf("first init lost real secret: got %q, want %q", cred1.Real, originalSecret)
+	}
+	backupPath := envPath + ".veil-backup"
+	backupBefore, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("reading backup after first init: %v", err)
+	}
+	if string(backupBefore) != string(originalEnv) {
+		t.Fatalf("first init backup mismatch:\ngot:  %q\nwant: %q", backupBefore, originalEnv)
+	}
+	envAfterFirst, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envAfterFirst), originalSecret) {
+		t.Fatal("first init left real secret in .env")
+	}
+
+	// Re-run with --force WITHOUT restoring the .env. The .env now contains
+	// placeholder values that look real (correct prefix, correct length). The
+	// pre-fix code path would re-scan these, classify them as fresh secrets,
+	// overwrite the backup with the placeholder-laden .env, and store
+	// placeholders as "real" values in a freshly-created vault — wiping the
+	// originals from every layer Veil controls.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(new(bytes.Buffer))
+	cmd2.SetErr(new(bytes.Buffer))
+	cmd2.SetArgs([]string{"init", "--path", dir, "--force", "--yes"})
+	forceErr := cmd2.Execute()
+	if forceErr == nil {
+		t.Fatal("expected init --force to refuse re-vaulting placeholder-laden .env, got nil error")
+	}
+
+	// The keystore must still hold the original real secret.
+	v2, err := openVault(dir)
+	if err != nil {
+		t.Fatalf("openVault after --force: %v", err)
+	}
+	cred2, ok := v2.Get("GITHUB_TOKEN")
+	if !ok {
+		t.Fatal("vault missing GITHUB_TOKEN after --force; originals were destroyed")
+	}
+	if cred2.Real != originalSecret {
+		t.Fatalf("--force destroyed original secret in keystore:\ngot:  %q\nwant: %q", cred2.Real, originalSecret)
+	}
+
+	// The backup must still hold the original pre-Veil .env bytes.
+	backupAfter, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("reading backup after --force: %v", err)
+	}
+	if string(backupAfter) != string(originalEnv) {
+		t.Fatalf("--force destroyed .env.veil-backup:\ngot:  %q\nwant: %q", backupAfter, originalEnv)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"strings"
 )
 
 // rng is the randomness source used by all placeholder generation.
@@ -41,6 +42,15 @@ var rng io.Reader = rand.Reader
 //     sentinel-bearing token is easier to catch than a plausible
 //     sentinel-free one.
 const Sentinel = "VEIL"
+
+// ContainsSentinel reports whether s carries the placeholder sentinel — i.e.
+// whether s plausibly originated from a prior Generate call rather than from
+// the user. Callers use this to refuse re-vaulting their own placeholders: the
+// init pipeline would otherwise treat a sentinel-bearing value as a fresh
+// secret and overwrite the user's backup and keystore with it.
+func ContainsSentinel(s string) bool {
+	return strings.Contains(s, Sentinel)
+}
 
 // sentinelize overwrites len(Sentinel) bytes of s starting at offset with
 // Sentinel. If s is too short to host the sentinel at that offset, or if

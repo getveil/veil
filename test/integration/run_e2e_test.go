@@ -858,8 +858,9 @@ func TestE2E_InitIdempotent(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, ".env"),
-		[]byte("API_KEY=sk-proj-abcdef1234567890abcdef1234567890\n"), 0644); err != nil {
+	envContent := []byte("API_KEY=sk-proj-abcdef1234567890abcdef1234567890\n")
+	envPath := filepath.Join(projDir, ".env")
+	if err := os.WriteFile(envPath, envContent, 0644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 
@@ -880,6 +881,14 @@ func TestE2E_InitIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(string(out2), "already initialized") {
 		t.Errorf("error should mention 'already initialized', got: %s", out2)
+	}
+
+	// Restore the original .env so --force has fresh input to re-vault.
+	// Without this, init refuses to re-vault a placeholder-laden .env by
+	// design (the data-loss guard added in
+	// TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted).
+	if err := os.WriteFile(envPath, envContent, 0644); err != nil {
+		t.Fatalf("restore .env: %v", err)
 	}
 
 	// With --force should succeed.
