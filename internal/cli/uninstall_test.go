@@ -1144,3 +1144,158 @@ func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 		t.Errorf("expected user-visible 'orphaned backup' notice on stderr, got: %s", stderr.String())
 	}
 }
+
+// TestUninstallRefusesSymlinkedBackup covers the regression where a symlinked
+// .env.veil-backup turns `veil uninstall --dry-run` into an arbitrary-file-read
+// primitive. discoverBackups used os.Stat (which follows symlinks) and
+// classifyEnvPair called os.ReadFile on the backup — so planting
+//
+//	.env.veil-backup -> ~/.ssh/id_rsa
+//
+// caused the unified diff (current .env vs. backup) to render the private key
+// into stdout. Uninstall must refuse the operation before any read, diff, or
+// rename fires.
+func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	// Step 1: produce a legitimate post-init state with a real .env.veil-backup.
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Step 2: replace the real backup with a symlink to a "sensitive" file
+	// outside the project tree (the attacker's planted symlink).
+	sensitiveDir := t.TempDir()
+	sensitivePath := filepath.Join(sensitiveDir, "id_rsa")
+	sensitiveContent := "-----BEGIN OPENSSH PRIVATE KEY-----\nDO-NOT-LEAK-ME-12345\n-----END OPENSSH PRIVATE KEY-----\n"
+	if err := os.WriteFile(sensitivePath, []byte(sensitiveContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := envPath + ".veil-backup"
+	if err := os.Remove(backupPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sensitivePath, backupPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	// Step 3: run `uninstall --dry-run` and assert that the sensitive content
+	// is NEVER emitted to stdout, the operation errors out, and nothing on
+	// disk has been mutated.
+	cmd = NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	execErr := cmd.Execute()
+	if execErr == nil {
+		t.Fatal("expected uninstall to refuse symlinked backup, got nil error")
+	}
+
+	// PRIMARY ASSERTION: no byte of the sensitive content reached stdout/stderr.
+	if strings.Contains(out.String(), "DO-NOT-LEAK-ME") || strings.Contains(errBuf.String(), "DO-NOT-LEAK-ME") {
+		t.Fatalf("symlinked backup contents leaked to terminal:\nstdout=%q\nstderr=%q",
+			out.String(), errBuf.String())
+	}
+	// Even partial fragments of a PEM header are a leak.
+	for _, frag := range []string{"BEGIN OPENSSH", "PRIVATE KEY"} {
+		if strings.Contains(out.String(), frag) || strings.Contains(errBuf.String(), frag) {
+			t.Fatalf("partial symlink target leaked (%q):\nstdout=%q\nstderr=%q",
+				frag, out.String(), errBuf.String())
+		}
+	}
+
+	// The error must mention the symlink so the user can act on it.
+	combined := execErr.Error() + errBuf.String()
+	if !strings.Contains(combined, "symbolic link") {
+		t.Errorf("expected error to mention 'symbolic link', got: %v / %s", execErr, errBuf.String())
+	}
+
+	// The backup must still be a symlink (refusal precedes any rename).
+	info, err := os.Lstat(backupPath)
+	if err != nil {
+		t.Fatalf("Lstat backup: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("backup was replaced by a regular file — uninstall must not touch a symlinked input")
+	}
+
+	// The sensitive file must be byte-identical.
+	gotSensitive, err := os.ReadFile(sensitivePath)
+	if err != nil {
+		t.Fatalf("read sensitive: %v", err)
+	}
+	if string(gotSensitive) != sensitiveContent {
+		t.Errorf("sensitive file modified after refusal\n got: %q\nwant: %q", gotSensitive, sensitiveContent)
+	}
+}
+
+// TestUninstallRefusesSymlinkedOriginal covers the mirror leak: when .env
+// itself is a symlink, classifyEnvPair's os.ReadFile(original) follows it and
+// the target's bytes appear as the '-' side of the printed diff.
+func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Replace the placeholder-filled .env with a symlink to a sensitive file.
+	sensitiveDir := t.TempDir()
+	sensitivePath := filepath.Join(sensitiveDir, "secrets")
+	sensitiveContent := "SECRET_API_TOKEN=PRIVATE-DO-NOT-LEAK-67890\n"
+	if err := os.WriteFile(sensitivePath, []byte(sensitiveContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(envPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sensitivePath, envPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	execErr := cmd.Execute()
+	if execErr == nil {
+		t.Fatal("expected uninstall to refuse symlinked .env, got nil error")
+	}
+
+	if strings.Contains(out.String(), "PRIVATE-DO-NOT-LEAK") || strings.Contains(errBuf.String(), "PRIVATE-DO-NOT-LEAK") {
+		t.Fatalf("symlinked original contents leaked to terminal:\nstdout=%q\nstderr=%q",
+			out.String(), errBuf.String())
+	}
+	combined := execErr.Error() + errBuf.String()
+	if !strings.Contains(combined, "symbolic link") {
+		t.Errorf("expected error to mention 'symbolic link', got: %v / %s", execErr, errBuf.String())
+	}
+}

@@ -2,6 +2,8 @@ package scanner
 
 import (
 	"testing"
+
+	"github.com/getveil/veil/internal/envkeys"
 )
 
 func TestScanEnviron_DetectsSecretLike(t *testing.T) {
@@ -111,6 +113,48 @@ func TestScanEnviron_DeduplicatesByName(t *testing.T) {
 	}
 	if got[0].Value != "second-high-entropy-yyyyyyyyyy" {
 		t.Errorf("Value = %q, want last-wins value", got[0].Value)
+	}
+}
+
+// TestScanEnviron_SkipsAllVeilInternalKeys pins the source-of-truth contract:
+// every entry in envkeys.VeilInternalKeys MUST be filtered out by
+// ScanEnviron, regardless of how secret-like its value is. Previously the
+// denylist hardcoded a partial subset (VEIL_TEST_KEYSTORE, VEIL_MCP_CONFIG_PATH)
+// and omitted VEIL_PASSPHRASE — so a real high-entropy passphrase tripped the
+// value heuristic and was routed into the vault as a credential. The fix
+// iterates envkeys.VeilInternalKeys at the call site; this test makes that
+// contract a build-time fact (the loop below covers any future addition).
+func TestScanEnviron_SkipsAllVeilInternalKeys(t *testing.T) {
+	// A long, high-entropy, fully-distinct value — easily passes
+	// placeholder.IsSecretLike's name-independent value heuristic
+	// (length ≥ 20, entropy ≥ 4.5, distinct bytes ≥ 12).
+	const veryLeakyValue = "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"
+
+	for _, name := range envkeys.VeilInternalKeys {
+		t.Run(name, func(t *testing.T) {
+			if !IsObviouslyNotSecret(name) {
+				t.Errorf("IsObviouslyNotSecret(%q) = false; every VeilInternalKey must be skipped", name)
+			}
+			got := ScanEnviron([]string{name + "=" + veryLeakyValue})
+			if len(got) != 0 {
+				t.Errorf("ScanEnviron captured %q (value would otherwise pass IsSecretLike); got %+v", name, got)
+			}
+		})
+	}
+}
+
+// TestScanEnviron_SkipsVEILPassphraseRegression pins the specific past leak:
+// a real master passphrase set via VEIL_PASSPHRASE must never be returned as
+// a credential candidate. Without this filter, `veil init` (file keystore
+// path on Linux) would auto-vault the very key that decrypts the vault.
+func TestScanEnviron_SkipsVEILPassphraseRegression(t *testing.T) {
+	// A plausible real passphrase: 32 random hex chars from `openssl rand -hex 16`.
+	environ := []string{
+		"VEIL_PASSPHRASE=7f3a9c1e4b8d2a6f5e0c9b4d8a3f1e6c",
+	}
+	got := ScanEnviron(environ)
+	if len(got) != 0 {
+		t.Fatalf("ScanEnviron captured VEIL_PASSPHRASE — vault master key would be vaulted as a credential. Got: %+v", got)
 	}
 }
 

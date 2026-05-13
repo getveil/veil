@@ -167,6 +167,60 @@ func discoverBackups(root string) ([]backupPair, error) {
 	return pairs, nil
 }
 
+// refuseSymlinkedBackupPairs refuses to operate on any pair whose original
+// OR backup is a symbolic link. classifyEnvPair / classifyMCPPair both call
+// os.ReadFile (which follows symlinks) and feed the bytes into renderUnifiedDiff,
+// which is then printed to stdout. A symlink planted at <root>/.env.veil-backup
+// pointing at ~/.ssh/id_rsa would cause `veil uninstall --dry-run` to render
+// the private key into the terminal — turning a "preview" command into an
+// arbitrary-file-read primitive. The same applies to a symlinked original,
+// which would appear as the '-' side of the diff.
+//
+// Aggregates ALL violating paths before returning so the user sees the full
+// picture in one error rather than fixing them one at a time. Runs BEFORE
+// classification so no file contents are read, no diff is computed, and no
+// destructive rename fires for a refused project.
+func refuseSymlinkedBackupPairs(root string, pairs []backupPair) error {
+	var hits []string
+
+	check := func(p string) {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil || rel == "" {
+			rel = p
+		}
+		target, lerr := os.Readlink(p)
+		if lerr != nil || target == "" {
+			hits = append(hits, rel)
+			return
+		}
+		hits = append(hits, fmt.Sprintf("%s -> %s", rel, target))
+	}
+
+	for _, p := range pairs {
+		check(p.original)
+		check(p.backup)
+	}
+
+	if len(hits) == 0 {
+		return nil
+	}
+	return cliError(
+		fmt.Sprintf(
+			"%s a symbolic link: %s. Reading through the symlink would render its target into the uninstall diff (printed to stdout), and replacing it during restore would clobber the link itself rather than its referent.",
+			plural(len(hits), "input is", "inputs are"),
+			strings.Join(hits, ", "),
+		),
+		"Remove the symlink (or replace it with a regular file via `cp -L`) and re-run. If you did not create this symlink, investigate before proceeding — it may indicate tampering.",
+	)
+}
+
 // kindFromVault maps a vault.FileKind to the local backupKind. Unknown kinds
 // (e.g. registry entries from a future schema) fall back to env so the
 // classifier path is at least byte-stable.
@@ -455,6 +509,15 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 			"no .veil-backup files found, but .veil/ exists",
 			"Use --force to wipe state without restoring any files, or run `veil list` to inspect the vault manually.",
 		)
+	}
+
+	// Refuse to read or restore any pair whose original or backup is a symlink.
+	// classifyEnvPair / classifyMCPPair would otherwise follow the symlink with
+	// os.ReadFile and print the target's contents to stdout via the diff. Gates
+	// BEFORE classification (no reads) and BEFORE confirmation (no destructive
+	// rename), so a refused project sees no leak and no state mutation.
+	if err := refuseSymlinkedBackupPairs(root, pairs); err != nil {
+		return err
 	}
 
 	// Build placeholder resolver from the vault (best-effort).
