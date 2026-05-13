@@ -80,10 +80,123 @@ func parseContent(content string) *EnvFile {
 	}
 	f := &EnvFile{}
 	f.trailingNewline = len(content) > 0 && content[len(content)-1] == '\n'
-	for _, raw := range rawLines {
+	for i := 0; i < len(rawLines); {
+		raw := rawLines[i]
+		if consumed := tryMultilineQuotedKV(rawLines, i); consumed > 1 {
+			joined := strings.Join(rawLines[i:i+consumed], "\n")
+			f.Lines = append(f.Lines, parseLine(joined))
+			i += consumed
+			continue
+		}
 		f.Lines = append(f.Lines, parseLine(raw))
+		i++
 	}
 	return f
+}
+
+// tryMultilineQuotedKV checks whether rawLines[start] opens a KV whose quoted
+// value extends across subsequent physical lines, and returns the number of
+// lines to consume as one logical Line. Returns 1 (single-line) if the opener
+// is closed on the same line, if no closing quote is found before EOF, or if
+// an intermediate line looks like an independent KV definition (which would
+// suggest a user typo rather than a real multi-line value — we refuse to
+// silently swallow it).
+//
+// Without this accumulation, multi-line PEM/JSON values such as
+//
+//	RSA_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+//	MIIEvg...
+//	-----END RSA PRIVATE KEY-----"
+//
+// are parsed as a single KV on line 1 (with only "-----BEGIN…" as the value)
+// and CommentLines for the rest, leaving the base64 body and END marker in
+// plaintext after a vault rewrite.
+func tryMultilineQuotedKV(rawLines []string, start int) int {
+	if unclosedQuoteChar(rawLines[start]) == 0 {
+		return 1
+	}
+	for j := start + 1; j < len(rawLines); j++ {
+		// Safety: don't consume what looks like an independent KV definition.
+		// A user who forgot the closing quote on the opener should see only
+		// that KV mishandled, not have subsequent valid KVs disappear into it.
+		if looksLikeIndependentKV(rawLines[j]) {
+			return 1
+		}
+		accumulated := strings.Join(rawLines[start:j+1], "\n")
+		if unclosedQuoteChar(accumulated) == 0 {
+			return j - start + 1
+		}
+	}
+	return 1
+}
+
+// unclosedQuoteChar returns the quote character (' or ") when line parses as
+// a KV assignment whose value opens with a quote that does not close. Returns
+// 0 if the line isn't a KV opener, the value isn't quoted, or the quote closes.
+func unclosedQuoteChar(line string) byte {
+	work := strings.TrimSpace(line)
+	if strings.HasPrefix(work, "export ") || strings.HasPrefix(work, "export\t") {
+		work = strings.TrimSpace(work[len("export"):])
+	}
+	eqIdx := strings.IndexByte(work, '=')
+	if eqIdx < 0 {
+		return 0
+	}
+	val := strings.TrimSpace(work[eqIdx+1:])
+	if len(val) == 0 {
+		return 0
+	}
+	switch val[0] {
+	case '"':
+		if _, _, ok := extractDoubleQuoted(val[1:]); !ok {
+			return '"'
+		}
+	case '\'':
+		if _, _, ok := extractSingleQuoted(val[1:]); !ok {
+			return '\''
+		}
+	}
+	return 0
+}
+
+// looksLikeIndependentKV is a conservative heuristic for detecting standalone
+// KV assignments. It is used by tryMultilineQuotedKV to refuse swallowing what
+// is probably a user's other env var into a multi-line value above. The length
+// cap on the identifier rules out base64-encoded PEM body lines, which can
+// contain a trailing "=" padding character (e.g.
+// "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDb...=").
+func looksLikeIndependentKV(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "export\t") {
+		trimmed = strings.TrimSpace(trimmed[len("export"):])
+	}
+	eqIdx := strings.IndexByte(trimmed, '=')
+	// eqIdx > 32 rejects base64 chunks (typical PEM line is ~64 chars before
+	// the optional "=" padding); real env var names are far shorter.
+	if eqIdx <= 0 || eqIdx > 32 {
+		return false
+	}
+	name := trimmed[:eqIdx]
+	if !isShellIdentStart(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isShellIdentContinue(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isShellIdentStart(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_'
+}
+
+func isShellIdentContinue(b byte) bool {
+	return isShellIdentStart(b) || (b >= '0' && b <= '9')
 }
 
 // parseLine parses a single line of .env content.
