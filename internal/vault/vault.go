@@ -370,7 +370,7 @@ func CreateVault(root string, projectID string, ks Keystore) (*Vault, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: marshal meta: %w", ErrSave, err)
 	}
-	if err := os.WriteFile(config.VaultMetaFile(root), metaBytes, 0600); err != nil {
+	if err := WriteFileNoFollow(config.VaultMetaFile(root), metaBytes, 0600); err != nil {
 		return nil, fmt.Errorf("%w: write meta: %w", ErrSave, err)
 	}
 
@@ -401,18 +401,21 @@ func CreateVault(root string, projectID string, ks Keystore) (*Vault, error) {
 
 	// Write .gitignore inside .veil/ so nothing is accidentally committed.
 	gitignorePath := config.VaultGitignoreFile(root)
-	if err := os.WriteFile(gitignorePath, []byte("*\n"), 0600); err != nil {
+	if err := WriteFileNoFollow(gitignorePath, []byte("*\n"), 0600); err != nil {
 		return nil, fmt.Errorf("%w: write gitignore: %w", ErrSave, err)
 	}
 
 	return v, nil
 }
 
-// copyFile copies src to dst, overwriting dst if it exists.
+// copyFile copies src to dst, overwriting dst if it exists. The dst write
+// goes through WriteFileNoFollow so a pre-planted symlink at dst can't
+// redirect the bytes to an attacker-chosen target, and so dst lands at
+// 0600 even if a previous install left it world-readable.
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src) // #nosec G304 -- paths are derived from config, not user input
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Clean(dst), data, 0600) //nolint:gosec // dst is derived from config paths, not user input
+	return WriteFileNoFollow(filepath.Clean(dst), data, 0600)
 }
