@@ -65,6 +65,7 @@ signs:
 
 brews:
   - name: veil
+    directory: Formula
     repository:
       owner: getveil
       name: homebrew-tap
