@@ -1,4 +1,4 @@
-# Veil
+<img src=".github/banner.png" alt="veil — the .gitignore for AI agents" width="100%" />
 
 [![CI](https://github.com/8enji/veil/actions/workflows/ci.yml/badge.svg)](https://github.com/8enji/veil/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/8enji/veil.svg)](https://pkg.go.dev/github.com/8enji/veil)
