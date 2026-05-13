@@ -329,11 +329,17 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 
 	w := cmd.OutOrStdout()
 
-	// Collect secret-like entries per server.
+	// Collect secret-like entries per server. Both env values and positional
+	// args are scanned: real MCP configs commonly pass credentials via args
+	// (e.g. `["--token", "ghp_..."]` or a DSN like `"postgres://u:pw@h"`),
+	// and missing those leaves cleartext in claude_desktop_config.json after
+	// init.
 	type mcpSecret struct {
-		server string
-		key    string
-		value  string
+		server   string
+		isArg    bool   // true => args[argIndex], false => Env[key]
+		key      string // env key, or "args[i]" label for display/credname
+		argIndex int    // meaningful only when isArg
+		value    string
 	}
 	var allSecrets []mcpSecret
 	for serverName, server := range mcpCfg.Servers() {
@@ -346,6 +352,26 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 			}
 			allSecrets = append(allSecrets, mcpSecret{server: serverName, key: key, value: value})
 		}
+		// Args carry no key name, so detection passes "" — value-based signals
+		// only (provider patterns, URL-with-password, entropy). Using the
+		// preceding flag as a synthetic name would falsely vault values like
+		// `--token-expiry 3600` because the key-name heuristic has no length
+		// floor.
+		for i, value := range server.Args {
+			if !placeholder.IsSecretLike("", value) {
+				if flagVerbose {
+					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): mcp:%s:args[%d]", serverName, i))
+				}
+				continue
+			}
+			allSecrets = append(allSecrets, mcpSecret{
+				server:   serverName,
+				isArg:    true,
+				key:      fmt.Sprintf("args[%d]", i),
+				argIndex: i,
+				value:    value,
+			})
+		}
 	}
 
 	if len(allSecrets) == 0 {
@@ -355,9 +381,18 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 
 	// Interactive MCP selection.
 	// keyOf uses a NUL byte separator to avoid collisions with colons that
-	// may legitimately appear in server names derived from JSON keys.
-	selectedKeys := make(map[string]bool) // key = "server\x00key"
-	keyOf := func(s mcpSecret) string { return s.server + "\x00" + s.key }
+	// may legitimately appear in server names derived from JSON keys. The
+	// source kind (env vs arg) is part of the namespace so that, for example,
+	// an arg label like "args[0]" never collides with an env var that
+	// happens to share the same string.
+	selectedKeys := make(map[string]bool) // key = "server\x00<kind>\x00key"
+	keyOf := func(s mcpSecret) string {
+		kind := "env"
+		if s.isArg {
+			kind = "arg"
+		}
+		return s.server + "\x00" + kind + "\x00" + s.key
+	}
 	if interactive {
 		_, _ = fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
 		names := make([]string, len(allSecrets))
@@ -440,7 +475,11 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 		if dryRun {
 			_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
 		} else {
-			mcpCfg.SetEnvValue(serverName, key, ph)
+			if s.isArg {
+				mcpCfg.SetArg(serverName, s.argIndex, ph)
+			} else {
+				mcpCfg.SetEnvValue(serverName, key, ph)
+			}
 			configChanged = true
 		}
 	}

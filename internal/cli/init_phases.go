@@ -184,6 +184,17 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath strin
 						hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
 					}
 				}
+				// Args are vaulted by processMCPConfig in the same pass as env;
+				// they must be checked here too or --force would overwrite
+				// the backup and keystore with the args-side placeholder.
+				for i, v := range server.Args {
+					if !placeholder.IsSecretLike("", v) {
+						continue
+					}
+					if placeholder.ContainsSentinel(v) {
+						hits = append(hits, fmt.Sprintf("%s: %s.args[%d]", rel, serverName, i))
+					}
+				}
 			}
 		}
 	}

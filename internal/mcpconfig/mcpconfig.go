@@ -165,6 +165,21 @@ func (c *ConfigFile) SetEnvValue(server, key, value string) {
 	}
 }
 
+// SetArg replaces a positional arg value for a specific server. Out-of-range
+// indices and unknown server names are no-ops so callers can pass through
+// indices computed from the original args slice without separate bounds
+// checks.
+func (c *ConfigFile) SetArg(server string, index int, value string) {
+	s, ok := c.servers[server]
+	if !ok {
+		return
+	}
+	if index < 0 || index >= len(s.Args) {
+		return
+	}
+	s.Args[index] = value
+}
+
 // Bytes serializes the config back to formatted JSON.
 // Uses 2-space indentation to match Claude Desktop's formatting.
 func (c *ConfigFile) Bytes() ([]byte, error) {
