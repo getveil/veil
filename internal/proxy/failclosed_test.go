@@ -338,6 +338,81 @@ func TestFailClosedGuard_LeakedURL(t *testing.T) {
 	}
 }
 
+// TestFailClosedGuard_LeakAuditUsesRawURL verifies that when a URL placeholder
+// is swapped successfully but the sentinel guard fires elsewhere (here, in the
+// body), the persisted "leaked" audit row records the PRE-swap URL path — not
+// the post-swap path that contains the real secret. Without this, a user who
+// shares `veil log --json` for debugging would leak the live credential out of
+// SQLite. Regression test for H3.
+func TestFailClosedGuard_LeakAuditUsesRawURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upHost := strings.TrimPrefix(upstream.URL, "http://")
+	hostOnly := strings.Split(upHost, ":")[0]
+
+	// Placeholder embeds the sentinel (so the swapper recognizes it as a Veil
+	// placeholder). The real value deliberately does NOT contain "VEIL".
+	const placeholder = "phVEILplaceholderXYZ0000"
+	const realSecret = "sk-real-zzzzzzzzzzzzzzzzzz"
+	cred := &vault.Credential{
+		ID:           "c-leak-urlpath",
+		Name:         "url-placeholder",
+		Real:         realSecret,
+		Placeholder:  placeholder,
+		AllowedHosts: []string{hostOnly, upHost},
+	}
+	srv, _, store := testSetup(t, cred)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	client := httpClient(srv.Addr())
+	// URL contains the placeholder (it will swap to realSecret post-swap).
+	// Body carries a SEPARATE sentinel that isn't a registered placeholder, so
+	// it won't be swapped and will trip detectLeak — exercising the path
+	// where the URL swap succeeded but the leak fires elsewhere.
+	urlPath := "/users/" + placeholder + "/profile"
+	resp, err := client.Post(upstream.URL+urlPath, "application/json",
+		strings.NewReader(`{"trap":"VEILunmappedSentinel"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	// Allow the background flusher to persist the audit row.
+	time.Sleep(250 * time.Millisecond)
+
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	var leakRow *audit.Row
+	for i := range rows {
+		if rows[i].Location == "leaked" {
+			leakRow = &rows[i]
+			break
+		}
+	}
+	if leakRow == nil {
+		t.Fatalf("no 'leaked' audit row found; got %d rows", len(rows))
+	}
+	if strings.Contains(leakRow.URLPath, realSecret) {
+		t.Fatalf("leak row URLPath = %q leaks the real secret %q to audit DB",
+			leakRow.URLPath, realSecret)
+	}
+	if leakRow.URLPath != urlPath {
+		t.Errorf("leak row URLPath = %q, want pre-swap path %q", leakRow.URLPath, urlPath)
+	}
+}
+
 // TestFailClosedGuard_OversizedInjectableBody verifies that a request whose
 // body exceeds bodyCap and whose Content-Type is injectable (e.g.
 // application/json) is rejected with 502 — NOT silently truncated and
