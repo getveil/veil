@@ -17,11 +17,18 @@ test-race:
 # linux, with the age-encrypted file keystore as a documented fallback.
 # Requires a real keystore to be present and unlocked on the host. Does NOT
 # set VEIL_TEST_KEYSTORE=mem and does NOT pass -tags testkeystore, so the
-# production code path is selected. Tests are gated by the realkeystore tag
-# so this target only runs the small set explicitly written for it.
+# production code path is selected.
+#
+# Scope: only ./internal/vault/... — that package owns the realkeystore-
+# tagged tests in keystore_integration_test.go. The rest of the codebase's
+# tests assume the mem keystore (they t.Setenv VEIL_TEST_KEYSTORE=mem in
+# their helpers) and would hammer the real keyring with redundant probes if
+# run here, which has wedged dbus on hosted Linux CI runners. Their
+# production-keystore behavior is already covered by `make test` (no keyring
+# present → file-fallback path) plus this target's vault round-trip.
 test-integration:
 	@echo "test-integration: requires a real keystore (Keychain on darwin, gnome-keyring on linux)."
-	CGO_ENABLED=1 go test -tags realkeystore ./... -timeout 180s
+	CGO_ENABLED=1 go test -tags realkeystore ./internal/vault/... -timeout 60s
 
 lint:
 	golangci-lint run
