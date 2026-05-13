@@ -25,6 +25,12 @@ var excludeSuffixes = []string{
 // Scan discovers .env files in root by checking a curated list of names.
 // It returns absolute paths sorted alphabetically. Files matching example/sample
 // patterns are excluded. If no files are found, an empty slice is returned.
+//
+// Uses os.Lstat (not os.Stat) so symlinks are reported as symlinks rather than
+// silently followed. Symlinks ARE included in the result set — it is the
+// caller's job to refuse them at the action layer, so the user sees a clear
+// error instead of having their symlink replaced and cleartext materialized
+// into the project tree.
 func Scan(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -37,7 +43,7 @@ func Scan(root string) ([]string, error) {
 			continue
 		}
 		p := filepath.Join(root, name)
-		info, err := os.Stat(p)
+		info, err := os.Lstat(p)
 		if err != nil {
 			continue
 		}

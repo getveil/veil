@@ -123,3 +123,39 @@ func TestScan_IgnoresDirectories(t *testing.T) {
 		t.Errorf("Scan returned %d files, want 0 (directory should be ignored)", len(got))
 	}
 }
+
+// TestScan_ReportsSymlinks confirms Scan surfaces symlinks rather than
+// silently following them. Following at the scanner layer would let
+// downstream code overwrite the symlink with a placeholder and materialize
+// cleartext at <root>/.env.veil-backup inside the project tree. Surfacing
+// the symlink here gives the action layer a chance to refuse with a clear
+// error.
+func TestScan_ReportsSymlinks(t *testing.T) {
+	externalDir := t.TempDir()
+	target := filepath.Join(externalDir, "secrets")
+	if err := os.WriteFile(target, []byte("API_KEY=real\n"), 0o600); err != nil {
+		t.Fatalf("creating target: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	link := filepath.Join(projectDir, ".env")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	got, err := Scan(projectDir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 || got[0] != link {
+		t.Fatalf("Scan returned %v, want [%s] — symlinks must be surfaced for the action layer to refuse them", got, link)
+	}
+
+	info, err := os.Lstat(got[0])
+	if err != nil {
+		t.Fatalf("Lstat returned path: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("returned path %s should still be a symlink (Scan must not follow)", got[0])
+	}
+}

@@ -1712,3 +1712,79 @@ func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
 		t.Fatalf("--force destroyed .env.veil-backup:\ngot:  %q\nwant: %q", backupAfter, originalEnv)
 	}
 }
+
+// TestInitRefusesSymlinkedEnv covers the regression where a symlinked .env
+// (a common defensive pattern: .env -> ~/.config/secrets) gets silently
+// broken by init in a way that produces MORE exposure than not running Veil
+// at all. With os.Stat in the scanner and os.Rename over the symlink, init
+// would: (1) read the target's cleartext, (2) write it to <root>/.env.veil-
+// backup INSIDE the project tree, (3) replace the symlink with a placeholder
+// file, while (4) leaving the target file unchanged and cleartext. Veil must
+// refuse the operation before any destructive step.
+func TestInitRefusesSymlinkedEnv(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	// External target outside the project — the "safe" location the user
+	// deliberately picked to keep secrets out of source control.
+	externalDir := t.TempDir()
+	target := filepath.Join(externalDir, "secrets")
+	originalTarget := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	if err := os.WriteFile(target, []byte(originalTarget), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(projectDir, ".env")
+	if err := os.Symlink(target, envPath); err != nil {
+		t.Skipf("symlink creation not supported: %v", err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"init", "--path", projectDir, "--yes"})
+
+	execErr := cmd.Execute()
+	if execErr == nil {
+		t.Fatal("expected init to refuse symlinked .env, got nil error")
+	}
+
+	// The error must mention the symlink so the user understands why.
+	if !strings.Contains(execErr.Error(), "symbolic link") {
+		t.Errorf("expected error to mention 'symbolic link', got: %v", execErr)
+	}
+
+	// .env must still be a symlink (init must not have replaced it).
+	info, err := os.Lstat(envPath)
+	if err != nil {
+		t.Fatalf("Lstat .env: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error(".env was replaced by a regular file — init must not touch a symlinked input")
+	}
+
+	// Critical: NO cleartext backup must be materialized in the project tree.
+	if _, err := os.Stat(envPath + ".veil-backup"); err == nil {
+		data, _ := os.ReadFile(envPath + ".veil-backup")
+		t.Errorf(".env.veil-backup must not exist after refusal; found cleartext: %q", data)
+	}
+
+	// The target file must be unchanged.
+	gotTarget, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(gotTarget) != originalTarget {
+		t.Errorf("target file modified after refusal\n got: %q\nwant: %q", gotTarget, originalTarget)
+	}
+
+	// No vault state must have been created (refusal precedes vault build).
+	if _, err := os.Stat(filepath.Join(projectDir, ".veil")); err == nil {
+		t.Error(".veil/ must not be created when init refuses the input")
+	}
+}
