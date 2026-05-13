@@ -416,7 +416,7 @@ func printStrippedEnvWarning(w *os.File, names []string) {
 // these intentionally for Veil's use, so this is implementation detail, not
 // an alarm. Format:
 //
-//	  removed N veil-internal var(s) from agent environment
+//	removed N veil-internal var(s) from agent environment
 func printStrippedInternalWarning(w *os.File, count int) {
 	msg := fmt.Sprintf("removed %d veil-internal var(s) from agent environment", count)
 	_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint(msg))

@@ -184,10 +184,10 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	}
 	// And spot-check that the specific nasty byte sequences are absent.
 	for _, bad := range []string{
-		"\x1b[2J",      // clear screen
-		"\x1b[H",       // cursor home
-		"\x1b]8;;",     // OSC 8 hyperlink start
-		"\x07",         // BEL
+		"\x1b[2J",  // clear screen
+		"\x1b[H",   // cursor home
+		"\x1b]8;;", // OSC 8 hyperlink start
+		"\x07",     // BEL
 	} {
 		if strings.Contains(humanS, bad) {
 			t.Errorf("human output contains raw control sequence %q", bad)

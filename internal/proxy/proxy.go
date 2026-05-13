@@ -307,7 +307,7 @@ func upstreamRootCAs() *x509.CertPool {
 	if path == "" {
 		return nil
 	}
-	pem, err := os.ReadFile(path)
+	pem, err := os.ReadFile(path) // #nosec G304 G703 -- SSL_CERT_FILE is the standard env var the user sets to override the CA bundle
 	if err != nil {
 		return nil
 	}
