@@ -5,7 +5,7 @@ package testutil_test
 import (
 	"testing"
 
-	"github.com/8enji/veil/internal/testutil"
+	"github.com/getveil/veil/internal/testutil"
 )
 
 func TestNewMemKeystore(t *testing.T) {

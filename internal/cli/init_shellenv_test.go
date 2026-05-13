@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/scanner"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/scanner"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // clearShellEnvTestNoise unsets environment variables that commonly appear

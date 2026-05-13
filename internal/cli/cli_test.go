@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/skiphost"
 )
 
 // initProject sets up a temporary directory with .git, .env, and runs veil init.

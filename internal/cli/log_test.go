@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/config"
 )
 
 // TestLogCmd_SignerFailedFilter verifies that `veil log --signer-failed`

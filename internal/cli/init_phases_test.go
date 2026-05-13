@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 

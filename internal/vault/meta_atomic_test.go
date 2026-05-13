@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/config"
 )
 
 func TestWriteMetaReplacesExisting(t *testing.T) {

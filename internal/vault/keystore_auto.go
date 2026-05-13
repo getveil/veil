@@ -3,7 +3,7 @@ package vault
 import (
 	"runtime"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 )
 
 // AutoKeystore returns the best available Keystore for the current platform.

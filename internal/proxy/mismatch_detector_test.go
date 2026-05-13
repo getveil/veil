@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func detectorCred(name string, hosts ...string) *vault.Credential {

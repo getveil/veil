@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔒 Report a security vulnerability
-    url: https://github.com/8enji/veil/security/advisories/new
+    url: https://github.com/getveil/veil/security/advisories/new
     about: Do not open public issues for security bugs. Use private advisory reporting.
   - name: 💬 Ask a question or start a discussion
-    url: https://github.com/8enji/veil/discussions
+    url: https://github.com/getveil/veil/discussions
     about: For general questions, design discussion, or use-case sharing.

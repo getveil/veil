@@ -1,7 +1,7 @@
 VER ?= dev
 LDFLAGS := -s -w -X main.version=$(VER)
 
-.PHONY: build test test-race test-integration lint vet tidy clean release xbuild
+.PHONY: build test test-race test-integration lint vet tidy clean release release-snapshot xbuild
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/veil ./cmd/veil
@@ -50,3 +50,6 @@ xbuild:
 
 release:
 	CGO_ENABLED=0 goreleaser release --clean
+
+release-snapshot:
+	CGO_ENABLED=0 goreleaser release --snapshot --clean --skip=publish

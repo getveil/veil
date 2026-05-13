@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // signGitHubAppJWT inspects the Authorization header for an RS256 JWT with

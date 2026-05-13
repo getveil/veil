@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/cli"
-	"github.com/8enji/veil/internal/proxy"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/cli"
+	"github.com/getveil/veil/internal/proxy"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func TestMapRunError(t *testing.T) {

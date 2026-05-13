@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/8enji/veil/internal/config"
+	"github.com/getveil/veil/internal/config"
 )
 
 func tempRoot(t *testing.T) string {

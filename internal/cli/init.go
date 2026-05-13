@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/mcpconfig"
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/scanner"
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/mcpconfig"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 

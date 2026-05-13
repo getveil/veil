@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // FuzzDecodeBasic fuzzes the Basic-auth header decode+swap path with valid

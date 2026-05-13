@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 

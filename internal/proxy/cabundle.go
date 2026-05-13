@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/ui"
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 

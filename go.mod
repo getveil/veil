@@ -1,4 +1,4 @@
-module github.com/8enji/veil
+module github.com/getveil/veil
 
 go 1.26.2
 

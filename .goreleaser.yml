@@ -1,0 +1,101 @@
+# .goreleaser.yml
+# GoReleaser v2 config for Veil release pipeline.
+# Reference: https://goreleaser.com/customization/
+
+version: 2
+
+project_name: veil
+
+before:
+  hooks:
+    - go mod tidy
+    # Generate shell completions into completions/ (picked up by archives).
+    - sh -c 'mkdir -p completions && go run ./cmd/veil completion bash > completions/veil.bash && go run ./cmd/veil completion zsh > completions/_veil && go run ./cmd/veil completion fish > completions/veil.fish'
+
+builds:
+  - id: veil
+    main: ./cmd/veil
+    binary: veil
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: veil
+    ids:
+      - veil
+    name_template: "veil_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - id: cosign-checksums
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--oidc-issuer=https://token.actions.githubusercontent.com"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+brews:
+  - name: veil
+    repository:
+      owner: getveil
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/getveil/veil"
+    description: "Protect your secrets from AI coding agents via a local credential-injecting proxy"
+    license: "MIT"
+    install: |
+      bin.install "veil"
+      bash_completion.install "completions/veil.bash" => "veil"
+      zsh_completion.install "completions/_veil"
+      fish_completion.install "completions/veil.fish"
+    test: |
+      assert_match "veil v#{version}", shell_output("#{bin}/veil --version")
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "chore(formula): bump veil to {{ .Tag }}"
+
+release:
+  github:
+    owner: getveil
+    name: veil
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"

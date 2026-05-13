@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )

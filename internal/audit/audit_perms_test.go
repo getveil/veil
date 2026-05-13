@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/8enji/veil/internal/audit"
+	"github.com/getveil/veil/internal/audit"
 )
 
 func TestOpenSetsRestrictivePerms(t *testing.T) {

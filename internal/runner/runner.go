@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/envkeys"
-	"github.com/8enji/veil/internal/proxy"
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/envkeys"
+	"github.com/getveil/veil/internal/proxy"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // Config holds the parameters for a single veil run invocation.

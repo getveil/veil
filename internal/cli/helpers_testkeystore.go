@@ -6,8 +6,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/8enji/veil/internal/envkeys"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/envkeys"
+	"github.com/getveil/veil/internal/vault"
 )
 
 var (

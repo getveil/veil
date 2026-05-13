@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/8enji/veil/internal/ui"
+	"github.com/getveil/veil/internal/ui"
 )
 
 func TestCliError_RedactsHomePathInMessage(t *testing.T) {

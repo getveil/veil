@@ -7,9 +7,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/ui"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // Auth-signal identifiers persisted in audit rows and log fields.

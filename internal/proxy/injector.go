@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/8enji/veil/internal/audit"
-	"github.com/8enji/veil/internal/placeholder"
-	"github.com/8enji/veil/internal/vault"
 	"github.com/cloudflare/ahocorasick"
+	"github.com/getveil/veil/internal/audit"
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/vault"
 )
 
 // defaultBodyCap is the maximum body size the injector will scan (10 MiB).

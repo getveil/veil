@@ -3,7 +3,7 @@ package scanner
 import (
 	"strings"
 
-	"github.com/8enji/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/placeholder"
 )
 
 // EnvironCandidate is a shell-exported env var that looked secret-like.

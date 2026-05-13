@@ -3,7 +3,7 @@ package proxy_test
 import (
 	"testing"
 
-	"github.com/8enji/veil/internal/proxy"
+	"github.com/getveil/veil/internal/proxy"
 )
 
 func TestShouldInjectBody(t *testing.T) {

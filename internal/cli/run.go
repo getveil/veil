@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/8enji/veil/internal/config"
-	"github.com/8enji/veil/internal/proxy"
-	"github.com/8enji/veil/internal/runner"
-	"github.com/8enji/veil/internal/skiphost"
-	"github.com/8enji/veil/internal/vault"
+	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/proxy"
+	"github.com/getveil/veil/internal/runner"
+	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
 
