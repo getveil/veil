@@ -65,9 +65,10 @@ func TestToggleConstants(t *testing.T) {
 
 // TestVeilInternalKeysCoverage guards against silent drift: any new Veil-
 // internal env var that the runner must strip from the child environment
-// has to be added here so isVeilInternalEnvKey picks it up automatically.
-// VEIL_PASSPHRASE in particular is load-bearing — its absence here would
-// silently re-open the file-keystore vault-decryption attack.
+// has to be added here so the runner's strip helper picks it up
+// automatically. VEIL_PASSPHRASE in particular is load-bearing — its
+// absence here would silently re-open the file-keystore vault-decryption
+// attack.
 func TestVeilInternalKeysCoverage(t *testing.T) {
 	want := map[string]bool{
 		"VEIL_PASSPHRASE":      true,

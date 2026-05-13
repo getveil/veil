@@ -28,6 +28,10 @@ import (
 var (
 	bodyWarnMu   sync.Mutex
 	bodyWarnSeen = map[string]struct{}{}
+
+	// sentinelBytes is the placeholder sentinel as a byte slice, precomputed
+	// so the per-request body scan does not re-allocate it.
+	sentinelBytes = []byte(placeholder.Sentinel)
 )
 
 // warnBodyReadOnce emits a warning on stderr at most once per host per
@@ -130,14 +134,10 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 
 	// Request handler: scan URL, headers, and body for placeholders.
 	px.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		// SEC-3: reject compressed request bodies. Veil cannot reliably
-		// scan or rewrite placeholder strings inside a compressed payload
-		// without decompressing, mutating, and re-compressing — which can
-		// change Content-Length, interact with Content-MD5, and silently
-		// drop matches if the client used an encoding we don't understand.
-		// Returning 502 surfaces the mismatch to the caller rather than
-		// forwarding a payload that may still contain real placeholders.
-		// Explicit identity is allowed because it signals "no compression".
+		// Reject compressed bodies: Veil cannot scan or rewrite placeholders
+		// inside a compressed payload without decompressing/re-compressing,
+		// which can change Content-Length and silently drop matches under an
+		// unknown encoding. "identity" is allowed (explicit "no compression").
 		if ce := req.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(strings.TrimSpace(ce), "identity") {
 			ui.Warnf(os.Stderr, "veil: rejecting request to %s — Content-Encoding %q not supported; Veil does not inject into compressed request bodies", req.Host, ce)
 			return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
@@ -147,28 +147,17 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		var body []byte
 		if req.Body != nil && ShouldInjectBody(req.Header.Get("Content-Type")) {
 			var err error
-			// Read up to bodyCap+1 bytes so we can detect bodies that exceed
-			// the cap without buffering an unbounded payload. If the result is
-			// longer than bodyCap, the body is too large to scan for
-			// placeholders; we must refuse the request rather than forward a
-			// silently-truncated copy (H9).
+			// Read bodyCap+1 so we can detect oversize without buffering
+			// unbounded input. A partial read still has to fail-closed: a
+			// truncated copy may corrupt the request and may also defeat
+			// placeholder scanning (a sentinel could sit past the cutoff).
 			body, err = io.ReadAll(io.LimitReader(req.Body, int64(bodyCap)+1))
 			_ = req.Body.Close()
 			if err != nil {
-				// H6: body read failed; surface 502 rather than forwarding a
-				// possibly-truncated payload that may still contain placeholder
-				// strings.
 				warnBodyReadOnce(req.Host, err)
 				return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
 					"veil: upstream body read failed")
 			}
-			// H9: oversize body. ShouldInjectBody returned true, so this is an
-			// injectable content type (JSON, XML, form, text/*, etc.). We MUST
-			// NOT forward a truncated copy upstream: that silently corrupts
-			// the request and may also defeat placeholder scanning (a
-			// placeholder might sit past the truncation point). Binary uploads
-			// take a different code path (ShouldInjectBody returns false) and
-			// stream through unmodified regardless of size.
 			if len(body) > bodyCap {
 				ui.Warnf(os.Stderr,
 					"veil: refusing to forward request to %s — body exceeds 10 MiB inject limit; split the request",
@@ -186,15 +175,10 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		newURL, newHeader, newBody, injections := inj.ProcessRequest(
 			requestID, req.Method, rawURL, req.Header, body)
 
-		// --- Fail-closed signer guard ---
-		// If any signer (AWS SigV4, GitHub App JWT, …) emitted a
-		// signer_failed injection, we must not forward the request: the
-		// placeholder credentials the SDK computed its signature against
-		// are about to go on the wire, or the AKID/AppID points to an
-		// identity we don't own. The 502 surfaces the error class to the
-		// caller via X-Veil-Error so agents can diagnose without parsing
-		// the audit log. The audit row was already recorded by the
-		// injector.
+		// Fail-closed signer guard: a signer_failed injection means the
+		// SDK signed against a placeholder or an unknown identity. Block
+		// with 502 + X-Veil-Error; the injector already recorded the audit
+		// row.
 		if sf := firstSignerFailure(injections); sf != nil {
 			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — signer failed (%s)", req.Host, sf.SignerError)
 			resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
@@ -203,19 +187,15 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 			return req, resp
 		}
 
-		// --- Fail-closed sentinel guard ---
-		// Scan the final outbound bytes (URL, every header value, and body)
-		// for the placeholder sentinel. A hit means a placeholder either
-		// wasn't swapped (host-scope mismatch, partial match, etc.) or the
-		// sentinel was planted by a caller — either way we must not forward
-		// the request. We return 502 and record a "leaked" audit row so the
-		// user can diagnose the miss without the secret reaching the wire.
+		// Fail-closed sentinel guard: any sentinel in the final outbound
+		// bytes means a placeholder wasn't swapped (host-scope mismatch,
+		// partial match) or was planted by a caller. Block with 502 and
+		// record a "leaked" audit row.
 		if leakLocation, leaked := detectLeak(newURL, newHeader, newBody); leaked {
 			if auditStore != nil {
-				// Use rawURL (pre-swap) to match injector.go:92. The post-swap
-				// newURL may contain a real secret in the path if the URL swap
-				// succeeded but the leak fired elsewhere — persisting that to
-				// SQLite would leak the live credential via `veil log --json`.
+				// Persist the pre-swap URL: if the URL swap succeeded but the
+				// leak fired elsewhere, the post-swap URL contains the live
+				// secret and would otherwise leak via `veil log --json`.
 				host, urlPath, _ := parseRequestURL(rawURL)
 				auditStore.Record(audit.Injection{
 					Timestamp: time.Now(),
@@ -334,17 +314,11 @@ func stripHostPort(hostport string) string {
 	return host
 }
 
-// detectLeak scans the final outbound URL, header values, and body for the
-// placeholder sentinel. A single bytes.Contains / strings.Contains lookup is
-// enough because the sentinel is embedded at a known offset in every
-// generated placeholder (see placeholder.Sentinel). The returned location is
-// "url", "header:<name>", "header:<name>(basic)", or "body"; leaked is true
-// if any hit is found.
-//
-// Basic auth credentials in Authorization / Proxy-Authorization headers are
-// base64-encoded, so a raw substring scan would miss a placeholder embedded
-// in the user or password half. detectLeak base64-decodes those values and
-// re-scans the plaintext.
+// detectLeak scans URL, header values, and body for the placeholder
+// sentinel. The returned location is "url", "header:<name>",
+// "header:<name>(basic)", or "body". Basic-auth headers are base64-decoded
+// before scanning so a placeholder embedded in the user or password half is
+// not missed.
 func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location string, leaked bool) {
 	if strings.Contains(newURL, placeholder.Sentinel) {
 		return "url", true
@@ -359,7 +333,7 @@ func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location 
 			}
 		}
 	}
-	if len(newBody) > 0 && bytes.Contains(newBody, []byte(placeholder.Sentinel)) {
+	if len(newBody) > 0 && bytes.Contains(newBody, sentinelBytes) {
 		return "body", true
 	}
 	return "", false
@@ -372,10 +346,8 @@ func isBasicAuthHeader(name string) bool {
 }
 
 // basicAuthLeaked reports whether value is "Basic <base64>" whose decoded
-// payload contains the placeholder sentinel. Non-Basic schemes return false
-// (they are scanned by the raw header pass). Malformed base64 is treated as a
-// leak: a real client would have produced a decodable value, and forwarding
-// junk credentials to a non-allowed host risks exposing whatever the caller
+// payload contains the placeholder sentinel. Malformed base64 is treated as
+// a leak — forwarding junk credentials risks exposing whatever the caller
 // actually meant to send.
 func basicAuthLeaked(value string) bool {
 	const schemeLen = len("Basic ")
@@ -393,5 +365,5 @@ func basicAuthLeaked(value string) bool {
 			return strings.Contains(encoded, placeholder.Sentinel)
 		}
 	}
-	return bytes.Contains(raw, []byte(placeholder.Sentinel))
+	return bytes.Contains(raw, sentinelBytes)
 }

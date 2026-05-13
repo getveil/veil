@@ -13,11 +13,11 @@ type EnvironCandidate struct {
 	Value string
 }
 
-// environDenylist is a set of env var names we consider *obviously* non-secret
-// and therefore skip before running the secret-like heuristic. The goal is to
-// reduce prompt noise during `veil init` shell-env capture; it is NOT a
-// security boundary — any name not on this list is still evaluated by
-// placeholder.IsSecretLike.
+// environDenylistCurated is the hand-curated set of env-var names we consider
+// *obviously* non-secret and therefore skip before running the secret-like
+// heuristic. The goal is to reduce prompt noise during `veil init` shell-env
+// capture; it is NOT a security boundary — any name not on this list is still
+// evaluated by placeholder.IsSecretLike.
 //
 // Rules for additions:
 //   - The name is ubiquitous in POSIX / common shells.
@@ -27,7 +27,12 @@ type EnvironCandidate struct {
 // When in doubt, leave it off. False positives in the prompt are annoying but
 // correctable by the user; false negatives here risk silently exempting a
 // real secret from capture, which is the exact gap this feature closes.
-var environDenylist = map[string]struct{}{
+//
+// Proxy/CA/Veil-internal names are NOT listed here — they live in envkeys and
+// are folded into environDenylist by init(). That way, a future addition to
+// envkeys.ProxyKeys / CAKeys / VeilInternalKeys can never silently miss the
+// scan (the VEIL_PASSPHRASE regression that prompted this refactor).
+var environDenylistCurated = map[string]struct{}{
 	// Identity / shell
 	"HOME": {}, "USER": {}, "LOGNAME": {}, "SHELL": {}, "UID": {}, "EUID": {},
 	// Paths
@@ -56,16 +61,6 @@ var environDenylist = map[string]struct{}{
 	// Homebrew
 	"HOMEBREW_PREFIX": {}, "HOMEBREW_CELLAR": {}, "HOMEBREW_REPOSITORY": {},
 	"HOMEBREW_SHELLENV_PREFIX": {},
-	// Veil's own env keys are sourced from envkeys.VeilInternalKeys at the
-	// IsObviouslyNotSecret call site below — keep them OUT of this hardcoded
-	// map so a future addition to VeilInternalKeys can never silently miss the
-	// scan. (Historical regression: VEIL_PASSPHRASE was added to VeilInternalKeys
-	// but not here, so a real high-entropy passphrase tripped the value heuristic
-	// and was vaulted as a credential.)
-	// Proxy / CA vars — already handled by the runner, and would confuse the user.
-	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {},
-	"NODE_EXTRA_CA_CERTS": {}, "SSL_CERT_FILE": {},
-	"CURL_CA_BUNDLE": {}, "REQUESTS_CA_BUNDLE": {}, "HTTPLIB2_CA_CERTS": {},
 	// Shell options
 	"IFS": {}, "PS1": {}, "PS2": {}, "PROMPT_COMMAND": {}, "HISTFILE": {},
 	"HISTSIZE": {}, "HISTFILESIZE": {}, "BASH_VERSION": {}, "ZSH_VERSION": {},
@@ -81,10 +76,32 @@ var environDenylist = map[string]struct{}{
 	"BAGGAGE": {},
 }
 
+// environDenylist is the full lookup set: curated POSIX/shell names plus
+// every entry from envkeys.ProxyKeys, envkeys.CAKeys, and
+// envkeys.VeilInternalKeys. Built once at init() so IsObviouslyNotSecret
+// stays an O(1) map lookup.
+var environDenylist = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(environDenylistCurated)+
+		len(envkeys.ProxyKeys)+len(envkeys.CAKeys)+len(envkeys.VeilInternalKeys))
+	for k := range environDenylistCurated {
+		m[k] = struct{}{}
+	}
+	for _, k := range envkeys.ProxyKeys {
+		m[k] = struct{}{}
+	}
+	for _, k := range envkeys.CAKeys {
+		m[k] = struct{}{}
+	}
+	for _, k := range envkeys.VeilInternalKeys {
+		m[k] = struct{}{}
+	}
+	return m
+}()
+
 // environDenylistPrefixes is a list of prefixes whose names are skipped before
 // the secret-like heuristic. Each entry must be specific enough that no
 // credential-bearing name plausibly starts with it. Prefer exact-match entries
-// in environDenylist when in doubt.
+// in environDenylistCurated when in doubt.
 var environDenylistPrefixes = []string{
 	// Claude Code SDK / runtime metadata injected when veil runs as a child of
 	// a Claude Code session (e.g. CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH, which trips
@@ -109,14 +126,6 @@ var environDenylistPrefixes = []string{
 func IsObviouslyNotSecret(name string) bool {
 	if _, ok := environDenylist[name]; ok {
 		return true
-	}
-	// Veil-internal control variables (the master passphrase, the test-keystore
-	// toggle, the MCP config override) must never be captured as credentials.
-	// Source them from the canonical list so additions there cannot drift.
-	for _, k := range envkeys.VeilInternalKeys {
-		if name == k {
-			return true
-		}
 	}
 	for _, prefix := range environDenylistPrefixes {
 		if strings.HasPrefix(name, prefix) {

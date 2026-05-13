@@ -19,65 +19,18 @@ import (
 // certificates plus the provided Veil CA PEM. Returns the path to the
 // bundle file. Call RemoveCABundle to clean up.
 func BuildCABundle(veilCAPEM []byte) (string, error) {
-	systemPEM, err := systemCAPEM()
-	if err != nil {
-		ui.Warnf(os.Stderr, "could not extract system CAs: %v (bundle will contain only Veil CA)", err)
-		systemPEM = nil
-	}
-
-	combined := make([]byte, 0, len(systemPEM)+len(veilCAPEM)+1)
-	if len(systemPEM) > 0 {
-		combined = append(combined, systemPEM...)
-		if combined[len(combined)-1] != '\n' {
-			combined = append(combined, '\n')
-		}
-	}
-	combined = append(combined, veilCAPEM...)
-
-	bundlePath, err := bundleFilePath()
+	dir, err := config.CADir()
 	if err != nil {
 		return "", fmt.Errorf("%w: bundle file path: %w", ErrCABundle, err)
 	}
-
-	if err := config.EnsureDir(filepath.Dir(bundlePath), 0700); err != nil {
-		return "", fmt.Errorf("%w: ensure bundle dir: %w", ErrCABundle, err)
-	}
-
-	if err := atomicWrite(bundlePath, combined, 0644); err != nil {
-		return "", fmt.Errorf("%w: write ca bundle: %w", ErrCABundle, err)
-	}
-
-	return bundlePath, nil
+	return writeCABundle(dir, veilCAPEM)
 }
 
 // BuildCABundleIn writes the combined CA bundle into sessionDir and returns
 // the full file path. Prefer this over BuildCABundle in new code; the latter
 // is preserved for callers still using the shared location.
 func BuildCABundleIn(sessionDir string, veilCAPEM []byte) (string, error) {
-	systemPEM, err := systemCAPEM()
-	if err != nil {
-		ui.Warnf(os.Stderr, "could not extract system CAs: %v (bundle will contain only Veil CA)", err)
-		systemPEM = nil
-	}
-
-	combined := make([]byte, 0, len(systemPEM)+len(veilCAPEM)+1)
-	if len(systemPEM) > 0 {
-		combined = append(combined, systemPEM...)
-		if combined[len(combined)-1] != '\n' {
-			combined = append(combined, '\n')
-		}
-	}
-	combined = append(combined, veilCAPEM...)
-
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
-		return "", fmt.Errorf("%w: ensure session dir: %w", ErrCABundle, err)
-	}
-
-	path := filepath.Join(sessionDir, "ca-bundle.pem")
-	if err := atomicWrite(path, combined, 0o644); err != nil {
-		return "", fmt.Errorf("%w: write bundle: %w", ErrCABundle, err)
-	}
-	return path, nil
+	return writeCABundle(sessionDir, veilCAPEM)
 }
 
 // RemoveCABundle deletes the combined CA bundle file.
@@ -85,14 +38,35 @@ func RemoveCABundle(path string) {
 	_ = os.Remove(path)
 }
 
-// bundleFilePath returns the path for the combined CA bundle, stored
-// alongside the Veil CA files.
-func bundleFilePath() (string, error) {
-	dir, err := config.CADir()
+// writeCABundle merges system CA PEM with veilCAPEM and writes the result to
+// dir/ca-bundle.pem. The directory is created 0700 if missing; the bundle
+// file is written 0644 (atomically) because clients/tools loading the bundle
+// must be able to read it.
+func writeCABundle(dir string, veilCAPEM []byte) (string, error) {
+	systemPEM, err := systemCAPEM()
 	if err != nil {
-		return "", err
+		ui.Warnf(os.Stderr, "could not extract system CAs: %v (bundle will contain only Veil CA)", err)
+		systemPEM = nil
 	}
-	return filepath.Join(dir, "ca-bundle.pem"), nil
+
+	combined := make([]byte, 0, len(systemPEM)+len(veilCAPEM)+1)
+	if len(systemPEM) > 0 {
+		combined = append(combined, systemPEM...)
+		if combined[len(combined)-1] != '\n' {
+			combined = append(combined, '\n')
+		}
+	}
+	combined = append(combined, veilCAPEM...)
+
+	if err := config.EnsureDir(dir, 0o700); err != nil {
+		return "", fmt.Errorf("%w: ensure bundle dir: %w", ErrCABundle, err)
+	}
+
+	path := filepath.Join(dir, "ca-bundle.pem")
+	if err := atomicWrite(path, combined, 0o644); err != nil {
+		return "", fmt.Errorf("%w: write ca bundle: %w", ErrCABundle, err)
+	}
+	return path, nil
 }
 
 // newTruststorePassword returns a cryptographically random password safe to
@@ -154,7 +128,7 @@ func BuildJavaTruststoreIn(sessionDir string, bundlePEM []byte) (path, password 
 		return "", "", fmt.Errorf("%w: encode PKCS12: %w", ErrCABundle, err)
 	}
 
-	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+	if err := config.EnsureDir(sessionDir, 0o700); err != nil {
 		return "", "", fmt.Errorf("%w: ensure session dir: %w", ErrCABundle, err)
 	}
 

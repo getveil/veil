@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,7 +42,6 @@ type Result struct {
 func Run(ctx context.Context, cfg Config) (*Result, error) {
 	sweepStaleSessionDirs()
 
-	// 1. Load vault.
 	ks := cfg.Keystore
 	if ks == nil {
 		fallbackPath, err := config.KeystoreFallbackFile()
@@ -55,7 +55,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("open vault: %w", err)
 	}
 
-	// 2. Open audit DB.
 	auditDBPath := config.AuditDBFile(cfg.Root)
 	auditStore, err := audit.Open(auditDBPath)
 	if err != nil {
@@ -63,14 +62,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = auditStore.Close() }()
 
-	// 3. Load CA.
 	ca, err := proxy.LoadOrCreateCA()
 	if err != nil {
 		return nil, fmt.Errorf("load or create CA: %w", err)
 	}
 
-	// 3b. Per-session temp directory that holds the CA bundle and any other
-	// short-lived artifacts. Cleaned up on exit.
+	// Per-session temp dir for the CA bundle and other short-lived artifacts.
 	sessionDir, err := os.MkdirTemp("", "veil-session-*")
 	if err != nil {
 		return nil, fmt.Errorf("create session dir: %w", err)
@@ -91,17 +88,17 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("build java truststore: %w", err)
 	}
 
-	// 4. Resolve the child command to a realpath before touching the proxy
-	// or spawning anything — this is the forensic anchor for audit rows and
-	// the banner. A shadow binary in a writable PATH dir is a real threat for
-	// a tool whose promise is "the agent never sees real tokens".
+	// Resolve the child command to a realpath before touching the proxy or
+	// spawning anything — this is the forensic anchor for audit rows and the
+	// banner. A shadow binary in a writable PATH dir is a real threat for a
+	// tool whose promise is "the agent never sees real tokens".
 	resolvedCmd, err := resolveAgentCommand(cfg.Command)
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent command: %w", err)
 	}
 
-	// 5. Start proxy. Use resolvedCmd so every audit row records the binary
-	// that actually ran, not whatever token the user typed on the CLI.
+	// Use resolvedCmd so every audit row records the binary that actually ran,
+	// not whatever token the user typed on the CLI.
 	server, err := proxy.New(ca, vlt, auditStore, os.Getpid(), resolvedCmd)
 	if err != nil {
 		return nil, fmt.Errorf("create proxy: %w", err)
@@ -111,7 +108,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = server.Stop() }()
 
-	// Write PID file for veil status to detect running proxy.
 	pidPath := config.PidFile(cfg.Root, os.Getpid())
 	if err := WritePidFile(pidPath, os.Getpid()); err != nil {
 		// Non-fatal — status won't detect proxy, but run still works.
@@ -119,7 +115,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer RemovePidFile(pidPath)
 
-	// 5b. Print startup line to stderr.
 	credCount := len(vlt.List())
 	fmt.Fprintf(os.Stderr, "\n%s proxy active · %d credentials loaded\n",
 		ui.Success.Sprint("veil"), credCount)
@@ -129,18 +124,17 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
 	}
 
-	// 6. Build child env: strip existing proxy vars and inject ours, and
-	// remove any shell-exported var whose name matches a vault credential
-	// (SEC-1). Announce the strip loudly so the user knows their shell was
-	// intervened on — this is the single most important guarantee in the
-	// product ("the agent never sees real tokens").
+	// Strip shell-exported vars whose name matches a vault credential and
+	// Veil's own control vars. Announce the strip loudly — the product's
+	// single biggest failure mode if it goes silent.
 	proxyURL := "http://" + server.Addr()
 	creds := vlt.List()
 	entries := make([]vaultEntry, 0, len(creds))
 	for _, c := range creds {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
-	env, strippedVault, strippedInternal := buildChildEnv(os.Environ(), proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword, cfg.SkipHosts, entries)
+	environ := os.Environ()
+	env, strippedVault, strippedInternal := buildChildEnv(environ, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -148,7 +142,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		printStrippedInternalWarning(os.Stderr, len(strippedInternal))
 	}
 
-	// 6b. Belt-and-suspenders: scan for secret-like env vars that slipped past
+	// Belt-and-suspenders: scan for secret-like env vars that slipped past
 	// init (e.g., a new export since `veil init` ran). Warn interactively;
 	// fail-closed non-interactively unless --allow-env-secret covers them.
 	allowSet := make(map[string]struct{}, len(cfg.AllowEnvSecrets))
@@ -158,7 +152,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		}
 		allowSet[strings.ToUpper(n)] = struct{}{}
 	}
-	unvaulted := scanUnvaultedSecretLikes(os.Environ(), vlt.Names(), allowSet)
+	unvaulted := scanUnvaultedSecretLikes(environ, vlt.Names(), allowSet)
 	if len(unvaulted) > 0 {
 		printUnvaultedWarning(os.Stderr, unvaulted)
 		if stdinTTYFd() < 0 {
@@ -167,8 +161,8 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 
-	// 7. Exec child using the resolved realpath so we cannot race with a
-	// PATH change between resolve and exec.
+	// Exec the resolved realpath so we cannot race with a PATH change between
+	// resolve and exec.
 	ttyFd := stdinTTYFd()
 	child := exec.CommandContext(ctx, resolvedCmd, cfg.Args...) //nolint:gosec // G204: command is explicitly provided by the user via CLI and resolved upfront
 	child.Stdin = os.Stdin
@@ -177,43 +171,36 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	child.Env = env
 	child.SysProcAttr = procAttr(ttyFd)
 
-	// 8. Start child.
 	sessionStart := time.Now()
 	if err := child.Start(); err != nil {
 		return nil, fmt.Errorf("start child: %w", err)
 	}
 
-	// 8b. Guard against parent crash. On Linux this is a no-op; on macOS
-	// (which lacks Pdeathsig) it spawns a helper that kills the child's
-	// process group if veil dies unexpectedly.
+	// On Linux this is a no-op; on macOS (no Pdeathsig) it spawns a helper
+	// that kills the child's process group if veil dies unexpectedly.
 	watcher, werr := startParentWatch(child.Process.Pid)
 	if werr != nil {
 		ui.Warnf(os.Stderr, "could not start parent watcher: %v", werr)
 	}
 	defer watcher.Close()
 
-	// 9. Signal forwarding.
 	sigCtx, sigCancel := context.WithCancel(ctx)
 	defer sigCancel()
 	go forwardSignals(sigCtx, child)
 
-	// 10. Wait for child to exit.
 	waitErr := child.Wait()
 	sigCancel()
 
-	// 11. Reclaim foreground process group so veil can write to the terminal.
+	// Reclaim foreground process group so veil can write to the terminal.
 	reclaimForeground(ttyFd)
 
-	// 11b. Compute exit code for summary.
 	exitCode := 0
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		exitCode = exitErr.ExitCode()
 	}
 
-	// 11c. Print exit summary to stderr.
 	printSessionFooter(os.Stderr, auditStore, sessionStart, time.Since(sessionStart), exitCode)
 
-	// 12. Return result.
 	if waitErr != nil {
 		if _, ok := waitErr.(*exec.ExitError); ok {
 			return &Result{ExitCode: exitCode}, nil
@@ -232,23 +219,18 @@ type vaultEntry struct {
 	Placeholder string
 }
 
-// NO_PROXY list. javaTruststorePath is the per-session PKCS12 that JVM
-// children use via JAVA_TOOL_OPTIONS. javaTruststorePassword is the random
-// password BuildJavaTruststoreIn returned alongside that path. vaultEntries
-// is the set of credentials loaded from the vault; any env var whose key
-// matches (case-insensitively) has its real value stripped and replaced
-// with the credential's placeholder, so the child process cannot observe
-// the real secret that the user exported in their shell. The names of env
-// vars actually stripped because of the vault match are returned (using
-// the original casing from the environment), so the caller can surface a
-// startup warning.
+// buildChildEnv constructs the env slice exec'd into the agent. It strips
+// pre-existing proxy/CA vars (replaced with Veil's loopback proxy + bundle),
+// merges any caller-set JAVA_TOOL_OPTIONS with Veil's truststore flags, and
+// removes vars matching vault-credential names (replacing them with the
+// credential's placeholder so the child still has a value under that name).
+// Veil's own control vars (envkeys.VeilInternalKeys) are stripped without
+// reinjection — VEIL_PASSPHRASE in particular would let the agent decrypt
+// the vault on Linux file-keystore systems.
 //
-// strippedInternal returns the names of Veil's own control env vars
-// (envkeys.VeilInternalKeys) that were present in environ and removed from
-// the child. These are control variables — never reinjected — and the
-// caller surfaces a separate, muted notice for them. VEIL_PASSPHRASE in
-// particular would let the agent decrypt the vault on Linux file-keystore
-// systems, so silent leakage would defeat Veil's core guarantee.
+// Returns the child env, the names that were stripped because they matched a
+// vault credential (original casing, for the loud user-facing warning), and
+// the names of Veil-internal vars that were stripped (for a muted notice).
 func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
@@ -258,20 +240,31 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 		vaultMap[strings.ToUpper(e.Name)] = e.Placeholder
 	}
 
+	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath, javaTruststorePassword)
+	javaToolOpts := veilJavaFlags
+
 	stripped := make([]string, 0, len(environ))
 	strippedVault := make([]string, 0)
 	strippedInternal := make([]string, 0)
 	reinject := make([]string, 0)
 	for _, kv := range environ {
-		key, _, ok := strings.Cut(kv, "=")
+		key, value, ok := strings.Cut(kv, "=")
 		if !ok {
 			stripped = append(stripped, kv)
 			continue
 		}
-		if isProxyEnvKey(key) || isCAEnvKey(key) || strings.EqualFold(key, "JAVA_TOOL_OPTIONS") {
+		// JAVA_TOOL_OPTIONS is dropped from the passthrough set; its value is
+		// merged into the Veil-injected JAVA_TOOL_OPTIONS below.
+		if strings.EqualFold(key, envkeys.JavaToolOptions) {
+			if existing := strings.TrimSpace(value); existing != "" {
+				javaToolOpts = existing + " " + veilJavaFlags
+			}
 			continue
 		}
-		if isVeilInternalEnvKey(key) {
+		if isAnyEnvKey(key, envkeys.ProxyKeys) || isAnyEnvKey(key, envkeys.CAKeys) {
+			continue
+		}
+		if isAnyEnvKey(key, envkeys.VeilInternalKeys) {
 			strippedInternal = append(strippedInternal, key)
 			continue
 		}
@@ -283,93 +276,47 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 		stripped = append(stripped, kv)
 	}
 
-	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath, javaTruststorePassword)
-	javaToolOpts := veilJavaFlags
-	for _, kv := range environ {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(k, "JAVA_TOOL_OPTIONS") {
-			if existing := strings.TrimSpace(v); existing != "" {
-				javaToolOpts = existing + " " + veilJavaFlags
-			}
-			break
-		}
-	}
-
 	noProxy := "localhost,127.0.0.1,::1"
 	if len(skipHosts) > 0 {
 		noProxy = noProxy + "," + strings.Join(skipHosts, ",")
 	}
 
-	env := append(stripped,
-		"HTTP_PROXY="+proxyURL,
-		"HTTPS_PROXY="+proxyURL,
-		"http_proxy="+proxyURL,
-		"https_proxy="+proxyURL,
-		"NO_PROXY="+noProxy,
-		"no_proxy="+noProxy,
-		"NODE_EXTRA_CA_CERTS="+bundlePath,
-		"SSL_CERT_FILE="+bundlePath,
-		"CURL_CA_BUNDLE="+bundlePath,
-		"REQUESTS_CA_BUNDLE="+bundlePath,
-		"HTTPLIB2_CA_CERTS="+bundlePath,
-		"CARGO_HTTP_CAINFO="+bundlePath,
-		"JAVA_TOOL_OPTIONS="+javaToolOpts,
-	)
-	// Append re-injected placeholders last for readability. The proxy/CA
-	// filter above skips any name matching isProxyEnvKey/isCAEnvKey before
-	// reaching the vault branch, so there is no collision with the proxy/CA
-	// vars we just appended.
+	env := stripped
+	for _, k := range envkeys.HTTPProxyKeys {
+		env = append(env, k+"="+proxyURL)
+	}
+	for _, k := range envkeys.NoProxyKeys {
+		env = append(env, k+"="+noProxy)
+	}
+	for _, k := range envkeys.CAKeys {
+		env = append(env, k+"="+bundlePath)
+	}
+	env = append(env, envkeys.JavaToolOptions+"="+javaToolOpts)
+	// Re-injected placeholders go last for readability. The proxy/CA filter
+	// above skips matching names before the vault branch, so there is no
+	// collision with the proxy/CA vars we just appended.
 	env = append(env, reinject...)
 	return env, strippedVault, strippedInternal
 }
 
-// isProxyEnvKey returns true if the given key is a proxy-related environment
-// variable that should be stripped and replaced.
-func isProxyEnvKey(key string) bool {
-	for _, k := range envkeys.ProxyKeys {
-		if strings.EqualFold(key, k) {
-			return true
-		}
-	}
-	return false
-}
-
-// isCAEnvKey returns true if the given key is a CA-related environment
-// variable that should be stripped and replaced with Veil's combined bundle.
-func isCAEnvKey(key string) bool {
-	for _, k := range envkeys.CAKeys {
-		if strings.EqualFold(key, k) {
-			return true
-		}
-	}
-	return false
-}
-
-// isVeilInternalEnvKey returns true if the given key is one of Veil's own
-// control variables that must not be inherited by the agent child. The
-// canonical risk is VEIL_PASSPHRASE on Linux file-keystore systems: if it
-// reaches the agent, the agent can read master.key.age from disk and
-// decrypt every vault entry without privilege escalation.
-func isVeilInternalEnvKey(key string) bool {
-	for _, k := range envkeys.VeilInternalKeys {
-		if strings.EqualFold(key, k) {
-			return true
-		}
-	}
-	return false
+// isAnyEnvKey reports whether key matches any name in keys, case-insensitively.
+// Centralizes the proxy/CA/Veil-internal membership checks against the
+// canonical lists in envkeys; VEIL_PASSPHRASE in particular is load-bearing
+// here, since on Linux file-keystore systems leaking it lets the agent decrypt
+// every vault entry.
+func isAnyEnvKey(key string, keys []string) bool {
+	return slices.ContainsFunc(keys, func(k string) bool {
+		return strings.EqualFold(key, k)
+	})
 }
 
 // resolveAgentCommand resolves cmd to an absolute, symlink-free path. Bare
 // names are looked up on PATH; anything containing a separator is made
 // absolute relative to the current working directory. The result is then
 // passed through filepath.EvalSymlinks so a symlinked binary is recorded in
-// the audit trail by its true path. This is SEC-23 forensics support: when
-// the product promise is "the agent never sees real tokens", a later
-// investigation needs to know exactly which binary ran, not which PATH entry
-// was first on that day.
+// the audit trail by its true path: when the product promise is "the agent
+// never sees real tokens", a later investigation needs to know which binary
+// actually ran, not which PATH entry was first on that day.
 func resolveAgentCommand(cmd string) (string, error) {
 	if cmd == "" {
 		return "", fmt.Errorf("empty command")

@@ -130,19 +130,26 @@ func tryMultilineQuotedKV(rawLines []string, start int) int {
 	return 1
 }
 
+// stripExportPrefix returns s with a leading "export" + whitespace removed,
+// or s unchanged if no such prefix is present. The second return value
+// reports whether the prefix was found.
+func stripExportPrefix(s string) (string, bool) {
+	if strings.HasPrefix(s, "export ") || strings.HasPrefix(s, "export\t") {
+		return strings.TrimSpace(s[len("export"):]), true
+	}
+	return s, false
+}
+
 // unclosedQuoteChar returns the quote character (' or ") when line parses as
 // a KV assignment whose value opens with a quote that does not close. Returns
 // 0 if the line isn't a KV opener, the value isn't quoted, or the quote closes.
 func unclosedQuoteChar(line string) byte {
-	work := strings.TrimSpace(line)
-	if strings.HasPrefix(work, "export ") || strings.HasPrefix(work, "export\t") {
-		work = strings.TrimSpace(work[len("export"):])
-	}
-	eqIdx := strings.IndexByte(work, '=')
-	if eqIdx < 0 {
+	work, _ := stripExportPrefix(strings.TrimSpace(line))
+	_, after, ok := strings.Cut(work, "=")
+	if !ok {
 		return 0
 	}
-	val := strings.TrimSpace(work[eqIdx+1:])
+	val := strings.TrimSpace(after)
 	if len(val) == 0 {
 		return 0
 	}
@@ -170,9 +177,7 @@ func looksLikeIndependentKV(line string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "export\t") {
-		trimmed = strings.TrimSpace(trimmed[len("export"):])
-	}
+	trimmed, _ = stripExportPrefix(trimmed)
 	eqIdx := strings.IndexByte(trimmed, '=')
 	// eqIdx > 32 rejects base64 chunks (typical PEM line is ~64 chars before
 	// the optional "=" padding); real env var names are far shorter.
@@ -224,31 +229,19 @@ func parseLine(raw string) Line {
 
 // parseKV attempts to parse raw as a KEY=VALUE line.
 func parseKV(raw string) (Line, bool) {
-	work := raw
-	trimmed := strings.TrimSpace(work)
+	kvPart, export := stripExportPrefix(strings.TrimSpace(raw))
 
-	// Detect export prefix
-	export := false
-	kvPart := trimmed
-	if strings.HasPrefix(trimmed, "export ") || strings.HasPrefix(trimmed, "export\t") {
-		export = true
-		kvPart = strings.TrimSpace(trimmed[len("export"):])
-	}
-
-	// Find the = separator
-	eqIdx := strings.IndexByte(kvPart, '=')
-	if eqIdx < 0 {
+	keyPart, valPart, ok := strings.Cut(kvPart, "=")
+	if !ok {
 		return Line{}, false
 	}
 
-	key := strings.TrimSpace(kvPart[:eqIdx])
+	key := strings.TrimSpace(keyPart)
 	if key == "" {
 		return Line{}, false
 	}
 
-	valRaw := kvPart[eqIdx+1:]
-
-	value, quoted, comment, ok := parseValue(valRaw)
+	value, quoted, comment, ok := parseValue(valPart)
 	if !ok {
 		return Line{}, false
 	}

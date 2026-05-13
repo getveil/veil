@@ -37,13 +37,6 @@ func writeBackup(src string) error {
 	return nil
 }
 
-// writeBackupOnly creates the .veil-backup sidecar for src. No metadata
-// registration is performed; callers must invoke registerVaultedFile to
-// record the file in vault.meta as a separate step.
-func writeBackupOnly(src string) error {
-	return writeBackup(src)
-}
-
 // registerVaultedFile records src in the project's vault.meta registry
 // (under the given kind). It does not touch the .veil-backup sidecar.
 func registerVaultedFile(root, src string, kind vault.FileKind) error {
@@ -52,11 +45,10 @@ func registerVaultedFile(root, src string, kind vault.FileKind) error {
 
 // recordVaultedBackup writes src's backup AND registers src's absolute path
 // in vault.meta so uninstall can locate it even when src is outside root.
-// Registry-write failures are returned (not just logged) — losing track of a
-// vaulted file is the bug we're trying to prevent. The kind is stored so
-// uninstall picks the right classifier without re-deriving from the basename.
+// The kind is stored so uninstall picks the right classifier without
+// re-deriving from the basename.
 func recordVaultedBackup(root, src string, kind vault.FileKind) error {
-	if err := writeBackupOnly(src); err != nil {
+	if err := writeBackup(src); err != nil {
 		return err
 	}
 	return registerVaultedFile(root, src, kind)
@@ -88,14 +80,10 @@ func isOrphanedBackup(root, src string) (bool, error) {
 }
 
 // reclaimOrphanedBackup restores src from its orphan backup so the next
-// vaulting pass operates on the original (pre-Veil) bytes, then removes the
-// backup so init's own writeBackup can re-create it from the now-correct
-// source. Refuses if the backup is a symlink: os.Rename renames the symlink
-// itself, so a pre-planted .env.veil-backup symlink would replace the real
-// .env with a symlink pointing at an attacker-chosen target, after which the
-// next writeBackup/atomicWriteFile pair would leak/clobber that target's
-// content. The leaf-symlink check on src happens earlier in refuseSymlinked-
-// Inputs; this one closes the same hole on the backup path.
+// vaulting pass operates on the original (pre-Veil) bytes. Refuses a
+// symlinked backup: rename(2) renames the link itself, which would replace
+// the real .env with a symlink to an attacker-chosen target — leaking or
+// clobbering it on the next writeBackup/atomicWriteFile pair.
 func reclaimOrphanedBackup(src string) error {
 	backupPath := src + backupSuffix
 	info, err := os.Lstat(backupPath)

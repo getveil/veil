@@ -53,31 +53,36 @@ func discoverIn(dir string) (string, error) {
 	return p, nil
 }
 
-// claudeConfigDir returns the platform-specific Claude Desktop config directory.
-func claudeConfigDir(goos, home string) (string, error) {
+// claudeConfigSubpath returns the path components beneath the user's home
+// directory where Claude Desktop stores its config on goos, or ok=false on
+// unsupported platforms.
+func claudeConfigSubpath(goos string) (parts []string, ok bool) {
 	switch goos {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Claude"), nil
+		return []string{"Library", "Application Support", "Claude"}, true
 	case "linux":
-		return filepath.Join(home, ".config", "Claude"), nil
+		return []string{".config", "Claude"}, true
 	default:
+		return nil, false
+	}
+}
+
+// claudeConfigDir returns the platform-specific Claude Desktop config directory.
+func claudeConfigDir(goos, home string) (string, error) {
+	parts, ok := claudeConfigSubpath(goos)
+	if !ok {
 		return "", fmt.Errorf("unsupported platform: %s", goos)
 	}
+	return filepath.Join(append([]string{home}, parts...)...), nil
 }
 
 // ParentAnchor returns the trust anchor (the user's home directory) the init
 // guard should walk down from to verify the discovered config path has no
-// symlinked parent component, plus the relative subpath the verifier should
-// traverse (which the guard reconstructs into per-step Lstat targets so that
-// e.g. ~/Library/Application Support/Claude being swapped for a symlink is
-// detected BEFORE the leaf check is reached). Returns ok=false when the
-// override env var is set (the user explicitly chose a path; no anchor) or
-// the platform has no canonical location.
-//
-// Resolving the assembled path with EvalSymlinks would be self-defeating —
-// the resolution silently follows the very attacker-controlled symlink we
-// are trying to detect — so we hand the guard the un-resolved components
-// and let it Lstat each one.
+// symlinked parent component, plus the unresolved subpath the verifier should
+// traverse. The guard Lstats each component literally — EvalSymlinks would
+// silently follow the very attacker-controlled symlink we are trying to
+// detect. Returns ok=false when the override env var is set (the user
+// explicitly chose a path) or the platform has no canonical location.
 func ParentAnchor() (anchor string, subpath []string, ok bool, err error) {
 	if os.Getenv(envkeys.MCPConfigOverride) != "" {
 		return "", nil, false, nil
@@ -86,14 +91,11 @@ func ParentAnchor() (anchor string, subpath []string, ok bool, err error) {
 	if err != nil {
 		return "", nil, false, err
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		return home, []string{"Library", "Application Support", "Claude"}, true, nil
-	case "linux":
-		return home, []string{".config", "Claude"}, true, nil
-	default:
+	parts, ok := claudeConfigSubpath(runtime.GOOS)
+	if !ok {
 		return "", nil, false, nil
 	}
+	return home, parts, true, nil
 }
 
 // ServerConfig represents a single MCP server entry.

@@ -57,41 +57,34 @@ func tryURL(value string) (string, bool) {
 		return "", false
 	}
 
-	// Find the password in the raw URL string.
-	// URL format: scheme://[user[:password]@]host[:port][/path][?query][#fragment]
+	// Locate the password in the raw URL by byte offset (not via net/url,
+	// which percent-decodes and could change length).
+	// Format: scheme://[user[:password]@]host[:port][/path][?query][#fragment]
 	schemeEnd := strings.Index(value, "://")
 	if schemeEnd < 0 {
 		return "", false
 	}
 	authStart := schemeEnd + 3
 
-	// Bound the search to the authority. The authority terminates at the
-	// first '/', '?', or '#' after authStart, or at the end of the string.
-	// This matters when the password contains an unencoded '@' (security
-	// issue H1): without this bound, the userinfo/host boundary lookup
-	// could see an '@' from the path and mis-locate the split.
+	// Bound the search to the authority — path/query/fragment delimiters end
+	// it. Without this bound, an '@' in the path (e.g. /x@y) could be picked
+	// as the userinfo terminator.
 	authEnd := len(value)
-	for i := authStart; i < len(value); i++ {
-		c := value[i]
-		if c == '/' || c == '?' || c == '#' {
-			authEnd = i
-			break
-		}
+	if i := strings.IndexAny(value[authStart:], "/?#"); i >= 0 {
+		authEnd = authStart + i
 	}
 	rest := value[authStart:authEnd]
 
-	// Find the LAST '@' inside the authority. This matches Go's net/url
-	// parser, which uses LastIndex so that unencoded '@' inside the
-	// password does not prematurely terminate the userinfo.
+	// LastIndex of '@' inside the authority matches net/url and keeps
+	// unencoded '@' inside a password from prematurely closing userinfo.
 	atIdx := strings.LastIndex(rest, "@")
 	if atIdx < 0 {
 		return "", false
 	}
 	userinfo := rest[:atIdx]
 
-	// Find the FIRST ':' inside the userinfo: it separates the username
-	// from the password. Use Index (not LastIndex) so passwords containing
-	// ':' are kept intact in rawPassword.
+	// First ':' separates user from password; LastIndex would split a
+	// password that contains ':'.
 	colonIdx := strings.Index(userinfo, ":")
 	if colonIdx < 0 {
 		return "", false
@@ -102,15 +95,9 @@ func tryURL(value string) (string, bool) {
 		return "", false
 	}
 
-	// Sentinel is embedded into the fake password body so the proxy can
-	// detect a leaked URL placeholder with a single substring scan. The
-	// password portion is entirely randomized, so overwriting the first
-	// 4 bytes is safe.
 	fake := sentinelize(charClassFake(rawPassword), 0)
 
-	// Replace the password in the original string.
 	passwordStart := authStart + colonIdx + 1
 	passwordEnd := authStart + atIdx
-	result := value[:passwordStart] + fake + value[passwordEnd:]
-	return result, true
+	return value[:passwordStart] + fake + value[passwordEnd:], true
 }

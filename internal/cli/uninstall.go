@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,29 +54,21 @@ func readPIDFile(path string) (int, bool) {
 }
 
 // isProcessAlive reports whether a process with the given PID exists.
-// Uses signal 0 (no-op signal) to test existence without affecting the
-// target. Returns false on permission errors as well — if we can't signal
-// it, we can't safely claim it's live.
+// Uses signal 0 to test existence. EPERM is treated as dead too — we can't
+// confirm liveness, so a stale pidfile shouldn't block cleanup.
 func isProcessAlive(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	// ESRCH (no such process) → dead. Other errors (EPERM) treat as dead too
-	// because we can't confirm liveness; conservative for uninstall purposes
-	// where a stale pidfile shouldn't block cleanup.
-	return false
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 // formatPIDList formats a slice of PIDs for error messages.
 func formatPIDList(pids []int) string {
 	parts := make([]string, len(pids))
 	for i, p := range pids {
-		parts[i] = fmt.Sprintf("%d", p)
+		parts[i] = strconv.Itoa(p)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -105,22 +98,11 @@ var envCuratedNames = []string{
 	".env.production",
 }
 
-// discoverBackups returns every (original, backup) pair that uninstall
-// should consider.
-//
-// Source of truth is vault.meta's vaulted-files registry written by init —
-// every entry it lists is included if its backup is still on disk, regardless
-// of whether the original lives inside or outside the project root. This is
-// what lets us restore a Claude Desktop MCP config that lives under
-// ~/Library/Application Support/Claude (F-13). The registry also records
-// each entry's kind, so an MCP config at a non-canonical path (e.g. set via
-// VEIL_MCP_CONFIG_PATH) still routes to classifyMCPPair instead of being
-// misclassified by basename.
-//
-// For backward compatibility with vaults created before the registry existed
-// (vault.meta with no vaulted_files field), we also fall back to the legacy
-// heuristic: scan curated .env names inside root, plus mcpconfig.Discover().
-// Pairs already covered by the registry are not duplicated.
+// discoverBackups returns every (original, backup) pair uninstall should
+// consider. Source of truth is vault.meta's vaulted-files registry (which
+// records both path and kind, so non-canonical MCP paths route correctly).
+// Falls back to the legacy curated-name scan plus mcpconfig.Discover() for
+// vaults written before the registry existed; duplicates are deduped.
 func discoverBackups(root string) ([]backupPair, error) {
 	var pairs []backupPair
 	seen := make(map[string]bool)
@@ -168,44 +150,18 @@ func discoverBackups(root string) ([]backupPair, error) {
 }
 
 // refuseSymlinkedBackupPairs refuses to operate on any pair whose original
-// OR backup is a symbolic link. classifyEnvPair / classifyMCPPair both call
-// os.ReadFile (which follows symlinks) and feed the bytes into renderUnifiedDiff,
-// which is then printed to stdout. A symlink planted at <root>/.env.veil-backup
-// pointing at ~/.ssh/id_rsa would cause `veil uninstall --dry-run` to render
-// the private key into the terminal — turning a "preview" command into an
-// arbitrary-file-read primitive. The same applies to a symlinked original,
-// which would appear as the '-' side of the diff.
-//
-// Aggregates ALL violating paths before returning so the user sees the full
-// picture in one error rather than fixing them one at a time. Runs BEFORE
-// classification so no file contents are read, no diff is computed, and no
-// destructive rename fires for a refused project.
+// or backup is a symbolic link. os.ReadFile follows symlinks, so without
+// this gate `uninstall --dry-run` would render a symlink target's contents
+// to stdout via the diff, and restore would replace the symlink itself
+// rather than its referent. Aggregates all violators into one error.
 func refuseSymlinkedBackupPairs(root string, pairs []backupPair) error {
 	var hits []string
 
-	check := func(p string) {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			return
-		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil || rel == "" {
-			rel = p
-		}
-		target, lerr := os.Readlink(p)
-		if lerr != nil || target == "" {
-			hits = append(hits, rel)
-			return
-		}
-		hits = append(hits, fmt.Sprintf("%s -> %s", rel, target))
-	}
+	display := func(p string) string { return displayRelOr(root, p, p) }
 
 	for _, p := range pairs {
-		check(p.original)
-		check(p.backup)
+		hits = appendIfSymlink(hits, p.original, display(p.original))
+		hits = appendIfSymlink(hits, p.backup, display(p.backup))
 	}
 
 	if len(hits) == 0 {
@@ -249,6 +205,25 @@ const (
 // falls back to byte comparison only.
 type placeholderResolver map[string]string
 
+// readPairBytes reads the backup and current bytes for a (original, backup)
+// pair. Returns classOriginalMissing (with nil err and nil bytes) when the
+// original is gone — callers short-circuit on that. Any other read error
+// propagates with context.
+func readPairBytes(original, backup string) (currentBytes, backupBytes []byte, status classification, err error) {
+	backupBytes, err = os.ReadFile(backup) // #nosec G304
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("read backup %s: %w", backup, err)
+	}
+	currentBytes, err = os.ReadFile(original) // #nosec G304
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, classOriginalMissing, nil
+		}
+		return nil, nil, 0, fmt.Errorf("read %s: %w", original, err)
+	}
+	return currentBytes, backupBytes, 0, nil
+}
+
 // classifyEnvPair compares the current .env file to its backup after
 // reverse-substituting placeholders with real values. Returns:
 //   - classUnmodified: after substitution, bytes match the backup.
@@ -256,26 +231,17 @@ type placeholderResolver map[string]string
 //     of the actual file change that uninstall will apply (current → backup).
 //   - classOriginalMissing: current file does not exist on disk.
 func classifyEnvPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
-	backupBytes, err := os.ReadFile(backup) // #nosec G304
-	if err != nil {
-		return 0, "", fmt.Errorf("read backup %s: %w", backup, err)
-	}
-	currentBytes, err := os.ReadFile(original) // #nosec G304
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return classOriginalMissing, "", nil
-		}
-		return 0, "", fmt.Errorf("read %s: %w", original, err)
+	currentBytes, backupBytes, status, err := readPairBytes(original, backup)
+	if err != nil || status == classOriginalMissing {
+		return status, "", err
 	}
 
 	expected := expectedOriginalEnv(currentBytes, resolver)
 	if bytes.Equal(expected, backupBytes) {
 		return classUnmodified, "", nil
 	}
-	// Show the user the actual file change uninstall will apply, not the
-	// (substitution-applied) reconstruction — otherwise placeholder lines
-	// that resolve cleanly are hidden from the preview, under-reporting
-	// scope (F-11).
+	// Diff the actual current→backup change, not the substitution-applied
+	// reconstruction, so cleanly-resolving placeholder lines stay visible.
 	return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
 }
 
@@ -374,29 +340,16 @@ func emitDiff(sb *strings.Builder, a, b []string, t [][]int, i, j int) {
 // reverse-substituting placeholders with real values. Semantics mirror
 // classifyEnvPair but operate on the MCP JSON shape via mcpconfig.
 func classifyMCPPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
-	backupBytes, err := os.ReadFile(backup) // #nosec G304
-	if err != nil {
-		return 0, "", fmt.Errorf("read backup %s: %w", backup, err)
-	}
-	currentBytes, err := os.ReadFile(original) // #nosec G304
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return classOriginalMissing, "", nil
-		}
-		return 0, "", fmt.Errorf("read %s: %w", original, err)
+	currentBytes, backupBytes, status, err := readPairBytes(original, backup)
+	if err != nil || status == classOriginalMissing {
+		return status, "", err
 	}
 
-	expected, err := expectedOriginalMCP(currentBytes, resolver)
-	if err != nil {
+	expected, expErr := expectedOriginalMCP(currentBytes, resolver)
+	if expErr != nil || !bytes.Equal(expected, backupBytes) {
 		return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
 	}
-
-	if bytes.Equal(expected, backupBytes) {
-		return classUnmodified, "", nil
-	}
-	// Show the actual file change, not the substitution-applied reconstruction
-	// (F-11): reconstructions hide cleanly-resolving placeholder lines.
-	return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
+	return classUnmodified, "", nil
 }
 
 // expectedOriginalMCP parses the current MCP config bytes, substitutes
@@ -476,8 +429,6 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	w := cmd.OutOrStdout()
 	ew := cmd.ErrOrStderr()
 
-	// Discover backup pairs and state dir first — a clean project short-
-	// circuits with "already uninstalled" and doesn't need the proxy guard.
 	pairs, err := discoverBackups(root)
 	if err != nil {
 		return wrapErr("discovering backups", err)
@@ -492,7 +443,6 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		return nil
 	}
 
-	// Active-proxy guard: only meaningful when there is something to uninstall.
 	live, err := activeProxyPIDs(root)
 	if err != nil {
 		return wrapErr("checking active proxies", err)
@@ -511,16 +461,13 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		)
 	}
 
-	// Refuse to read or restore any pair whose original or backup is a symlink.
-	// classifyEnvPair / classifyMCPPair would otherwise follow the symlink with
-	// os.ReadFile and print the target's contents to stdout via the diff. Gates
-	// BEFORE classification (no reads) and BEFORE confirmation (no destructive
-	// rename), so a refused project sees no leak and no state mutation.
+	// Gate symlink refusal BEFORE classification (no reads) and BEFORE
+	// confirmation (no destructive rename) so a refused project sees no
+	// leak and no state mutation.
 	if err := refuseSymlinkedBackupPairs(root, pairs); err != nil {
 		return err
 	}
 
-	// Build placeholder resolver from the vault (best-effort).
 	var resolver placeholderResolver
 	if stateExists {
 		if v, err := openVault(root); err == nil {
@@ -530,7 +477,6 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
-	// Classify each pair.
 	type planned struct {
 		pair   backupPair
 		status classification
@@ -538,27 +484,20 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 	plan := make([]planned, 0, len(pairs))
 	for _, p := range pairs {
-		var (
-			status classification
-			diff   string
-			cerr   error
-		)
+		classify := classifyEnvPair
 		if p.kind == backupKindMCP {
-			status, diff, cerr = classifyMCPPair(p.original, p.backup, resolver)
-		} else {
-			status, diff, cerr = classifyEnvPair(p.original, p.backup, resolver)
+			classify = classifyMCPPair
 		}
+		status, diff, cerr := classify(p.original, p.backup, resolver)
 		if cerr != nil {
 			return wrapErr(fmt.Sprintf("classifying %s", p.original), cerr)
 		}
 		plan = append(plan, planned{pair: p, status: status, diff: diff})
 	}
 
-	// Print plan.
 	_, _ = fmt.Fprintln(w, "Uninstall plan:")
 	for _, pl := range plan {
-		label := classLabel(pl.status)
-		_, _ = fmt.Fprintf(w, "  [%s] %s\n", label, pl.pair.original)
+		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), pl.pair.original)
 		if pl.status == classModified && pl.diff != "" {
 			_, _ = fmt.Fprintln(w, pl.diff)
 		}
@@ -576,9 +515,8 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		return nil
 	}
 
-	// Execute restoration. moved counts backup→original renames regardless of
-	// whether the original existed; materialized tracks the subset where no
-	// original was present (so users see that those files were newly placed).
+	// moved counts every backup→original rename; materialized tracks the
+	// subset where the original was absent (newly placed rather than restored).
 	moved, materialized := 0, 0
 	for _, pl := range plan {
 		if err := os.Rename(pl.pair.backup, pl.pair.original); err != nil {
@@ -590,20 +528,8 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
-	// Purge keystore entry (best-effort).
 	if stateExists {
-		if pid, err := vault.ReadProjectID(root); err == nil {
-			if ks, err := buildKeystore(); err == nil {
-				if delErr := ks.Delete(pid); delErr != nil {
-					ui.Warnf(ew, "could not purge keystore entry: %v", delErr)
-				}
-			} else {
-				ui.Warnf(ew, "keystore purge skipped: %v", err)
-			}
-		} else {
-			ui.Warnf(ew, "keystore purge skipped: %v", err)
-		}
-
+		purgeKeystoreEntry(ew, root)
 		if err := os.RemoveAll(stateDir); err != nil {
 			return wrapErr(fmt.Sprintf("removing %s", stateDir), err)
 		}
@@ -620,6 +546,25 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
 	}
 	return nil
+}
+
+// purgeKeystoreEntry best-effort deletes the keystore entry tied to this
+// project. Any failure is surfaced as a warning; uninstall continues so
+// state-dir removal still runs.
+func purgeKeystoreEntry(ew io.Writer, root string) {
+	pid, err := vault.ReadProjectID(root)
+	if err != nil {
+		ui.Warnf(ew, "keystore purge skipped: %v", err)
+		return
+	}
+	ks, err := buildKeystore()
+	if err != nil {
+		ui.Warnf(ew, "keystore purge skipped: %v", err)
+		return
+	}
+	if err := ks.Delete(pid); err != nil {
+		ui.Warnf(ew, "could not purge keystore entry: %v", err)
+	}
 }
 
 // classLabel returns a short label for display in the plan table.

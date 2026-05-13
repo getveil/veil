@@ -113,21 +113,24 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		return nil
 	}
 
-	// Collect plain-text row data for column width calculation. All
-	// agent-influenced fields are sanitized before they reach stdout so a
+	// All agent-influenced fields are sanitized before they reach stdout so a
 	// compromised agent (or malicious upstream host) cannot smuggle ANSI
-	// control sequences into the operator's terminal during post-incident
-	// review. The timestamp is formatted from a time.Time and is safe.
+	// control sequences into the operator's terminal. Timestamps come from
+	// a time.Time and are safe.
 	type logRow struct {
 		timestamp, host, method, credential, location, signerErr string
 		suspect                                                  bool
 	}
 	logRows := make([]logRow, len(rows))
-	// Show the SignerError column whenever any visible row carries one;
-	// this keeps the default no-error case visually identical to before.
+	// Show the SignerError column whenever any visible row carries one.
 	var showSignerErr bool
+	tsW := len("TIMESTAMP")
+	hostW := len("HOST")
+	methodW := len("METHOD")
+	credW := len("CREDENTIAL")
+	locW := len("LOCATION")
 	for i, r := range rows {
-		logRows[i] = logRow{
+		row := logRow{
 			timestamp:  ui.RelativeTime(r.Timestamp),
 			host:       sanitizeForTerminal(r.Host),
 			method:     sanitizeForTerminal(r.Method),
@@ -136,72 +139,54 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 			signerErr:  sanitizeForTerminal(r.SignerError),
 			suspect:    r.SuspectFlag,
 		}
+		logRows[i] = row
+		tsW = maxInt(tsW, len(row.timestamp))
+		hostW = maxInt(hostW, len(row.host))
+		methodW = maxInt(methodW, len(row.method))
+		credW = maxInt(credW, len(row.credential))
+		locW = maxInt(locW, len(row.location))
 		if r.SignerError != "" {
 			showSignerErr = true
 		}
 	}
 
-	// Compute column widths from data and headers.
-	tsW := len("TIMESTAMP")
-	hostW := len("HOST")
-	methodW := len("METHOD")
-	credW := len("CREDENTIAL")
-	locW := len("LOCATION")
-	sigW := len("SIGNER ERROR")
-	for _, r := range logRows {
-		tsW = maxInt(tsW, len(r.timestamp))
-		hostW = maxInt(hostW, len(r.host))
-		methodW = maxInt(methodW, len(r.method))
-		credW = maxInt(credW, len(r.credential))
-		locW = maxInt(locW, len(r.location))
-		sigW = maxInt(sigW, len(r.signerErr))
+	// Pad plain text first, then apply ANSI styling so escape codes don't
+	// break column alignment.
+	const gap = "    "
+	headers := []string{
+		padRight("TIMESTAMP", tsW),
+		padRight("HOST", hostW),
+		padRight("METHOD", methodW),
+		padRight("CREDENTIAL", credW),
 	}
-
-	// Print header and rows. Pad plain text first, then apply ANSI styling
-	// so escape codes don't break column alignment.
-	gap := "    "
 	if showSignerErr {
-		_, _ = fmt.Fprintf(w, "     %s%s%s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("TIMESTAMP", tsW)), gap,
-			ui.Muted.Sprint(padRight("HOST", hostW)), gap,
-			ui.Muted.Sprint(padRight("METHOD", methodW)), gap,
-			ui.Muted.Sprint(padRight("CREDENTIAL", credW)), gap,
-			ui.Muted.Sprint(padRight("LOCATION", locW)), gap,
-			ui.Muted.Sprint("SIGNER ERROR"))
-		for _, r := range logRows {
-			marker := "   "
-			if r.suspect {
-				marker = "[!]"
-			}
-			_, _ = fmt.Fprintf(w, "%s  %s%s%s%s%s%s%s%s%s%s%s\n",
-				marker,
-				padRight(r.timestamp, tsW), gap,
-				padRight(r.host, hostW), gap,
-				padRight(r.method, methodW), gap,
-				padRight(r.credential, credW), gap,
-				padRight(r.location, locW), gap,
-				r.signerErr)
-		}
+		headers = append(headers, padRight("LOCATION", locW), "SIGNER ERROR")
 	} else {
-		_, _ = fmt.Fprintf(w, "     %s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("TIMESTAMP", tsW)), gap,
-			ui.Muted.Sprint(padRight("HOST", hostW)), gap,
-			ui.Muted.Sprint(padRight("METHOD", methodW)), gap,
-			ui.Muted.Sprint(padRight("CREDENTIAL", credW)), gap,
-			ui.Muted.Sprint("LOCATION"))
-		for _, r := range logRows {
-			marker := "   "
-			if r.suspect {
-				marker = "[!]"
-			}
-			_, _ = fmt.Fprintf(w, "%s  %s%s%s%s%s%s%s%s%s\n",
-				marker,
-				padRight(r.timestamp, tsW), gap,
-				padRight(r.host, hostW), gap,
-				padRight(r.method, methodW), gap,
-				padRight(r.credential, credW), gap,
-				r.location)
+		headers = append(headers, "LOCATION")
+	}
+	styled := make([]string, len(headers))
+	for i, h := range headers {
+		styled[i] = ui.Muted.Sprint(h)
+	}
+	_, _ = fmt.Fprintln(w, "     "+strings.Join(styled, gap))
+
+	for _, r := range logRows {
+		marker := "   "
+		if r.suspect {
+			marker = "[!]"
 		}
+		cells := []string{
+			padRight(r.timestamp, tsW),
+			padRight(r.host, hostW),
+			padRight(r.method, methodW),
+			padRight(r.credential, credW),
+		}
+		if showSignerErr {
+			cells = append(cells, padRight(r.location, locW), r.signerErr)
+		} else {
+			cells = append(cells, r.location)
+		}
+		_, _ = fmt.Fprintln(w, marker+"  "+strings.Join(cells, gap))
 	}
 	ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
 	return nil
@@ -220,53 +205,37 @@ type logEntry struct {
 	SignerError string `json:"signer_error,omitempty"`
 }
 
-// sanitizeForTerminal scrubs bytes that could let a compromised agent or
-// malicious upstream host inject control sequences into the operator's
-// terminal when `veil log` renders a row. Audit-log fields like Host,
-// Method, CredentialName, Location, and SignerError are populated from
-// agent-observed HTTP requests and must be treated as untrusted.
-//
-// The replacement is a 1:1 byte substitution so callers can sanitize
-// before computing column widths without rechecking lengths after.
-//
-//   - C0 controls (0x00-0x1F) -> '?'. Tabs and newlines have no business in
-//     a single-cell table column anyway.
-//   - DEL (0x7F)              -> '?'
-//   - C1 controls (0x80-0x9F) -> '?'. Some terminals treat 0x9B as CSI.
-//
-// Printable ASCII and the UTF-8 lead/continuation bytes for code points
-// at or above U+00A0 pass through untouched. (UTF-8 lead bytes start at
-// 0xC2 and continuation bytes at 0x80-0xBF; we deliberately replace the
-// raw 0x80-0x9F range because no valid UTF-8 sequence can begin with
-// those bytes, and any continuation byte at that value only appears
-// after a lead byte we have also kept.) The net effect is that valid
-// UTF-8 strings round-trip and only invalid/control bytes are scrubbed.
-//
-// JSON output is intentionally NOT sanitized: machine consumers need the
-// raw bytes to investigate.
+// sanitizeForTerminal replaces C0 (0x00-0x1F), DEL (0x7F), and C1
+// (0x80-0x9F) bytes with '?' so a compromised agent or malicious upstream
+// host cannot smuggle ANSI control sequences into the operator's terminal
+// via audit-log fields like Host, Method, CredentialName, Location, or
+// SignerError. The replacement is byte-for-byte so column widths stay
+// stable. Valid UTF-8 round-trips: lead bytes start at 0xC2 and
+// continuation bytes at 0x80-0xBF, but no continuation byte at 0x80-0x9F
+// appears without a preserved lead byte. JSON output deliberately skips
+// this — machine consumers need the raw bytes for forensic analysis.
 func sanitizeForTerminal(s string) string {
-	// Fast path: scan first; allocate only if we find something to replace.
-	needsScrub := false
+	idx := -1
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
-			needsScrub = true
+		if isUnsafeTerminalByte(s[i]) {
+			idx = i
 			break
 		}
 	}
-	if !needsScrub {
+	if idx < 0 {
 		return s
 	}
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
+	b := []byte(s)
+	for i := idx; i < len(b); i++ {
+		if isUnsafeTerminalByte(b[i]) {
 			b[i] = '?'
-			continue
 		}
-		b[i] = c
 	}
 	return string(b)
+}
+
+func isUnsafeTerminalByte(c byte) bool {
+	return c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F)
 }
 
 // parseSince parses a --since value as either a Go duration (with 'd' suffix
@@ -277,9 +246,8 @@ func parseSince(s string) (time.Time, error) {
 		return t, nil
 	}
 
-	// Handle 'd' suffix: convert to hours.
-	if strings.HasSuffix(s, "d") {
-		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if before, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(before)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("invalid day duration %q", s)
 		}
