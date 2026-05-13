@@ -8,10 +8,9 @@ expect breaking changes in any 0.x release; we will call them out under
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-MM-DD
+## [0.1.0] — 2026-05-13
 
-First public release. The date will be filled in at tag time — see
-[`docs/LAUNCH_v0.1.0.md`](docs/LAUNCH_v0.1.0.md), pre-flight step 1.
+First public release.
 
 ### Added
 
