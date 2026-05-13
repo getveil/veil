@@ -72,6 +72,60 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 	return true, nil
 }
 
+// refuseSymlinkedInputs refuses to vault any input that is a symbolic link.
+// A symlinked .env points outward from the project tree, often to a location
+// the user picked specifically to keep secrets out of source control (e.g.
+// `~/.config/secrets`). Vaulting that symlink would replace it with a
+// placeholder file inside the project and write the cleartext target to
+// `<root>/.env.veil-backup` — strictly worse exposure than not running Veil
+// at all, since the cleartext is now materialized inside the working tree
+// while the user's external file remains untouched (and unaware).
+//
+// Aggregates ALL violating paths before returning so the user sees the full
+// picture in one error rather than fixing them one at a time.
+func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string) error {
+	var hits []string
+
+	check := func(p string) {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil || rel == "" {
+			rel = p
+		}
+		target, lerr := os.Readlink(p)
+		if lerr != nil || target == "" {
+			hits = append(hits, rel)
+			return
+		}
+		hits = append(hits, fmt.Sprintf("%s -> %s", rel, target))
+	}
+
+	for _, p := range envPaths {
+		check(p)
+	}
+	if mcpConfigPath != "" {
+		check(mcpConfigPath)
+	}
+
+	if len(hits) == 0 {
+		return nil
+	}
+	return cliError(
+		fmt.Sprintf(
+			"%s a symbolic link: %s. Vaulting a symlinked input would replace the symlink with a placeholder file and write cleartext to its sibling .veil-backup inside the project — strictly worse exposure than not running Veil.",
+			plural(len(hits), "input is", "inputs are"),
+			strings.Join(hits, ", "),
+		),
+		"Replace the symlink with a regular file (e.g. `cp -L` to materialize the target) and re-run, or remove the symlink so Veil leaves the external file alone.",
+	)
+}
+
 // refusePlaceholderInputs scans the files init is about to vault and refuses
 // to proceed if any contains a value bearing the placeholder sentinel. Those
 // values were produced by a prior Generate call — re-running init over them

@@ -132,6 +132,17 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	_, _ = fmt.Fprintln(w)
 
+	// Refuse to operate on symlinked inputs. Following the symlink would
+	// replace the link itself with a placeholder file (os.Rename targets the
+	// symlink, not its referent) and dump cleartext at <root>/<name>.veil-backup
+	// — materializing the secret INSIDE the project tree while leaving the
+	// user's external file untouched. That is strictly more exposure than
+	// not running Veil. Runs BEFORE the placeholder check, keystore build, and
+	// vault creation so no destructive step fires for a refused project.
+	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigPath); err != nil {
+		return err
+	}
+
 	// Refuse to operate on inputs that already carry the placeholder sentinel.
 	// Without this guard, --force would treat the existing placeholders as
 	// fresh secrets, overwrite the .veil-backup with the placeholder-laden
