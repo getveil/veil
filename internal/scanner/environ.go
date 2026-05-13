@@ -3,6 +3,7 @@ package scanner
 import (
 	"strings"
 
+	"github.com/getveil/veil/internal/envkeys"
 	"github.com/getveil/veil/internal/placeholder"
 )
 
@@ -55,8 +56,12 @@ var environDenylist = map[string]struct{}{
 	// Homebrew
 	"HOMEBREW_PREFIX": {}, "HOMEBREW_CELLAR": {}, "HOMEBREW_REPOSITORY": {},
 	"HOMEBREW_SHELLENV_PREFIX": {},
-	// Veil's own env keys (see envkeys package)
-	"VEIL_TEST_KEYSTORE": {}, "VEIL_MCP_CONFIG_PATH": {},
+	// Veil's own env keys are sourced from envkeys.VeilInternalKeys at the
+	// IsObviouslyNotSecret call site below — keep them OUT of this hardcoded
+	// map so a future addition to VeilInternalKeys can never silently miss the
+	// scan. (Historical regression: VEIL_PASSPHRASE was added to VeilInternalKeys
+	// but not here, so a real high-entropy passphrase tripped the value heuristic
+	// and was vaulted as a credential.)
 	// Proxy / CA vars — already handled by the runner, and would confuse the user.
 	"HTTP_PROXY": {}, "HTTPS_PROXY": {}, "NO_PROXY": {},
 	"NODE_EXTRA_CA_CERTS": {}, "SSL_CERT_FILE": {},
@@ -104,6 +109,14 @@ var environDenylistPrefixes = []string{
 func IsObviouslyNotSecret(name string) bool {
 	if _, ok := environDenylist[name]; ok {
 		return true
+	}
+	// Veil-internal control variables (the master passphrase, the test-keystore
+	// toggle, the MCP config override) must never be captured as credentials.
+	// Source them from the canonical list so additions there cannot drift.
+	for _, k := range envkeys.VeilInternalKeys {
+		if name == k {
+			return true
+		}
 	}
 	for _, prefix := range environDenylistPrefixes {
 		if strings.HasPrefix(name, prefix) {
