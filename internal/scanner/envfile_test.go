@@ -492,6 +492,190 @@ func TestSetValue(t *testing.T) {
 	}
 }
 
+// TestMultilineQuotedValue exercises the parser's ability to accumulate lines
+// across newlines when a KV value opens with a quote that doesn't close on the
+// same line. Without this, multi-line PEM/JSON secrets get silently fragmented:
+// only the first physical line is treated as the KV value (with the leading
+// quote stripped) and the remaining body + closing marker stay in plaintext
+// after a vault rewrite.
+func TestMultilineQuotedValue(t *testing.T) {
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbxxxxxxxxxxxxxxxx\n" +
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/0000\n" +
+		"-----END RSA PRIVATE KEY-----"
+
+	cases := []struct {
+		name      string
+		input     string
+		key       string
+		wantValue string
+		wantStyle QuoteStyle
+	}{
+		{
+			name:      "double-quoted PEM",
+			input:     "RSA_PRIVATE_KEY=\"" + pemBody + "\"\n",
+			key:       "RSA_PRIVATE_KEY",
+			wantValue: pemBody,
+			wantStyle: DoubleQuote,
+		},
+		{
+			name:      "single-quoted multi-line",
+			input:     "JSON_BLOB='{\n  \"a\": 1,\n  \"b\": 2\n}'\n",
+			key:       "JSON_BLOB",
+			wantValue: "{\n  \"a\": 1,\n  \"b\": 2\n}",
+			wantStyle: SingleQuote,
+		},
+		{
+			name:      "exported multi-line",
+			input:     "export KEY=\"line1\nline2\"\n",
+			key:       "KEY",
+			wantValue: "line1\nline2",
+			wantStyle: DoubleQuote,
+		},
+		{
+			name:      "trailing content after closing quote",
+			input:     "KEY=\"line1\nline2\" # trailing\n",
+			key:       "KEY",
+			wantValue: "line1\nline2",
+			wantStyle: DoubleQuote,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := filepath.Join(t.TempDir(), "multi.env")
+			if err := os.WriteFile(tmp, []byte(tc.input), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			f, err := ParseFile(tmp)
+			if err != nil {
+				t.Fatalf("ParseFile: %v", err)
+			}
+			val, ok := f.Lookup(tc.key)
+			if !ok {
+				t.Fatalf("Lookup(%q): not found; lines were: %+v", tc.key, f.Lines)
+			}
+			if val != tc.wantValue {
+				t.Errorf("Lookup(%q) = %q, want %q", tc.key, val, tc.wantValue)
+			}
+			var foundStyle QuoteStyle
+			for _, l := range f.Lines {
+				if l.Kind == KVLine && l.Key == tc.key {
+					foundStyle = l.Quoted
+					break
+				}
+			}
+			if foundStyle != tc.wantStyle {
+				t.Errorf("Quote style = %d, want %d", foundStyle, tc.wantStyle)
+			}
+
+			// Round-trip: untouched multi-line should re-emit byte-for-byte.
+			if got := f.Bytes(); !bytes.Equal(got, []byte(tc.input)) {
+				t.Errorf("round-trip mismatch:\ngot:\n%s\nwant:\n%s", got, tc.input)
+			}
+		})
+	}
+}
+
+// TestMultilineQuotedValueVaulting verifies the security fix end-to-end: a
+// SetValue on a multi-line PEM key produces a single rewritten line and leaves
+// NO traces of the original base64 body in the emitted bytes. This is the
+// exact failure mode the fix targets: previously, only the first physical
+// line's value was vaulted while the PEM body remained on disk in plaintext.
+func TestMultilineQuotedValueVaulting(t *testing.T) {
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbsensitivebody\n" +
+		"abcdefghijklmnopqrstuvwxyz1234567890+/abcdefghijklmnopqrstuvwxyz==\n" +
+		"-----END RSA PRIVATE KEY-----"
+	input := "OTHER=before\nRSA_PRIVATE_KEY=\"" + pemBody + "\"\nOTHER2=after\n"
+
+	tmp := filepath.Join(t.TempDir(), "vault.env")
+	if err := os.WriteFile(tmp, []byte(input), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if !f.SetValue("RSA_PRIVATE_KEY", "{{veil:placeholder}}") {
+		t.Fatal("SetValue: RSA_PRIVATE_KEY not found")
+	}
+
+	got := string(f.Bytes())
+	// The placeholder must be present and the PEM body must NOT remain in
+	// plaintext anywhere in the emitted bytes.
+	if !strings.Contains(got, `RSA_PRIVATE_KEY="{{veil:placeholder}}"`) {
+		t.Errorf("expected vaulted line in output; got:\n%s", got)
+	}
+	for _, leak := range []string{"MIIEvgIBADAN", "sensitivebody", "abcdefghijklmnop", "-----END RSA"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("PEM body fragment %q leaked into output:\n%s", leak, got)
+		}
+	}
+	// The unrelated KVs above and below must still be present.
+	if !strings.Contains(got, "OTHER=before") || !strings.Contains(got, "OTHER2=after") {
+		t.Errorf("surrounding KVs lost in output:\n%s", got)
+	}
+}
+
+// TestUnclosedQuoteDoesNotSwallowKVs verifies the safety check: when a user
+// forgets the closing quote on one KV, the accumulator must not silently
+// consume their other env vars into the broken value. The opener falls back
+// to single-line handling and subsequent KVs parse independently.
+func TestUnclosedQuoteDoesNotSwallowKVs(t *testing.T) {
+	// KEY1 has an unclosed quote and no closing quote anywhere in the file.
+	// KEY2 and KEY3 must still be parseable as their own KVs.
+	input := "KEY1=\"oops typo\nKEY2=value2\nKEY3=value3\n"
+	tmp := filepath.Join(t.TempDir(), "unclosed.env")
+	if err := os.WriteFile(tmp, []byte(input), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+
+	v2, ok := f.Lookup("KEY2")
+	if !ok || v2 != "value2" {
+		t.Errorf("KEY2: got (%q, %v), want (\"value2\", true)", v2, ok)
+	}
+	v3, ok := f.Lookup("KEY3")
+	if !ok || v3 != "value3" {
+		t.Errorf("KEY3: got (%q, %v), want (\"value3\", true)", v3, ok)
+	}
+}
+
+// TestUnclosedQuoteAcrossLinesNoCloser verifies that when a quote opens but no
+// closing quote exists anywhere in the file (and there's no later KV that
+// would terminate accumulation either), the parser falls back to single-line
+// handling instead of swallowing the entire rest of the file.
+func TestUnclosedQuoteAcrossLinesNoCloser(t *testing.T) {
+	// Body lines are PEM-like (no "=" delimiters) but the closing quote is
+	// missing. Accumulation should reach EOF without finding a close and the
+	// opener should fall back to its prior single-line behavior.
+	input := "KEY=\"-----BEGIN\nbodyline1\nbodyline2\n"
+	tmp := filepath.Join(t.TempDir(), "no-close.env")
+	if err := os.WriteFile(tmp, []byte(input), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f, err := ParseFile(tmp)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	// The opener should still produce a KVLine via single-line fallback.
+	val, ok := f.Lookup("KEY")
+	if !ok {
+		t.Fatalf("KEY not found; lines were: %+v", f.Lines)
+	}
+	if strings.HasPrefix(val, "\"") {
+		t.Errorf("opener fell back but kept the opening quote: %q", val)
+	}
+	// And the body lines must NOT have been concatenated into KEY's value.
+	if strings.Contains(val, "bodyline1") || strings.Contains(val, "bodyline2") {
+		t.Errorf("accumulation should have failed without a closer, but KEY = %q", val)
+	}
+}
+
 // TestTrailingCommentRoundTrip exercises F-4: inline trailing comments must
 // survive a SetValue/Bytes/re-parse cycle for unquoted, double-quoted, and
 // single-quoted values, and a "#" inside a quoted value must NOT be treated
