@@ -99,9 +99,24 @@ const insertSQL = `INSERT INTO injections (
 // background flush goroutine. It enforces 0600 permissions on the database
 // files and 0700 on the parent directory (idempotent: corrects existing
 // installs).
+//
+// Open refuses to operate if the parent directory or any of the candidate
+// file paths (dbPath, dbPath-wal, dbPath-shm) exists as a symlink. Without
+// this gate the subsequent path-based Chmod calls would follow the link and
+// tighten the link target's perms instead of the audit files, giving a
+// same-UID adversary a primitive against arbitrary user-owned files.
 func Open(dbPath string) (*Store, error) {
-	// Ensure parent dir is 0700 before creating the DB.
 	parent := filepath.Dir(dbPath)
+	if info, err := os.Lstat(parent); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: parent dir is a symlink: %s", ErrOpen, parent)
+	}
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%w: %s is a symlink", ErrOpen, p)
+		}
+	}
+
+	// Ensure parent dir is 0700 before creating the DB.
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: create parent dir: %w", ErrOpen, err)
 	}
