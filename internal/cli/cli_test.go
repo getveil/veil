@@ -67,6 +67,86 @@ func TestRunRequiresInit(t *testing.T) {
 	}
 }
 
+// TestLogRequiresInit covers the bug where `veil log` on an uninitialized
+// project would silently create .veil/audit.sqlite as a side effect (via
+// audit.Open's MkdirAll) and report success. A subsequent `veil run` then
+// saw .veil/ and produced the misleading "Cannot decrypt vault. Run veil
+// init --force to reinitialize." — recommending a dangerous remedy for a
+// vault that never existed.
+//
+// `veil log` must instead refuse to operate on an uninitialized project,
+// matching the behavior of every other state-touching command, and must NOT
+// create .veil/ as a side effect of the failure.
+func TestLogRequiresInit(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", tmpDir})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for uninitialized project")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("error should mention 'not initialized', got: %v", err)
+	}
+	if code := ExitCodeFor(err); code != ExitNotInitialized {
+		t.Errorf("expected exit code %d (ExitNotInitialized), got %d", ExitNotInitialized, code)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, ".veil")); statErr == nil {
+		t.Error(".veil/ must not be created as a side effect of `veil log` on an uninitialized project")
+	}
+}
+
+// TestRunVaultMetaMissing covers the second half of the same bug: even when
+// some other code path has created .veil/ without populating vault.meta,
+// `veil run` must NOT tell the user to run `veil init --force` — there is no
+// vault to lose, and --force would only obscure the real fix. The error must
+// route the user to plain `veil init` and exit with ExitNotInitialized so
+// scripts can distinguish "uninitialized" from "vault locked".
+func TestRunVaultMetaMissing(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the state after `veil log` (pre-fix) ran on this project:
+	// .veil/ exists, but no vault.meta or vault.bin.
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".veil"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	outBuf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	cmd.SetOut(outBuf)
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{"run", "--path", tmpDir, "--", "echo", "hi"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when vault.meta is missing")
+	}
+	combined := outBuf.String() + errBuf.String() + err.Error()
+	if !strings.Contains(combined, "not initialized") {
+		t.Errorf("error should mention 'not initialized', got:\n%s", combined)
+	}
+	if strings.Contains(combined, "--force") {
+		t.Errorf("error must not recommend `init --force` when there is no vault to lose, got:\n%s", combined)
+	}
+	if code := ExitCodeFor(err); code != ExitNotInitialized {
+		t.Errorf("expected exit code %d (ExitNotInitialized), got %d", ExitNotInitialized, code)
+	}
+}
+
 // TestVaultCommandsPostUninstall covers F-14: after uninstall (or before
 // init), commands that go through withVault must surface a friendly
 // "not initialized" message instead of leaking the missing-vault.meta path

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/getveil/veil/internal/config"
@@ -60,24 +61,37 @@ func runRun(cmd *cobra.Command, args []string, ephemeralSkip []string, allowEnvS
 		AllowEnvSecrets: allowEnvSecrets,
 	})
 	if err != nil {
-		return cliError(mapRunError(err), "")
+		msg, sentinel := mapRunError(err)
+		if sentinel != nil {
+			return cliErrorWith(sentinel, msg, "")
+		}
+		return cliError(msg, "")
 	}
 
 	os.Exit(result.ExitCode)
 	return nil // unreachable
 }
 
-// mapRunError converts internal runner errors to user-friendly messages.
-func mapRunError(err error) string {
+// mapRunError converts internal runner errors to a user-facing message and an
+// optional sentinel that callers wrap so the exit-code classifier picks up the
+// right code. The sentinel is non-nil only for conditions that have a more
+// specific exit code than ExitGeneric.
+func mapRunError(err error) (string, error) {
 	switch {
+	case errors.Is(err, vault.ErrOpen) && errors.Is(err, fs.ErrNotExist):
+		// vault.meta (or vault.bin) is missing — the project is not
+		// initialized, or its state was wiped. --force is the wrong remedy
+		// here: there is no vault to lose, and the message implies one
+		// existed. Route the user to plain `veil init` instead.
+		return "Veil is not initialized in this project. Run `veil init` to get started.", ErrNotInitialized
 	case errors.Is(err, vault.ErrOpen), errors.Is(err, vault.ErrMasterKey), errors.Is(err, vault.ErrCorrupt):
-		return "Cannot decrypt vault. Your keychain may have changed. Run veil init --force to reinitialize."
+		return "Cannot decrypt vault. Your keychain may have changed. Run veil init --force to reinitialize.", nil
 	case errors.Is(err, proxy.ErrCALoad), errors.Is(err, proxy.ErrCAGenerate):
-		return "CA certificate not found or corrupt. Run veil init to regenerate."
+		return "CA certificate not found or corrupt. Run veil init to regenerate.", nil
 	case errors.Is(err, proxy.ErrListen):
-		return "Cannot start proxy. Another instance may be running."
+		return "Cannot start proxy. Another instance may be running.", nil
 	default:
-		return fmt.Sprintf("run failed: %v", err)
+		return fmt.Sprintf("run failed: %v", err), nil
 	}
 }
 
