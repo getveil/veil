@@ -64,7 +64,7 @@ func AddVaultedFile(root, path string, kind FileKind) error {
 
 func readMeta(root string) (vaultMeta, error) {
 	path := config.VaultMetaFile(root)
-	data, err := os.ReadFile(path) // #nosec G304 -- path derived from project root
+	data, err := ReadFileNoFollow(path)
 	if err != nil {
 		return vaultMeta{}, fmt.Errorf("vault.meta: %w", err)
 	}

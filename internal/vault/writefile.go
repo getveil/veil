@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"io"
 	"os"
 	"syscall"
 )
@@ -35,4 +36,20 @@ func WriteFileNoFollow(path string, data []byte, mode os.FileMode) error {
 		return werr
 	}
 	return f.Close()
+}
+
+// ReadFileNoFollow is the read counterpart to WriteFileNoFollow: open(2) is
+// called with O_NOFOLLOW so a pre-planted symlink at path fails with ELOOP
+// rather than pulling the link target's bytes into our processing pipeline.
+// Used for files whose contents drive downstream filesystem operations
+// (e.g. vault.meta, whose vaulted-files registry steers uninstall paths).
+func ReadFileNoFollow(path string) ([]byte, error) {
+	// #nosec G304 -- O_NOFOLLOW refuses leaf-symlink injection; callers pass
+	// derived paths.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }
