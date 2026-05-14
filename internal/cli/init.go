@@ -234,7 +234,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 
 	if !dryRun {
-		appendGitignore(root)
+		appendGitignore(w, root)
 	}
 
 	if dryRun {
@@ -498,13 +498,26 @@ func atomicWriteFile(path string, data []byte) error {
 	return os.Rename(tmpName, path)
 }
 
-// appendGitignore adds /.veil/ and *.veil-backup to the project .gitignore
-// if not already present. No-op when .gitignore doesn't exist.
-func appendGitignore(root string) {
+// appendGitignore adds /.veil/ and *.veil-backup to the project .gitignore.
+// When .gitignore is missing it is created with those entries, since the
+// .env.veil-backup sidecars written earlier in init hold the cleartext
+// secrets — without an ignore entry, `git add .` would commit them.
+func appendGitignore(w io.Writer, root string) {
 	gitignorePath := filepath.Join(root, ".gitignore")
 	data, err := os.ReadFile(gitignorePath)
 	if err != nil {
-		// No .gitignore — nothing to do.
+		if !errors.Is(err, os.ErrNotExist) {
+			// .gitignore exists but is unreadable (permission denied, EISDIR,
+			// dangling symlink, etc.). Best-effort: leave it alone.
+			return
+		}
+		// Create a fresh .gitignore so the .veil-backup sidecars don't leak
+		// via `git add .`. WriteFileNoFollow refuses a pre-planted dangling
+		// symlink at this path.
+		content := "/.veil/\n*.veil-backup\n"
+		if werr := vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600); werr == nil {
+			ui.Step(w, "created .gitignore with /.veil/ and *.veil-backup")
+		}
 		return
 	}
 

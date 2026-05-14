@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1179,7 +1180,7 @@ func TestAppendGitignoreAddsVeilBackupPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	appendGitignore(dir)
+	appendGitignore(io.Discard, dir)
 
 	data, err := os.ReadFile(gitignorePath)
 	if err != nil {
@@ -1205,7 +1206,7 @@ func TestAppendGitignoreIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	appendGitignore(dir)
+	appendGitignore(io.Discard, dir)
 
 	data, err := os.ReadFile(gitignorePath)
 	if err != nil {
@@ -1216,12 +1217,35 @@ func TestAppendGitignoreIdempotent(t *testing.T) {
 	}
 }
 
-func TestAppendGitignoreNoOpWhenMissing(t *testing.T) {
+// When .gitignore is missing, appendGitignore must create one so the cleartext
+// .env.veil-backup sidecar — written earlier in init — isn't picked up by
+// `git add .` and committed.
+func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 	dir := t.TempDir()
-	// No .gitignore present.
-	appendGitignore(dir)
-	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
-		t.Error("appendGitignore should not create .gitignore when absent")
+	gitignorePath := filepath.Join(dir, ".gitignore")
+
+	appendGitignore(io.Discard, dir)
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("appendGitignore should create .gitignore when absent: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "/.veil/") {
+		t.Errorf("created .gitignore should contain /.veil/, got: %q", content)
+	}
+	if !strings.Contains(content, "*.veil-backup") {
+		t.Errorf("created .gitignore should contain *.veil-backup, got: %q", content)
+	}
+	info, err := os.Lstat(gitignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("created .gitignore must not be a symlink")
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("created .gitignore should be 0600, got %o", perm)
 	}
 }
 
