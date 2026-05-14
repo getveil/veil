@@ -8,6 +8,75 @@ expect breaking changes in any 0.x release; we will call them out under
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-05-14
+
+Security hardening release following the v0.1.0 launch. No breaking changes;
+recommended upgrade for all users.
+
+### Security
+
+#### Symlink-safe filesystem operations
+- Refuse symlinked `dbPath` (and any parent component) when opening the audit
+  log, eliminating a same-UID symlink-redirect attack on `.veil/audit.db`.
+- `O_NOFOLLOW` on `vault.meta` reads and writes via a shared
+  `ReadFileNoFollow` / `WriteFileNoFollow` helper, applied across `Open`,
+  `CreateVault`, `copyFile`, and every remaining bare-write site.
+- `veil init` refuses symlinked `.env` / MCP inputs and symlinked backup
+  paths (including parent-component symlinks) so a same-UID attacker can't
+  redirect Veil into reading or writing arbitrary files as the user.
+- `veil uninstall` refuses symlinked backup and original paths, closing a
+  `--dry-run` exfiltration path.
+
+#### Proxy and credential handling
+- Verify upstream TLS on proxied requests — previously a man-in-the-middle
+  upstream could see swapped-in credentials.
+- Reject oversized injectable request bodies instead of silently truncating
+  (which could split a credential mid-token and leak the prefix).
+- Truststore for the Java/JVM trust path now uses a random password,
+  `0600` mode, and a properly quoted `JAVA_TOOL_OPTIONS`.
+- Leak-guard audit rows record the pre-swap URL, so a guard-trip on
+  outbound traffic logs the original target, not the rewritten one.
+- Strip and re-inject `ALL_PROXY` alongside `HTTP_PROXY` / `HTTPS_PROXY`
+  so agents can't bypass interception by setting the lowercase variant.
+
+#### Scanner and placeholder
+- Scanner accumulates multi-line quoted values, so PEM private keys are
+  vaulted in full instead of leaving the body in the original `.env`.
+- Scanner sources Veil-internal env-var names from `envkeys`, plugging a
+  path where `VEIL_PASSPHRASE` could be captured into the vault.
+- `veil init --force` refuses to re-vault inputs that already contain
+  placeholders, preventing a placeholder-corruption attack on re-runs.
+- `veil init` scans MCP server `args` for secrets, not just `env`.
+- Charclass placeholder fallback no longer leaks the input prefix into the
+  generated placeholder.
+- URL placeholder parsing is bounded to the authority component and uses
+  `LastIndex` for the `@` separator, preventing parse ambiguity on
+  pathological inputs.
+
+#### Process and environment hygiene
+- Strip `VEIL_PASSPHRASE` and other Veil-internal vars from the agent's
+  environment before spawning it.
+- `SkipHost` rejects `"*"` and malformed entries to prevent a `NO_PROXY`
+  bypass of interception.
+
+#### CLI and audit log
+- `veil log` refuses to run on uninitialized projects, and distinguishes
+  missing `vault.meta` from other run errors.
+- `veil add` rejects unknown `--scheme` values rather than silently
+  accepting them.
+- `veil log` sanitizes ANSI control bytes in agent-controlled fields so
+  log output can't be used to forge terminal escapes.
+- `veil init` creates `.gitignore` when missing so the `.env.veil-backup`
+  file can't leak via `git add .` on a fresh repo.
+
+#### Config and permissions
+- `EnsureDir` enforces the requested directory mode even when the
+  directory already exists, closing a permissions-drift window.
+
+### Build and release
+- SHA-pin all third-party GitHub Actions in CI and release workflows.
+- Homebrew formula is now written under `Formula/` to match tap layout.
+
 ## [0.1.0] — 2026-05-13
 
 First public release.
@@ -101,5 +170,6 @@ First public release.
 - Release artifacts are signed (cosign) and attested (SLSA). End-user
   verification instructions live in [README.md](README.md#direct-download).
 
-[Unreleased]: https://github.com/getveil/veil/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/getveil/veil/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/getveil/veil/releases/tag/v0.1.1
 [0.1.0]: https://github.com/getveil/veil/releases/tag/v0.1.0
