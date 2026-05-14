@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/getveil/veil/internal/vault"
 )
 
 // Health summarises the audit subsystem's recent behaviour. It is safe to read
@@ -69,6 +71,13 @@ func ReadHealth(dbPath string) (Health, error) {
 // Errors are intentionally swallowed by callers — if we can't persist health,
 // the user's disk is already in trouble and the in-memory state is still
 // surfaced via ui.Warnf.
+//
+// The tmp path is deterministic (dbPath+".health.tmp"), so a same-UID
+// attacker could pre-plant a symlink there; the write goes through
+// vault.WriteFileNoFollow to refuse leaf symlinks and tighten any pre-
+// existing widened perms back to 0600 before bytes hit disk (H9). The
+// final rename is symlink-safe at the destination by POSIX rename(2)
+// semantics.
 func writeHealthSidecar(dbPath string, h Health) error {
 	tmp := healthSidecarPath(dbPath) + ".tmp"
 	var b strings.Builder
@@ -79,7 +88,7 @@ func writeHealthSidecar(dbPath string, h Health) error {
 	if h.LastErrorMsg != "" {
 		fmt.Fprintf(&b, "last_error=%s\n", sanitizeHealthMsg(h.LastErrorMsg))
 	}
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
+	if err := vault.WriteFileNoFollow(tmp, []byte(b.String()), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, healthSidecarPath(dbPath))

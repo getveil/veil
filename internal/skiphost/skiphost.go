@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/getveil/veil/internal/vault"
 )
 
 const header = "# Managed by veil skip\n"
@@ -58,7 +60,10 @@ func Load(path string) ([]string, error) {
 	return parse(string(data)), nil
 }
 
-// Save writes the host list to the skip_hosts file, overwriting any existing content.
+// Save writes the host list to the skip_hosts file, overwriting any existing
+// content. The write goes through vault.WriteFileNoFollow so a pre-planted
+// symlink at path can't redirect the bytes elsewhere and pre-existing widened
+// perms are tightened back to 0600 (H9).
 func Save(path string, hosts []string) error {
 	var b strings.Builder
 	b.WriteString(header)
@@ -66,7 +71,7 @@ func Save(path string, hosts []string) error {
 		b.WriteString(h)
 		b.WriteByte('\n')
 	}
-	return os.WriteFile(path, []byte(b.String()), 0600)
+	return vault.WriteFileNoFollow(path, []byte(b.String()), 0o600)
 }
 
 // Add appends a host to the skip_hosts file. Returns true if the host was added,

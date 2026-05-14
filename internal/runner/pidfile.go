@@ -8,11 +8,16 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/getveil/veil/internal/vault"
 )
 
-// WritePidFile writes the given PID to path.
+// WritePidFile writes the given PID to path. The write goes through
+// vault.WriteFileNoFollow so a pre-planted symlink at the well-known pidfile
+// path can't redirect the bytes elsewhere, and pre-existing widened perms
+// are tightened back to 0600 (H9).
 func WritePidFile(path string, pid int) error {
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n", pid)), 0600)
+	return vault.WriteFileNoFollow(path, []byte(fmt.Sprintf("%d\n", pid)), 0o600)
 }
 
 // ReadPidFile reads and parses the PID from a pid file.
