@@ -40,8 +40,16 @@ func KeystoreFallbackFile() (string, error) {
 	return keystoreFallback(runtime.GOOS, home, os.Getenv("XDG_STATE_HOME"))
 }
 
+// EnsureDir creates path (and any missing parents) and enforces mode on the
+// leaf. The chmod is required because os.MkdirAll is a no-op when the leaf
+// already exists, so a pre-existing dir with a more permissive mode (e.g.
+// 0755) would otherwise silently satisfy the call and leave the invariant
+// violated.
 func EnsureDir(path string, mode os.FileMode) error {
-	return os.MkdirAll(path, mode)
+	if err := os.MkdirAll(path, mode); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode) // #nosec G302 -- mode is caller-controlled; restrictive for dirs (e.g. 0700)
 }
 
 func caDir(goos, home, xdgData string) (string, error) {
