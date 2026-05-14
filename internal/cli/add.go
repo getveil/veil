@@ -95,11 +95,15 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 		return cliError("username cannot contain ':' (RFC 7617)", "")
 	}
 
-	if opts.scheme == "aws" {
+	switch opts.scheme {
+	case "":
+		// default: bearer (or basic when --user is set)
+	case "aws":
 		return runAddAWS(cmd, root, v, name, opts)
-	}
-	if opts.scheme == "github_app" {
+	case "github_app":
 		return runAddGitHubApp(cmd, root, v, name, opts)
+	default:
+		return cliError(fmt.Sprintf("unknown --scheme %q", opts.scheme), "valid values: aws, github_app (omit for bearer/basic)")
 	}
 
 	isBasic := opts.username != ""

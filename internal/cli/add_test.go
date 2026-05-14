@@ -206,6 +206,40 @@ func TestAddCmd_SchemeAWS_WithSessionTokenFile(t *testing.T) {
 	}
 }
 
+// TestAddCmd_Scheme_RejectsUnknownValue verifies that an unrecognized
+// --scheme value (typo such as "awss", or any free-form string) is rejected
+// with an explicit error rather than silently falling through to the
+// bearer/basic path. The fall-through would produce a non-functional
+// credential whose Scheme field is empty and whose --host (if absent)
+// cannot be auto-detected from a bearer value.
+func TestAddCmd_Scheme_RejectsUnknownValue(t *testing.T) {
+	root := initProject(t)
+	cmd := NewRoot("test")
+	cmd.SetErr(io.Discard)
+	cmd.SetOut(io.Discard)
+	cmd.SetIn(strings.NewReader("secret-value-1234567890\n"))
+	cmd.SetArgs([]string{
+		"add", "--path", root, "x",
+		"--scheme", "awss",
+		"--value-stdin",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error rejecting unknown --scheme value, got nil")
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("error should mention scheme, got: %v", err)
+	}
+
+	v, err2 := openVault(root)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	if _, ok := v.Get("x"); ok {
+		t.Error("credential should not be created when --scheme is invalid")
+	}
+}
+
 func TestAddCmd_SchemeAWS_MutuallyExclusiveWithUser(t *testing.T) {
 	root := initProject(t)
 	cmd := NewRoot("test")
