@@ -44,9 +44,9 @@ func logCmd() *cobra.Command {
 }
 
 func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked, suspect, signerFailed bool) error {
-	root, err := resolveRoot()
+	root, err := requireInitializedProject(cmd)
 	if err != nil {
-		return cliError(err.Error(), "")
+		return err
 	}
 
 	sinceTime, err := parseSince(since)
