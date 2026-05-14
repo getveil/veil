@@ -12,6 +12,7 @@ import (
 
 	"filippo.io/age"
 
+	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/envkeys"
 )
 
@@ -115,11 +116,8 @@ func (f *FileKeystore) saveMap(m map[string]string) error {
 
 	// Ensure parent directory exists and has restrictive mode.
 	dir := filepath.Dir(f.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("%w: create dir %q: %w", ErrKeystoreWrite, dir, err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- 0700 is correct for a directory
-		return fmt.Errorf("%w: chmod dir %q: %w", ErrKeystoreWrite, dir, err)
+	if err := config.EnsureDir(dir, 0o700); err != nil {
+		return fmt.Errorf("%w: ensure dir %q: %w", ErrKeystoreWrite, dir, err)
 	}
 
 	// Atomic write: temp file + rename.

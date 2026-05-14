@@ -286,6 +286,26 @@ func TestEnsureDirIdempotent(t *testing.T) {
 	}
 }
 
+func TestEnsureDirChmodsPreexistingDir(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "preexisting")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("seed preexisting dir: %v", err)
+	}
+
+	if err := EnsureDir(target, 0o700); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("mode = %o, want 0700 (pre-existing 0755 was not tightened)", info.Mode().Perm())
+	}
+}
+
 func TestEnsureDirPermissionFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root, cannot test permission failure")
