@@ -37,10 +37,16 @@ var VeilInternalKeys = []string{
 	MCPConfigOverride,
 }
 
-// HTTPProxyKeys lists the HTTP_PROXY/HTTPS_PROXY name variants (upper and
-// lower case). The runner strips these and re-injects its own loopback proxy
-// URL under each name.
-var HTTPProxyKeys = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
+// HTTPProxyKeys lists the proxy-URL env var name variants (upper and lower
+// case) that common HTTP clients honor: HTTP_PROXY, HTTPS_PROXY, and the
+// protocol-agnostic ALL_PROXY (read by curl/libcurl, Python requests,
+// global-agent, and others). The runner strips these and re-injects its own
+// loopback proxy URL under each name; missing any one would let an exported
+// shell value reach the agent and route its outbound traffic around Veil.
+var HTTPProxyKeys = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+	"http_proxy", "https_proxy", "all_proxy",
+}
 
 // NoProxyKeys lists the NO_PROXY name variants. The runner strips these and
 // re-injects the merged skip-host list under each name.
