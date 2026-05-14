@@ -464,6 +464,15 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 }
 
 // atomicWriteFile writes data to path via a temporary file and rename.
+//
+// Intentionally NOT migrated to vault.WriteFileNoFollow — this helper
+// rewrites user .env files and MCP configs where Sync+Rename gives
+// torn-write crash safety that WriteFileNoFollow does not. The H9 holes
+// don't apply: CreateTemp uses a random suffix so the tmp path can't be
+// symlink-pre-planted, POSIX rename(2) replaces a symlink at path with
+// the renamed file itself rather than following it, and the new file
+// inherits the tmp's 0600 mode so any pre-existing widened perms on
+// path are discarded with the old inode.
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".veil-env-*.tmp")
@@ -515,5 +524,10 @@ func appendGitignore(root string) {
 		return
 	}
 
-	_ = os.WriteFile(gitignorePath, []byte(content), 0600) //nolint:gosec // .gitignore is not sensitive
+	// Refuse a symlinked .gitignore so a hostile cloned repo can't redirect
+	// our append into ~/.bashrc or similar. Mode 0600 matches the existing
+	// behavior on first creation; pre-existing widened perms are tightened
+	// for free (H9). Errors stay swallowed — appending .gitignore entries
+	// is best-effort.
+	_ = vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600)
 }

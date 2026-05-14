@@ -125,7 +125,14 @@ func (v *Vault) Save() error {
 		_ = copyFile(vaultPath, backupPath)
 	}
 
-	// Atomic write: temp file + rename.
+	// Atomic write: temp file + rename. This pattern is intentionally NOT
+	// migrated to WriteFileNoFollow — vault.bin is the most critical file
+	// in the system and Sync+Rename gives torn-write crash safety that
+	// WriteFileNoFollow does not. The H9 holes don't apply here: CreateTemp
+	// uses a random suffix so the tmp path can't be symlink-pre-planted, and
+	// POSIX rename(2) replaces a symlink at vaultPath with the renamed file
+	// itself rather than following it. Mode lands at 0600 (CreateTemp) and
+	// transfers to vaultPath on rename, discarding any prior widened perms.
 	dir := filepath.Dir(vaultPath)
 	tmp, err := os.CreateTemp(dir, "vault-*.tmp")
 	if err != nil {
