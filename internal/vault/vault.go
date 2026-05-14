@@ -54,10 +54,14 @@ type Vault struct {
 	dryRun bool
 }
 
-// Open reads and decrypts an existing vault from disk.
+// Open reads and decrypts an existing vault from disk. Both vault.meta and
+// vault.bin are read via ReadFileNoFollow so a same-UID adversary who plants
+// a symlink at either path can't redirect Veil into reading an attacker-
+// chosen project_id (which would steer keystore lookups) or attacker-chosen
+// ciphertext.
 func Open(root string, ks Keystore) (*Vault, error) {
 	metaPath := config.VaultMetaFile(root)
-	metaData, err := os.ReadFile(metaPath)
+	metaData, err := ReadFileNoFollow(metaPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read meta file: %w", ErrOpen, err)
 	}
@@ -68,7 +72,7 @@ func Open(root string, ks Keystore) (*Vault, error) {
 	}
 
 	vaultPath := config.VaultFile(root)
-	blob, err := os.ReadFile(vaultPath)
+	blob, err := ReadFileNoFollow(vaultPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read vault file: %w", ErrOpen, err)
 	}
@@ -365,8 +369,18 @@ func NewInMemoryVault(root, projectID string) *Vault {
 // CreateVault initialises a new vault on disk: creates .veil/, vault.meta,
 // generates a master key, stores it in the keystore, and writes an empty
 // encrypted vault.
+//
+// CreateVault refuses to operate if .veil/ already exists as a symlink.
+// Without this gate, EnsureDir's MkdirAll is a no-op against the link target
+// and the subsequent Chmod would tighten the target's perms — a same-UID
+// adversary who plants .veil/ → ~/.config (or similar) can both deface
+// unrelated state and steer all subsequent .veil/ writes into the attacker-
+// chosen directory. Mirrors audit.Open's parent-dir preflight.
 func CreateVault(root string, projectID string, ks Keystore) (*Vault, error) {
 	stateDir := config.ProjectStateDir(root)
+	if info, err := os.Lstat(stateDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: state dir is a symlink: %s", ErrSave, stateDir)
+	}
 	if err := config.EnsureDir(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("%w: create state dir: %w", ErrSave, err)
 	}
@@ -415,12 +429,13 @@ func CreateVault(root string, projectID string, ks Keystore) (*Vault, error) {
 	return v, nil
 }
 
-// copyFile copies src to dst, overwriting dst if it exists. The dst write
-// goes through WriteFileNoFollow so a pre-planted symlink at dst can't
-// redirect the bytes to an attacker-chosen target, and so dst lands at
-// 0600 even if a previous install left it world-readable.
+// copyFile copies src to dst, overwriting dst if it exists. Both legs use
+// O_NOFOLLOW so a pre-planted symlink at src can't pull attacker-chosen file
+// contents (e.g. ~/.ssh/id_rsa) into the destination, and a pre-planted
+// symlink at dst can't redirect the bytes to an attacker-chosen target. dst
+// also lands at 0600 even if a previous install left it world-readable.
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src) // #nosec G304 -- paths are derived from config, not user input
+	data, err := ReadFileNoFollow(src)
 	if err != nil {
 		return err
 	}
