@@ -6,8 +6,8 @@ import "testing"
 // env var must be added here, so the runner's strip logic stays in sync.
 func TestProxyKeysCoverage(t *testing.T) {
 	want := map[string]bool{
-		"HTTP_PROXY": true, "HTTPS_PROXY": true,
-		"http_proxy": true, "https_proxy": true,
+		"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true,
+		"http_proxy": true, "https_proxy": true, "all_proxy": true,
 		"NO_PROXY": true, "no_proxy": true,
 	}
 	got := make(map[string]bool, len(ProxyKeys))

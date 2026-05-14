@@ -380,8 +380,10 @@ func TestBuildChildEnv(t *testing.T) {
 		"HOME=/home/test",
 		"HTTP_PROXY=http://old-proxy:8080",
 		"HTTPS_PROXY=http://old-proxy:8080",
+		"ALL_PROXY=http://old-proxy:8080",
 		"http_proxy=http://old-proxy:8080",
 		"https_proxy=http://old-proxy:8080",
+		"all_proxy=http://old-proxy:8080",
 		"NO_PROXY=old-no-proxy",
 		"no_proxy=old-no-proxy",
 		"OTHER_VAR=keep-me",
@@ -414,7 +416,7 @@ func TestBuildChildEnv(t *testing.T) {
 	}
 
 	// Verify new proxy vars are present.
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
 		if env[key] != "http://127.0.0.1:9999" {
 			t.Fatalf("%s = %q, want %q", key, env[key], "http://127.0.0.1:9999")
 		}
