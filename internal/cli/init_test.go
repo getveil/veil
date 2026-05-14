@@ -2187,25 +2187,41 @@ func TestReclaimOrphanedBackupRefusesSymlink(t *testing.T) {
 func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
-	// Build a fake home where Library/Application Support/Claude is a
-	// symlink to an attacker-chosen directory. We need os.UserHomeDir to
-	// return our fake home so mcpconfig.ParentAnchor anchors the walk
-	// there, NOT at the developer's real home.
+	// Build a fake home where the platform-canonical Claude config dir
+	// is a symlink to an attacker-chosen directory. We need
+	// os.UserHomeDir to return our fake home so mcpconfig.ParentAnchor
+	// anchors the walk there, NOT at the developer's real home.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
-	// Real Claude dir layout under fakeHome.
-	libDir := filepath.Join(fakeHome, "Library", "Application Support")
-	if err := os.MkdirAll(libDir, 0o755); err != nil {
+	// Resolve the OS-specific Claude config subpath the same way init's
+	// symlink guard does, so the layout matches whatever platform the
+	// test is running on (.config/Claude on Linux, Library/Application
+	// Support/Claude on macOS).
+	anchor, subpath, ok, err := mcpconfig.ParentAnchor()
+	if err != nil {
+		t.Fatalf("ParentAnchor: %v", err)
+	}
+	if !ok || len(subpath) == 0 {
+		t.Skip("no canonical Claude config path on this platform")
+	}
+	if anchor != fakeHome {
+		t.Fatalf("ParentAnchor anchor %q != fakeHome %q (HOME override not picked up)", anchor, fakeHome)
+	}
+
+	// Materialize all but the last subpath component as real dirs; the
+	// last component is the malicious symlink.
+	parentDir := filepath.Join(append([]string{fakeHome}, subpath[:len(subpath)-1]...)...)
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The malicious redirect: Claude/ is a symlink to /tmp/attacker/.
+	// The malicious redirect: <Claude dir> is a symlink to /tmp/attacker/.
 	attackerDir := t.TempDir()
 	exfilSentinel := filepath.Join(attackerDir, "claude_desktop_config.json")
 	if err := os.WriteFile(exfilSentinel, []byte(`{"mcpServers":{"x":{"command":"x","env":{"OPENAI_API_KEY":"sk-real-secret-xxxxxxxx"}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	claudeSymlink := filepath.Join(libDir, "Claude")
+	claudeSymlink := filepath.Join(parentDir, subpath[len(subpath)-1])
 	if err := os.Symlink(attackerDir, claudeSymlink); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
