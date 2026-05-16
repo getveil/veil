@@ -1,0 +1,39 @@
+name: Notify veil-page of release
+
+# Fires when a new GitHub Release is published (after release.yml
+# finishes goreleaser) and dispatches a repository_dispatch event
+# to getveil/veil-page so it can bump the version string in the
+# footer of the landing page.
+#
+# Requires repository secret VEIL_PAGE_DISPATCH_TOKEN — a
+# fine-grained PAT or GitHub App token with Contents: write on
+# getveil/veil-page only.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to send (e.g. v0.2.0). Used only for manual runs.'
+        required: true
+        type: string
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to veil-page
+        env:
+          GH_TOKEN: ${{ secrets.VEIL_PAGE_DISPATCH_TOKEN }}
+          VERSION: ${{ github.event.release.tag_name || github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VERSION:-}" ]; then
+            echo "::error::No version available."
+            exit 1
+          fi
+          echo "Dispatching veil-release event with version=$VERSION"
+          jq -nc --arg v "$VERSION" \
+            '{event_type:"veil-release", client_payload:{version:$v}}' \
+            | gh api repos/getveil/veil-page/dispatches --input -
