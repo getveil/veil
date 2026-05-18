@@ -1251,6 +1251,62 @@ func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
 	}
 }
 
+func TestDiscoverBackups_FindsExtendedEnvNames(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
+
+	root := t.TempDir()
+	for _, name := range []string{".env.test", ".env.staging", ".env.ci", ".env.preview"} {
+		orig := filepath.Join(root, name)
+		if err := os.WriteFile(orig, []byte("X=1"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(orig+backupSuffix, []byte("X=real"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 4 {
+		t.Errorf("expected 4 backup pairs, got %d: %+v", len(pairs), pairs)
+	}
+}
+
+func TestDiscoverBackups_FindsProjectMCPBackups(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
+
+	root := t.TempDir()
+	for _, name := range []string{".mcp.json", filepath.Join(".cursor", "mcp.json")} {
+		full := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full+backupSuffix, []byte(`{"real":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Errorf("expected 2 MCP backup pairs, got %d: %+v", len(pairs), pairs)
+	}
+	for _, p := range pairs {
+		if p.kind != backupKindMCP {
+			t.Errorf("kind = %v, want backupKindMCP for %s", p.kind, p.original)
+		}
+	}
+}
+
 // TestUninstallRefusesSymlinkedOriginal covers the mirror leak: when .env
 // itself is a symlink, classifyEnvPair's os.ReadFile(original) follows it and
 // the target's bytes appear as the '-' side of the printed diff.
