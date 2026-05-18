@@ -14,25 +14,59 @@ func TestIsSecretLike_URLWithPassword(t *testing.T) {
 	}
 }
 
-func TestIsSecretLike_SecretKeyName(t *testing.T) {
-	// Short value but secret-like key name.
-	if !IsSecretLike("API_KEY", "short") {
-		t.Fatal("expected true for secret-like key name")
+func TestIsSecretLike_SecretKeyName_GatedByValueShape(t *testing.T) {
+	// Name pattern alone is no longer enough — a trivial value must not
+	// trigger vaulting. These all match the secret regex but have
+	// length-or-distinct values below the gate floor.
+	noLonger := []struct{ name, value string }{
+		{"API_KEY", "short"},
+		{"DB_PASSWORD", "abc"},
+		{"AUTH_TOKEN", "xyz"},
+		{"MY_SECRET", "val"},
+		{"CREDENTIAL_FILE", "path"},
+		{"DSN", "val"},
+		{"LOG_LEVEL_AUTH", "info"},
+		{"AUTH_METHOD", "oauth"},
+		{"DB_PASSWORD_PROMPT", "true"},
+		{"PWD_THEME", "bracketed"},
 	}
-	if !IsSecretLike("DB_PASSWORD", "abc") {
-		t.Fatal("expected true for PASSWORD key name")
+	for _, kv := range noLonger {
+		if IsSecretLike(kv.name, kv.value) {
+			t.Errorf("%s=%q: expected false after value-shape gate", kv.name, kv.value)
+		}
 	}
-	if !IsSecretLike("AUTH_TOKEN", "xyz") {
-		t.Fatal("expected true for AUTH key name")
+
+	// Name match with a value that clears len>=12 AND distinct>=6 still passes.
+	stillSecret := []struct{ name, value string }{
+		{"API_KEY", "abcdef123456"},                 // len=12, distinct=12
+		{"DB_PASSWORD", "ghp_realtoken1234567890"},  // realistic token
+		{"AUTH_TOKEN", "xoxb-1234-5678-abcdef"},     // slack-style
 	}
-	if !IsSecretLike("MY_SECRET", "val") {
-		t.Fatal("expected true for SECRET key name")
+	for _, kv := range stillSecret {
+		if !IsSecretLike(kv.name, kv.value) {
+			t.Errorf("%s=%q: expected true (passes value-shape gate)", kv.name, kv.value)
+		}
 	}
-	if !IsSecretLike("CREDENTIAL_FILE", "path") {
-		t.Fatal("expected true for CREDENTIAL key name")
+}
+
+func TestIsSecretLike_NameMatchValueShapeBoundary(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        bool
+		why         string
+	}{
+		{"API_KEY", "12345678901a", true, "len=12, distinct=11 — passes both floors"},
+		{"API_KEY", "12345678901", false, "len=11 — fails length floor"},
+		{"API_KEY", "aaaaaaaaaaaa", false, "len=12, distinct=1 — fails distinct floor"},
+		{"API_KEY", "aabbccdd1111", false, "len=12, distinct=5 (a,b,c,d,1) — fails distinct floor by one"},
+		{"API_KEY", "aabbccdd1122", true, "len=12, distinct=6 (a,b,c,d,1,2) — meets distinct floor exactly"},
+		{"API_KEY", "aabbccddeexx", true, "len=12, distinct=6 (a,b,c,d,e,x) — meets distinct floor"},
 	}
-	if !IsSecretLike("DSN", "val") {
-		t.Fatal("expected true for DSN key name")
+	for _, tc := range cases {
+		got := IsSecretLike(tc.name, tc.value)
+		if got != tc.want {
+			t.Errorf("%s=%q: got %v want %v (%s)", tc.name, tc.value, got, tc.want, tc.why)
+		}
 	}
 }
 

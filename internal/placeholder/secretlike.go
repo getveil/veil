@@ -19,6 +19,20 @@ const (
 	secretMinLength   = 20
 	secretMinEntropy  = 4.5
 	secretMinDistinct = 12
+
+	// nameMatchMinLength is the minimum value length required for a
+	// name-pattern-only match to count as a secret. Values shorter than
+	// this floor are treated as non-secrets (e.g., LOG_LEVEL_AUTH=info,
+	// DB_PASSWORD_PROMPT=true) even when their name matches the regex.
+	// Floor mirrors the basicPasswordMinLength in
+	// internal/cli/correlate/basic.go.
+	nameMatchMinLength = 12
+
+	// nameMatchMinDistinct rules out repetitive values such as
+	// "xxxxxxxxxxxx" that would otherwise clear the length floor.
+	// Mirrors basicPasswordMinDistinct in
+	// internal/cli/correlate/basic.go.
+	nameMatchMinDistinct = 6
 )
 
 // IsSecretLike determines whether a name/value pair likely represents a secret.
@@ -41,9 +55,13 @@ func IsSecretLike(name, value string) bool {
 		return true
 	}
 
-	// 3. Check key name heuristic.
+	// 3. Check key name heuristic, gated by a value-shape floor so trivial
+	// values like "info", "oauth", "true" don't trip the heuristic just
+	// because the name contains "auth"/"token"/"pwd"/etc.
 	if secretNamePattern.MatchString(name) {
-		return true
+		if len(value) >= nameMatchMinLength && distinctBytes(value) >= nameMatchMinDistinct {
+			return true
+		}
 	}
 
 	// 4. Length + entropy + distinct-byte check.
