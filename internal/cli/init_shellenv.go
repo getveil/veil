@@ -242,6 +242,7 @@ func vaultShellBasicGroup(
 		CreatedAt:           time.Now(),
 		Username:            g.Basic.Username,
 		UsernamePlaceholder: userPh,
+		UsernameVar:         g.Basic.UsernameVar,
 	}
 	if err := v.Add(cred); err != nil {
 		if errors.Is(err, vault.ErrDuplicateCredential) {

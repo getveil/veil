@@ -509,6 +509,7 @@ func buildEnvFileCredentials(
 				CreatedAt:           time.Now(),
 				Username:            g.Basic.Username,
 				UsernamePlaceholder: userPh,
+				UsernameVar:         g.Basic.UsernameVar,
 			})
 			envFile.SetValue(g.Basic.UsernameVar, userPh)
 			envFile.SetValue(g.Basic.PasswordVar, passPh)
@@ -662,10 +663,12 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	}
 	var owned []*vault.Credential
 	ownedValues := make(map[string]string)
+	linesByKey := make(map[string]string)
 	for _, line := range envFile.Lines {
 		if line.Kind != scanner.KVLine {
 			continue
 		}
+		linesByKey[line.Key] = line.Value
 		if c, ok := v.Get(line.Key); ok {
 			owned = append(owned, c)
 			ownedValues[line.Key] = line.Value
@@ -673,6 +676,19 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	}
 	if len(owned) == 0 {
 		return false, nil
+	}
+	// Capture the cleartext value of the username half for any basic cred
+	// we own. The vault entry is keyed by the password var (c.Name), so
+	// v.Get(usernameVar) above won't surface it — without this second pass
+	// the divergence check below would miss a user edit to the username
+	// line and silently overwrite it.
+	for _, c := range owned {
+		if c.UsernameVar == "" {
+			continue
+		}
+		if val, ok := linesByKey[c.UsernameVar]; ok {
+			ownedValues[c.UsernameVar] = val
+		}
 	}
 	rewrite, err := needsEnvRewrite(envPath, owned)
 	if err != nil {
@@ -703,6 +719,16 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 		}
 		if val != c.Real {
 			diverged = append(diverged, c.Name)
+		}
+		// For basic creds, also check the username half (kept in
+		// c.Username, not c.Real). UsernameVar is empty for bearer creds
+		// and for manually-added basic creds (`veil add --user ...`),
+		// which is correct — only init-detected pairs carry the source
+		// var name needed to detect an edit.
+		if c.UsernameVar != "" {
+			if userVal, userOK := ownedValues[c.UsernameVar]; userOK && userVal != c.Username {
+				diverged = append(diverged, c.UsernameVar)
+			}
 		}
 	}
 	if len(diverged) > 0 {

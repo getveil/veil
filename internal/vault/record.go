@@ -10,15 +10,21 @@ import (
 
 // Credential holds a single secret and its proxy placeholder.
 type Credential struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name"`
-	Real                string    `json:"real"`
-	Placeholder         string    `json:"placeholder"`
-	Source              string    `json:"source"`
-	AllowedHosts        []string  `json:"allowed_hosts,omitempty"`
-	Username            string    `json:"username,omitempty"`
-	UsernamePlaceholder string    `json:"username_placeholder,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Real                string   `json:"real"`
+	Placeholder         string   `json:"placeholder"`
+	Source              string   `json:"source"`
+	AllowedHosts        []string `json:"allowed_hosts,omitempty"`
+	Username            string   `json:"username,omitempty"`
+	UsernamePlaceholder string   `json:"username_placeholder,omitempty"`
+	// UsernameVar is the source env-var name for the Username half of a
+	// basic credential (set by init when correlating *_USER(NAME) + *_PASS
+	// pairs). Persisted so the crash-window recovery path can detect
+	// user edits to the username line; empty for manually-added basic
+	// creds and for non-basic schemes.
+	UsernameVar string    `json:"username_var,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 
 	// Scheme is a discriminator: "", "basic", "aws", "github_app".
 	// Empty means bearer; "basic" is implied when Username != "".
