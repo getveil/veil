@@ -44,3 +44,38 @@ func TestDetectAll_AWSTripleIsConsumed(t *testing.T) {
 		t.Errorf("remaining = %v, want only OPENAI_API_KEY", remaining)
 	}
 }
+
+func TestDetectAll_BasicGroupFromMixedInput(t *testing.T) {
+	cands := []Candidate{
+		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
+		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{Key: "GH_USERNAME", Value: "alice"},
+		{Key: "GH_PASSWORD", Value: "ghp_realtoken1234"},
+		{Key: "STRIPE_API_KEY", Value: "sk_test_aBcDeFgHiJkLmNoP"},
+	}
+	groups, remaining := DetectAll(cands)
+
+	gotSchemes := make([]string, 0, len(groups))
+	for _, g := range groups {
+		gotSchemes = append(gotSchemes, g.Scheme)
+	}
+	wantHas := func(s string) bool {
+		for _, x := range gotSchemes {
+			if x == s {
+				return true
+			}
+		}
+		return false
+	}
+	if !wantHas("aws") {
+		t.Errorf("missing aws group; got schemes=%v", gotSchemes)
+	}
+	if !wantHas("basic") {
+		t.Errorf("missing basic group; got schemes=%v", gotSchemes)
+	}
+
+	// Only STRIPE_API_KEY should remain (uncorrelated bearer).
+	if len(remaining) != 1 || remaining[0].Key != "STRIPE_API_KEY" {
+		t.Errorf("remaining = %v, want [STRIPE_API_KEY]", remaining)
+	}
+}

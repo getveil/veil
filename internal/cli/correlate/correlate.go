@@ -52,11 +52,12 @@ type Correlator interface {
 }
 
 // correlators is the fixed dispatch list. Adding a new scheme is one line
-// here plus the sibling file. Order matters when schemes could overlap
-// (in practice PEMs and AKIDs are structurally distinct, so overlap is
-// unreachable).
+// here plus the sibling file. Order matters: aws runs first so AWS
+// triples are claimed before any scheme that might overlap; basic runs
+// after, on the remaining candidates.
 var correlators = []Correlator{
 	awsCorrelator{},
+	basicCorrelator{},
 }
 
 // DetectAll runs each registered correlator in order, passing only
