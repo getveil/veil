@@ -17,7 +17,7 @@ recommended upgrade for all users.
 
 #### Symlink-safe filesystem operations
 - Refuse symlinked `dbPath` (and any parent component) when opening the audit
-  log, eliminating a same-UID symlink-redirect attack on `.veil/audit.db`.
+  log, eliminating a same-UID symlink-redirect attack on `.veil/audit.sqlite`.
 - `O_NOFOLLOW` on `vault.meta` reads and writes via a shared
   `ReadFileNoFollow` / `WriteFileNoFollow` helper, applied across `Open`,
   `CreateVault`, `copyFile`, and every remaining bare-write site.
@@ -126,7 +126,7 @@ First public release.
   confirm by default; `--dry-run` previews the plan without changes.
 
 #### Audit log
-- SQLite audit log at `.veil/audit.db` records every credential injection,
+- SQLite audit log at `.veil/audit.sqlite` records every credential injection,
   agent action, and proxy decision with a correlation ID.
 - `veil log` query interface with `--since`, `--placeholder`, `--host`, and
   `--correlate` filters for triage and audit replay.
