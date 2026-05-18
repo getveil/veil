@@ -139,6 +139,105 @@ func TestScan_DoesNotFollowSymlinkedDirs(t *testing.T) {
 	}
 }
 
+func TestScan_RespectsGitignore(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "ignored/\n*.log\n")
+	mustWrite(t, filepath.Join(root, ".env"), "A=1")
+	mustMkdir(t, filepath.Join(root, "ignored"))
+	mustWrite(t, filepath.Join(root, "ignored", ".env"), "B=1")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 1 || got[0] != filepath.Join(root, ".env") {
+		t.Errorf("Scan = %v; ignored/.env should have been pruned via .gitignore", got)
+	}
+}
+
+func TestScan_NestedGitignoreStacks(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".env"), "A=1")
+	mustWrite(t, filepath.Join(root, ".gitignore"), "")
+	mustMkdir(t, filepath.Join(root, "apps", "api"))
+	mustMkdir(t, filepath.Join(root, "apps", "web"))
+	mustWrite(t, filepath.Join(root, "apps", "web", ".gitignore"), ".env\n")
+	mustWrite(t, filepath.Join(root, "apps", "api", ".env"), "B=1")
+	mustWrite(t, filepath.Join(root, "apps", "web", ".env"), "C=1")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	want := []string{
+		filepath.Join(root, ".env"),
+		filepath.Join(root, "apps", "api", ".env"),
+	}
+	if !stringSetEqual(got, want) {
+		t.Errorf("Scan = %v, want %v", got, want)
+	}
+}
+
+func TestScan_BaselineOverridesGitignoreNegation(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "!node_modules/\n")
+	mustMkdir(t, filepath.Join(root, "node_modules"))
+	mustWrite(t, filepath.Join(root, "node_modules", ".env"), "X=1")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("baseline failed: node_modules/.env leaked despite negation: %v", got)
+	}
+}
+
+func TestScan_DirPatternPrunesAtDescent(t *testing.T) {
+	// A "dir/" gitignore pattern must prune at directory-descent time so
+	// the walker never traverses into the ignored tree. Without the
+	// trailing-slash fix, the directory check is a no-op and the walker
+	// descends fully, filtering only at file leaves — correct result but
+	// wasteful I/O.
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "ignored-tree/\n")
+	mustMkdir(t, filepath.Join(root, "ignored-tree", "deeply", "nested"))
+	mustWrite(t, filepath.Join(root, "ignored-tree", "deeply", "nested", ".env"), "X=1")
+	mustWrite(t, filepath.Join(root, "ignored-tree", "a.txt"), "x")
+	mustWrite(t, filepath.Join(root, "ignored-tree", "b.txt"), "x")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Scan = %v; ignored-tree/ should have been pruned at descent", got)
+	}
+}
+
+func TestScan_GitignoreNegationInsideNonBaselineDir(t *testing.T) {
+	// Document current behavior for re-included files inside a
+	// gitignore-pruned non-baseline dir. The walker prunes at the
+	// directory level (matchesDir returns true), so the negated file
+	// is never reached. This is a deviation from full gitignore
+	// semantics but matches what users actually want from a secret
+	// scanner — don't read files in dirs you said to ignore.
+	// Uses "bundles/" (not a baseline-excluded name) so the assertion
+	// exercises the gitignore matchesDir path, not the baseline floor.
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "bundles/\n!bundles/.env.production\n")
+	mustMkdir(t, filepath.Join(root, "bundles"))
+	mustWrite(t, filepath.Join(root, "bundles", ".env.production"), "REAL=1")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("bundles/.env.production should be pruned with bundles/ (current behavior): %v", got)
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {

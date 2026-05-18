@@ -2,9 +2,12 @@ package scanner
 
 import (
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	gitignore "github.com/sabhiram/go-gitignore"
 )
 
 // baselineExcludeDirs is the set of directory basenames the walker always
@@ -59,6 +62,69 @@ type walkResult struct {
 	envPaths []string
 }
 
+// gitignoreStack tracks per-directory .gitignore matchers, applied from root
+// downward. Each entry's Dir is the directory that owns the .gitignore; its
+// patterns apply to that directory and below.
+type gitignoreStack []gitignoreEntry
+
+type gitignoreEntry struct {
+	Dir     string
+	Matcher *gitignore.GitIgnore
+}
+
+// loadGitignore returns the matcher for the .gitignore file in dir, or nil
+// if absent / unreadable.
+func loadGitignore(dir string) *gitignore.GitIgnore {
+	p := filepath.Join(dir, ".gitignore")
+	info, err := os.Lstat(p)
+	if err != nil || info.IsDir() {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Refuse to read a symlinked .gitignore — a hostile project could
+		// point it at an attacker file. Treat as absent.
+		return nil
+	}
+	matcher, err := gitignore.CompileIgnoreFile(p)
+	if err != nil {
+		return nil
+	}
+	return matcher
+}
+
+// matchesDir reports whether path (a directory) is ignored by any matcher
+// in the stack. A trailing slash is appended before matching so patterns
+// like "dir/" (directory-only in gitignore semantics) prune at descent
+// time rather than at the leaf, avoiding wasted traversal of large
+// ignored subtrees.
+func (s gitignoreStack) matchesDir(path string) bool {
+	for _, e := range s {
+		rel, err := filepath.Rel(e.Dir, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if e.Matcher.MatchesPath(filepath.ToSlash(rel) + "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesFile reports whether path (a file) is ignored by any matcher
+// in the stack.
+func (s gitignoreStack) matchesFile(path string) bool {
+	for _, e := range s {
+		rel, err := filepath.Rel(e.Dir, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if e.Matcher.MatchesPath(filepath.ToSlash(rel)) {
+			return true
+		}
+	}
+	return false
+}
+
 // walkProject performs the recursive walk from root, returning every .env-
 // shaped file (basename match) found beneath, sorted alphabetically.
 //
@@ -70,6 +136,10 @@ type walkResult struct {
 // symlink refusal gate surfaces an explicit error to the user.
 func walkProject(root string) (walkResult, error) {
 	var res walkResult
+	stack := gitignoreStack{}
+	if m := loadGitignore(root); m != nil {
+		stack = append(stack, gitignoreEntry{Dir: root, Matcher: m})
+	}
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -82,8 +152,18 @@ func walkProject(root string) (walkResult, error) {
 			if path == root {
 				return nil
 			}
+			// Baseline pruning takes precedence over .gitignore negation —
+			// these dirs are never scanned, period.
 			if _, skip := baselineExcludeDirs[d.Name()]; skip {
 				return fs.SkipDir
+			}
+			// .gitignore-pruned directories are skipped before descent.
+			if stack.matchesDir(path) {
+				return fs.SkipDir
+			}
+			// Layer this directory's .gitignore onto the stack for its subtree.
+			if m := loadGitignore(path); m != nil {
+				stack = append(stack, gitignoreEntry{Dir: path, Matcher: m})
 			}
 			return nil
 		}
@@ -96,13 +176,17 @@ func walkProject(root string) (walkResult, error) {
 		if !matchesEnvBasename(d.Name()) {
 			return nil
 		}
+		// Apply .gitignore to files too — a user can ignore a specific
+		// .env file by name.
+		if stack.matchesFile(path) {
+			return nil
+		}
 		res.envPaths = append(res.envPaths, path)
 		return nil
 	})
 	if err != nil {
 		return walkResult{}, err
 	}
-
 	sort.Strings(res.envPaths)
 	return res, nil
 }
