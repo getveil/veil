@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/getveil/veil/internal/cli/correlate"
@@ -29,47 +30,63 @@ func nonEmptyShellCandidates(candidates []scanner.EnvironCandidate) []scanner.En
 	return out
 }
 
-// processShellEnv presents shell-exported secret-like candidates, prompts the
-// user (interactive) or accepts-all (non-interactive), and vaults the
-// selected entries. Correlates AWS triples before the "already in vault"
-// filter so an existing aws-scheme credential named AWS_ACCESS_KEY_ID drops
-// the whole would-be-duplicate shell group instead of leaking orphan
-// siblings as redundant bearer credentials.
+// processShellEnv scans os.Environ() for secret-like exports plus
+// correlator-relevant pair candidates, then vaults the selected
+// entries. Kept as a thin wrapper around processShellEnvWithPool so
+// init.go callers can stay terse.
 func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
-	// Drop empty-valued candidates first (placeholder.Generate rejects empty).
-	// We do NOT drop vault-duplicate names here — that check moves
-	// post-correlation below.
-	nonEmpty := make([]correlate.Candidate, 0, len(candidates))
+	pairCandidates := scanner.ScanEnvironForPairs(os.Environ())
+	return processShellEnvWithPool(w, in, v, candidates, pairCandidates, dryRun, interactive)
+}
+
+// processShellEnvWithPool is the testable form: callers supply both the
+// IsSecretLike-filtered candidates (for the loose-bearer path) AND the
+// broader pair pool (for the correlator). Production code uses the
+// processShellEnv wrapper.
+func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, pairCandidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
+	// Build the correlator pool from the BROADER set; non-secret-shaped
+	// USER halves must be visible to basicCorrelator.
+	allCands := make([]correlate.Candidate, 0, len(pairCandidates))
+	for _, c := range pairCandidates {
+		if c.Value == "" {
+			continue
+		}
+		allCands = append(allCands, correlate.Candidate{Key: c.Name, Value: c.Value})
+	}
+
+	groups, remaining := correlate.DetectAll(allCands)
+
+	// Filter loose-bearer candidates: must be in the IsSecretLike-filtered
+	// set AND not consumed by a correlator AND not already vault-named.
+	consumedByCorrelator := make(map[string]struct{}, len(allCands)-len(remaining))
+	for _, c := range allCands {
+		consumedByCorrelator[c.Key] = struct{}{}
+	}
+	for _, c := range remaining {
+		delete(consumedByCorrelator, c.Key)
+	}
+
+	filteredRemaining := make([]correlate.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		if c.Value == "" {
 			continue
 		}
-		nonEmpty = append(nonEmpty, correlate.Candidate{Key: c.Name, Value: c.Value})
-	}
-	if len(nonEmpty) == 0 {
-		return 0, 0, nil
+		if _, vaulted := v.Get(c.Name); vaulted {
+			continue
+		}
+		if _, claimed := consumedByCorrelator[c.Name]; claimed {
+			continue
+		}
+		filteredRemaining = append(filteredRemaining, correlate.Candidate{Key: c.Name, Value: c.Value})
 	}
 
-	groups, remaining := correlate.DetectAll(nonEmpty)
-
-	// Now drop groups whose name is already in the vault, and drop loose
-	// candidates whose key is already in the vault. Applying the name
-	// filter AFTER correlation ensures we drop the whole AWS group cleanly
-	// when the .env phase has already vaulted it — no orphan siblings
-	// leaking through as bearer credentials.
+	// Drop groups whose canonical name is already in the vault.
 	filteredGroups := make([]correlate.Group, 0, len(groups))
 	for _, g := range groups {
 		if _, exists := v.Get(g.Name); exists {
 			continue
 		}
 		filteredGroups = append(filteredGroups, g)
-	}
-	filteredRemaining := make([]correlate.Candidate, 0, len(remaining))
-	for _, c := range remaining {
-		if _, exists := v.Get(c.Key); exists {
-			continue
-		}
-		filteredRemaining = append(filteredRemaining, c)
 	}
 	if len(filteredGroups) == 0 && len(filteredRemaining) == 0 {
 		return 0, 0, nil
@@ -84,7 +101,14 @@ func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []sca
 	var vaulted, scoped int
 
 	for _, g := range selectedGroups {
-		n, s, err := vaultShellAWSGroup(w, v, seen, g, dryRun)
+		var n, s int
+		var err error
+		switch g.Scheme {
+		case "aws":
+			n, s, err = vaultShellAWSGroup(w, v, seen, g, dryRun)
+		case "basic":
+			n, s, err = vaultShellBasicGroup(w, v, seen, g, dryRun)
+		}
 		if err != nil {
 			return vaulted, scoped, err
 		}
@@ -189,6 +213,56 @@ func vaultShellAWSGroup(
 	return 1, 1, nil
 }
 
+// vaultShellBasicGroup writes one basic-scheme credential for g. Mirrors
+// vaultShellAWSGroup: no file to rewrite (the shell exports are read
+// once at init), only a vault entry is created.
+func vaultShellBasicGroup(
+	w io.Writer, v *vault.Vault, seen placeholder.Set,
+	g correlate.Group, dryRun bool,
+) (vaulted, scoped int, err error) {
+	userPh, err := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
+	if err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), err)
+	}
+	seen[userPh] = struct{}{}
+	passPh, err := placeholder.Generate(g.Basic.PasswordVar, g.Basic.Password, seen)
+	if err != nil {
+		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), err)
+	}
+	seen[passPh] = struct{}{}
+
+	credHosts := placeholder.HostsForCredential(g.Basic.PasswordVar, g.Basic.Password)
+	cred := &vault.Credential{
+		ID:                  vault.NewID(),
+		Name:                g.Name,
+		Real:                g.Basic.Password,
+		Placeholder:         passPh,
+		Source:              "init",
+		AllowedHosts:        credHosts,
+		CreatedAt:           time.Now(),
+		Username:            g.Basic.Username,
+		UsernamePlaceholder: userPh,
+	}
+	if err := v.Add(cred); err != nil {
+		if errors.Is(err, vault.ErrDuplicateCredential) {
+			ui.Warnf(w, "duplicate key %q, skipping", g.Name)
+			return 0, 0, nil
+		}
+		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
+	}
+
+	if dryRun {
+		ui.Dimf(w, "  would vault (basic): %s (from shell)", g.Name)
+		ui.Dimf(w, "    %-24s -> %s", g.Basic.UsernameVar, userPh)
+		ui.Dimf(w, "    %-24s -> %s", g.Basic.PasswordVar, passPh)
+	}
+	scoped = 0
+	if len(credHosts) > 0 {
+		scoped = 1
+	}
+	return 1, scoped, nil
+}
+
 // selectShellEnvKeys returns the groups and bearer candidates the user chose
 // to vault. In non-interactive mode everything is selected.
 func selectShellEnvKeys(
@@ -204,23 +278,49 @@ func selectShellEnvKeys(
 		total += len(g.Members)
 	}
 	header := fmt.Sprintf("\nDetected %d shell-exported %s", total, plural(total, "secret", "secrets"))
-	switch len(groups) {
-	case 0:
+	awsCount, basicCount := 0, 0
+	for _, g := range groups {
+		switch g.Scheme {
+		case "aws":
+			awsCount++
+		case "basic":
+			basicCount++
+		}
+	}
+	switch {
+	case awsCount == 0 && basicCount == 0:
 		header += ":"
-	case 1:
-		header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+	case awsCount > 0 && basicCount == 0:
+		if awsCount == 1 {
+			header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+		} else {
+			header += fmt.Sprintf(" (%d AWS credentials):", awsCount)
+		}
+	case awsCount == 0 && basicCount > 0:
+		if basicCount == 1 {
+			header += " (1 correlated as HTTP Basic):"
+		} else {
+			header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
+		}
 	default:
-		header += fmt.Sprintf(" (%d AWS credentials):", len(groups))
+		header += fmt.Sprintf(" (%d AWS, %d HTTP Basic):", awsCount, basicCount)
 	}
 	_, _ = fmt.Fprintln(w, header)
 	ui.Dim(w, "(these are in your current shell environment, not in any .env file)")
 
 	var names []string
 	for _, g := range groups {
-		label := fmt.Sprintf("[aws] %s", g.Name)
+		var tag string
+		switch g.Scheme {
+		case "aws":
+			tag = "[aws]"
+		case "basic":
+			tag = "[basic]"
+		}
+		label := fmt.Sprintf("%s %s", tag, g.Name)
 		for i, m := range g.Members {
 			if i == 0 {
-				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "[aws]", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
+				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", tag, m.Key, ui.Muted.Sprint(redactValue(m.Value)))
 			} else {
 				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
 			}
@@ -244,7 +344,14 @@ func selectShellEnvKeys(
 			picked[n] = true
 		}
 		for _, g := range groups {
-			if picked[fmt.Sprintf("[aws] %s", g.Name)] {
+			var tag string
+			switch g.Scheme {
+			case "aws":
+				tag = "[aws]"
+			case "basic":
+				tag = "[basic]"
+			}
+			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {
 				selectedGroups = append(selectedGroups, g)
 			}
 		}
