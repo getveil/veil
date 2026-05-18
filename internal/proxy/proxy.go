@@ -209,8 +209,17 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 				})
 			}
 			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — placeholder leak detected in %s", req.Host, leakLocation)
-			return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
-				fmt.Sprintf("veil: placeholder leak detected in %s; request blocked (see audit log)", leakLocation))
+			body := fmt.Sprintf("veil: placeholder leak detected in %s; request blocked (see audit log)", leakLocation)
+			var veilErr string
+			if hint := inj.ClassifyBasicLeak(newHeader); hint != "" {
+				body += "\n" + hint
+				veilErr = "basic_unpaired"
+			}
+			resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway, body)
+			if veilErr != "" {
+				resp.Header.Set("X-Veil-Error", veilErr)
+			}
+			return req, resp
 		}
 
 		// Apply modified URL.

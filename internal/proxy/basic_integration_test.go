@@ -134,6 +134,65 @@ func TestDetectorFiresOnSigV4Shape(t *testing.T) {
 	}
 }
 
+// TestBasicLeak_502ContainsHint_TwoSeparateCreds asserts that when the
+// agent sends a Basic header whose two halves point to two different
+// vault credentials (the pre-fix state for an unpaired init), the proxy
+// returns 502, sets X-Veil-Error: basic_unpaired, and includes a
+// targeted hint in the response body.
+func TestBasicLeak_502ContainsHint_TwoSeparateCreds(t *testing.T) {
+	// Upstream — will never be reached since the proxy blocks the request.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	// Two separate bearer creds — not paired into one Basic cred.
+	credUser := &vault.Credential{
+		ID:           "u",
+		Name:         "GH_USERNAME",
+		Real:         "alice",
+		Placeholder:  "VEIL_USER_UNPAIRED",
+		AllowedHosts: []string{upstreamHost(upstream), strings.Split(upstreamHost(upstream), ":")[0]},
+	}
+	credPass := &vault.Credential{
+		ID:           "p",
+		Name:         "GH_PASSWORD",
+		Real:         "ghp_real",
+		Placeholder:  "VEIL_SECRET_UNPAIRED",
+		AllowedHosts: []string{upstreamHost(upstream), strings.Split(upstreamHost(upstream), ":")[0]},
+	}
+
+	srv, _, _ := testSetup(t, credUser, credPass)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	req, _ := http.NewRequest("GET", upstream.URL+"/", nil)
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("VEIL_USER_UNPAIRED:VEIL_SECRET_UNPAIRED")))
+
+	client := httpClient(srv.Addr())
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Veil-Error"); got != "basic_unpaired" {
+		t.Errorf("X-Veil-Error = %q, want basic_unpaired", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	for _, want := range []string{"GH_USERNAME", "GH_PASSWORD", "veil add", "--scheme basic"} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("body missing %q: %q", want, bodyStr)
+		}
+	}
+}
+
 // TestIntegration_AWSSigV4_EndToEnd spins up an HTTP server that verifies a
 // SigV4 signature with a known real SecretAccessKey, invokes the proxy with
 // a request signed by the placeholder key, and asserts that the upstream
