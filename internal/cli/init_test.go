@@ -2376,3 +2376,75 @@ func TestFilterInputs_DeclineDropsAll(t *testing.T) {
 		t.Errorf("decline must drop all, got %v / %v", gotEnvs, gotMCPs)
 	}
 }
+
+func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
+
+	root := t.TempDir()
+
+	// Layout:
+	//   .env                       (vault)
+	//   apps/api/.env              (vault)
+	//   packages/db/.env.local     (vault)
+	//   apps/web/.env.example      (skip — sample suffix)
+	//   apps/web/.gitignore        (excludes web/.env)
+	//   apps/web/.env              (skip — gitignored)
+	//   node_modules/.env          (skip — baseline)
+	writeEnv := func(rel, content string) {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEnv(".env", "GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+	writeEnv(filepath.Join("apps", "api", ".env"), "OPENAI_API_KEY=sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+	writeEnv(filepath.Join("packages", "db", ".env.local"), "STRIPE_API_KEY=sk_test_aaaaaaaaaaaaaaaaaaaaaaaa\n")
+	writeEnv(filepath.Join("apps", "web", ".env.example"), "OPENAI_API_KEY=sk-proj-EXAMPLE\n")
+	writeEnv(filepath.Join("apps", "web", ".gitignore"), ".env\n")
+	writeEnv(filepath.Join("apps", "web", ".env"), "SECRET=should-be-ignored\n")
+	writeEnv(filepath.Join("node_modules", "pkg", ".env"), "X=leaked\n")
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+
+	// The three real .env files should now contain placeholders.
+	for _, rel := range []string{".env", filepath.Join("apps", "api", ".env"), filepath.Join("packages", "db", ".env.local")} {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", rel, err)
+		}
+		if bytes.Contains(data, []byte("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) ||
+			bytes.Contains(data, []byte("sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) ||
+			bytes.Contains(data, []byte("sk_test_aaaaaaaaaaaaaaaaaaaaaaaa")) {
+			t.Errorf("%s still contains real secret after init", rel)
+		}
+	}
+
+	// The skipped files should be untouched.
+	for _, rel := range []string{filepath.Join("apps", "web", ".env.example"), filepath.Join("apps", "web", ".env"), filepath.Join("node_modules", "pkg", ".env")} {
+		_, err := os.Stat(filepath.Join(root, rel+".veil-backup"))
+		if err == nil {
+			t.Errorf("%s.veil-backup exists; file should not have been processed", rel)
+		}
+	}
+
+	// Apps/web/.env still holds its original value.
+	data, err := os.ReadFile(filepath.Join(root, "apps", "web", ".env"))
+	if err != nil {
+		t.Fatalf("reading apps/web/.env: %v", err)
+	}
+	if !bytes.Contains(data, []byte("should-be-ignored")) {
+		t.Errorf("gitignored apps/web/.env was modified: %s", string(data))
+	}
+}
