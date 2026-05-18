@@ -2448,3 +2448,68 @@ func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 		t.Errorf("gitignored apps/web/.env was modified: %s", string(data))
 	}
 }
+
+func TestInit_DiscoversMultipleMCPConfigs(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_CONFIG_PATH", "")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// User-scope: Claude Code at ~/.claude.json.
+	claudeCodePath := filepath.Join(fakeHome, ".claude.json")
+	mcpJSON := `{"mcpServers":{"gh":{"command":"npx","args":["-y","x"],"env":{"GITHUB_TOKEN":"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}`
+	if err := os.WriteFile(claudeCodePath, []byte(mcpJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// User-scope: Cursor at ~/.cursor/mcp.json.
+	cursorDir := filepath.Join(fakeHome, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cursorPath := filepath.Join(cursorDir, "mcp.json")
+	cursorJSON := `{"mcpServers":{"st":{"command":"npx","args":["-y","x"],"env":{"STRIPE_API_KEY":"sk_test_aaaaaaaaaaaaaaaaaaaaaaaa"}}}}`
+	if err := os.WriteFile(cursorPath, []byte(cursorJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project-scope: .mcp.json inside the project root.
+	root := t.TempDir()
+	projectMCPPath := filepath.Join(root, ".mcp.json")
+	projectJSON := `{"mcpServers":{"oa":{"command":"npx","args":["-y","x"],"env":{"OPENAI_API_KEY":"sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}`
+	if err := os.WriteFile(projectMCPPath, []byte(projectJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+
+	for _, p := range []string{claudeCodePath, cursorPath, projectMCPPath} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("reading %s: %v", p, err)
+		}
+		// None of the original secret values should remain.
+		for _, secret := range []string{
+			"ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"sk_test_aaaaaaaaaaaaaaaaaaaaaaaa",
+			"sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		} {
+			if bytes.Contains(data, []byte(secret)) {
+				t.Errorf("%s still contains secret %q", p, secret)
+			}
+		}
+		// A backup must exist for each.
+		if _, err := os.Stat(p + ".veil-backup"); err != nil {
+			t.Errorf("missing backup for %s: %v", p, err)
+		}
+	}
+}
