@@ -170,6 +170,8 @@ HTTP/HTTPS traffic from any tool that respects `HTTP_PROXY` / `HTTPS_PROXY`:
 - **Subprocesses** — all descendants of the agent inherit the environment, including MCP server subprocesses.
 - **Auth schemes** — Bearer end-to-end. Basic end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`).
 
+> **Note:** `docker push` on macOS Docker Desktop (and other Linux-VM Docker runtimes — Colima, Lima, Rancher Desktop) requires daemon-side proxy configuration; the daemon's network stack does not inherit the calling shell's `HTTPS_PROXY`. See [docs/DOCKER.md](DOCKER.md).
+
 ## What the MVP doesn't cover
 
 | Gap | Reason | Disposition |
