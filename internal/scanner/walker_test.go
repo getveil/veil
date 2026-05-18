@@ -238,6 +238,63 @@ func TestScan_GitignoreNegationInsideNonBaselineDir(t *testing.T) {
 	}
 }
 
+func TestScanAll_FindsProjectMCPConfigs(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".env"), "A=1")
+	mustWrite(t, filepath.Join(root, ".mcp.json"), `{}`)
+	mustMkdir(t, filepath.Join(root, ".cursor"))
+	mustWrite(t, filepath.Join(root, ".cursor", "mcp.json"), `{}`)
+
+	res, err := ScanAll(root)
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+	if len(res.EnvPaths) != 1 || res.EnvPaths[0] != filepath.Join(root, ".env") {
+		t.Errorf("EnvPaths = %v, want only root .env", res.EnvPaths)
+	}
+	if len(res.MCPConfigs) != 2 {
+		t.Fatalf("MCPConfigs = %d, want 2: %+v", len(res.MCPConfigs), res.MCPConfigs)
+	}
+	seen := map[string]bool{}
+	for _, c := range res.MCPConfigs {
+		seen[string(c.Client)] = true
+		if c.Scope != "project" {
+			t.Errorf("scope = %q, want project", c.Scope)
+		}
+	}
+	if !seen["claude-code"] || !seen["cursor"] {
+		t.Errorf("missing clients: %+v", res.MCPConfigs)
+	}
+}
+
+func TestScanAll_NestedProjectMCPConfig(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "apps", "web", ".cursor")
+	mustMkdir(t, deep)
+	mustWrite(t, filepath.Join(deep, "mcp.json"), `{}`)
+	res, err := ScanAll(root)
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+	if len(res.MCPConfigs) != 1 || res.MCPConfigs[0].Path != filepath.Join(deep, "mcp.json") {
+		t.Errorf("nested .cursor/mcp.json not found: %+v", res.MCPConfigs)
+	}
+}
+
+func TestScanAll_GitignoreSuppressesProjectMCP(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, ".gitignore"), "private/\n")
+	mustMkdir(t, filepath.Join(root, "private"))
+	mustWrite(t, filepath.Join(root, "private", ".mcp.json"), `{}`)
+	res, err := ScanAll(root)
+	if err != nil {
+		t.Fatalf("ScanAll: %v", err)
+	}
+	if len(res.MCPConfigs) != 0 {
+		t.Errorf("private/.mcp.json should be gitignore-pruned: %+v", res.MCPConfigs)
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	gitignore "github.com/sabhiram/go-gitignore"
+
+	"github.com/getveil/veil/internal/mcpconfig"
 )
 
 // baselineExcludeDirs is the set of directory basenames the walker always
@@ -59,7 +61,8 @@ func matchesEnvBasename(name string) bool {
 
 // walkResult collects everything the walker discovered in one pass.
 type walkResult struct {
-	envPaths []string
+	envPaths   []string
+	mcpConfigs []mcpconfig.DiscoveredConfig
 }
 
 // gitignoreStack tracks per-directory .gitignore matchers, applied from root
@@ -125,6 +128,24 @@ func (s gitignoreStack) matchesFile(path string) bool {
 	return false
 }
 
+// projectMCPMatch reports whether path's tail matches a project-relative
+// MCP config pattern from mcpconfig.ProjectFilenames(). Returns the matched
+// client and true on hit.
+func projectMCPMatch(root, path string) (mcpconfig.Client, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", false
+	}
+	relSlash := filepath.ToSlash(rel)
+	for _, pf := range mcpconfig.ProjectFilenames() {
+		suffix := strings.Join(pf.Path, "/")
+		if relSlash == suffix || strings.HasSuffix(relSlash, "/"+suffix) {
+			return pf.Client, true
+		}
+	}
+	return "", false
+}
+
 // walkProject performs the recursive walk from root, returning every .env-
 // shaped file (basename match) found beneath, sorted alphabetically.
 //
@@ -173,20 +194,35 @@ func walkProject(root string) (walkResult, error) {
 		// basename happens to match an env pattern below, the leaf symlink
 		// gets returned and the existing refuseSymlinkedInputs gate at the
 		// action layer surfaces an explicit error.
-		if !matchesEnvBasename(d.Name()) {
-			return nil
-		}
-		// Apply .gitignore to files too — a user can ignore a specific
-		// .env file by name.
+		//
+		// Apply .gitignore to files — a user can ignore a specific file by
+		// name. Checked before any pattern match so it applies uniformly to
+		// .env files AND project-local MCP configs.
 		if stack.matchesFile(path) {
 			return nil
 		}
-		res.envPaths = append(res.envPaths, path)
+		// Env file?
+		if matchesEnvBasename(d.Name()) {
+			res.envPaths = append(res.envPaths, path)
+			return nil
+		}
+		// Project-local MCP config?
+		if client, ok := projectMCPMatch(root, path); ok {
+			res.mcpConfigs = append(res.mcpConfigs, mcpconfig.DiscoveredConfig{
+				Path:   path,
+				Client: client,
+				Scope:  mcpconfig.ProjectScope,
+			})
+			return nil
+		}
 		return nil
 	})
 	if err != nil {
 		return walkResult{}, err
 	}
 	sort.Strings(res.envPaths)
+	sort.Slice(res.mcpConfigs, func(i, j int) bool {
+		return res.mcpConfigs[i].Path < res.mcpConfigs[j].Path
+	})
 	return res, nil
 }

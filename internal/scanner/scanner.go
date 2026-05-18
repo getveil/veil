@@ -3,6 +3,8 @@ package scanner
 
 import (
 	"path/filepath"
+
+	"github.com/getveil/veil/internal/mcpconfig"
 )
 
 // Scan discovers .env files anywhere beneath root. The walk honors a
@@ -26,4 +28,30 @@ func Scan(root string) ([]string, error) {
 		return []string{}, nil
 	}
 	return res.envPaths, nil
+}
+
+// ScanResult is the bundle of files the recursive walker found.
+type ScanResult struct {
+	EnvPaths   []string                     // sorted absolute paths to .env / .env.* files
+	MCPConfigs []mcpconfig.DiscoveredConfig // project-scoped MCP configs (Scope = ProjectScope)
+}
+
+// ScanAll discovers every .env file and every project-local MCP config in
+// one walk of root. Both lists are sorted alphabetically by path.
+func ScanAll(root string) (ScanResult, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	res, err := walkProject(abs)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	if res.envPaths == nil {
+		res.envPaths = []string{}
+	}
+	if res.mcpConfigs == nil {
+		res.mcpConfigs = []mcpconfig.DiscoveredConfig{}
+	}
+	return ScanResult{EnvPaths: res.envPaths, MCPConfigs: res.mcpConfigs}, nil
 }
