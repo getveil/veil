@@ -101,14 +101,20 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	ui.Phase(w, "Scanning project...")
 
-	envPaths, err := scanner.Scan(root)
+	scanRes, err := scanner.ScanAll(root)
 	if err != nil {
-		return wrapErr("scanning .env files", err)
+		return wrapErr("scanning project", err)
 	}
-	mcpConfigs, err := mcpconfig.Discover()
+	envPaths := scanRes.EnvPaths
+
+	userMCP, err := mcpconfig.Discover()
 	if err != nil {
 		return wrapErr("discovering MCP config", err)
 	}
+	// User-scope first (typically external paths), then project-scope (inside
+	// root). Order shapes the summary print and prompt list — predictable.
+	mcpConfigs := append([]mcpconfig.DiscoveredConfig{}, userMCP...)
+	mcpConfigs = append(mcpConfigs, scanRes.MCPConfigs...)
 	// Precompute shell-env candidates so the early-exit gate considers all
 	// three sources. Empty-valued candidates are dropped so they don't
 	// wrongly bypass that gate; processShellEnv drops them anyway.
@@ -122,10 +128,22 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	envPaths = filterEnvPaths(in, w, root, envPaths, interactive)
 
 	if len(envPaths) > 0 {
-		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
+		ui.Step(w, fmt.Sprintf("Found %d .env %s:", len(envPaths), plural(len(envPaths), "file", "files")))
+		for _, p := range envPaths {
+			ui.Dim(w, "  "+displayRel(root, p))
+		}
 	}
 	if len(mcpConfigs) > 0 {
-		ui.Step(w, fmt.Sprintf("Found %d MCP %s", len(mcpConfigs), plural(len(mcpConfigs), "config", "configs")))
+		ui.Step(w, fmt.Sprintf("Found %d MCP %s:", len(mcpConfigs), plural(len(mcpConfigs), "config", "configs")))
+		for _, c := range mcpConfigs {
+			display := c.Path
+			if home, herr := os.UserHomeDir(); herr == nil && strings.HasPrefix(c.Path, home+string(os.PathSeparator)) {
+				display = "~" + strings.TrimPrefix(c.Path, home)
+			} else if c.Scope == mcpconfig.ProjectScope {
+				display = displayRel(root, c.Path)
+			}
+			ui.Dim(w, fmt.Sprintf("  %s  [%s, %s]", display, c.Client, c.Scope))
+		}
 	}
 	_, _ = fmt.Fprintln(w)
 
