@@ -34,9 +34,9 @@ func TestBasicCorrelator_HappyPath_USERNAME_PASSWORD(t *testing.T) {
 
 func TestBasicCorrelator_CrossPairs(t *testing.T) {
 	tests := []struct {
-		name     string
-		userKey  string
-		passKey  string
+		name    string
+		userKey string
+		passKey string
 	}{
 		{"USER+PASS", "DB_USER", "DB_PASS"},
 		{"USER+PASSWORD", "DB_USER", "DB_PASSWORD"},
@@ -184,13 +184,13 @@ func TestHasBasicPasswordShape(t *testing.T) {
 	}{
 		{"", false},
 		{"short", false},
-		{"123456789012", true},   // len=12, distinct=10
-		{"12345678901", false},   // len=11
-		{"aaaaaaaaaaaa", false},  // distinct=1
-		{"aabbccdd1111", false},  // len=12, distinct=5 — fails distinct floor
-		{"aabbccdd1122", true},   // len=12, distinct=6 — meets distinct floor exactly
-		{"aabbccddeexx", true},   // len=12, distinct=6 (a,b,c,d,e,x)
-		{"aabbccddeexy", true},   // len=12, distinct=7
+		{"123456789012", true},  // len=12, distinct=10
+		{"12345678901", false},  // len=11
+		{"aaaaaaaaaaaa", false}, // distinct=1
+		{"aabbccdd1111", false}, // len=12, distinct=5 — fails distinct floor
+		{"aabbccdd1122", true},  // len=12, distinct=6 — meets distinct floor exactly
+		{"aabbccddeexx", true},  // len=12, distinct=6 (a,b,c,d,e,x)
+		{"aabbccddeexy", true},  // len=12, distinct=7
 	}
 	for _, tc := range cases {
 		if got := hasBasicPasswordShape(tc.v); got != tc.want {

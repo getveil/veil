@@ -174,10 +174,10 @@ func TestScanEnviron_SkipsMalformedEntries(t *testing.T) {
 
 func TestScanEnvironForPairs_KeepsUsernameLikeNames(t *testing.T) {
 	environ := []string{
-		"PATH=/usr/bin",                       // POSIX — must be filtered
-		"DB_USERNAME=alice",                   // non-secret-shaped, must keep
-		"DB_PASSWORD=longsecret1234",          // secret-shaped, must keep
-		"OTEL_TRACES_SAMPLER=parentbased",     // prefix-denylisted, must filter
+		"PATH=/usr/bin",                   // POSIX — must be filtered
+		"DB_USERNAME=alice",               // non-secret-shaped, must keep
+		"DB_PASSWORD=longsecret1234",      // secret-shaped, must keep
+		"OTEL_TRACES_SAMPLER=parentbased", // prefix-denylisted, must filter
 	}
 	got := ScanEnvironForPairs(environ)
 	want := map[string]string{
@@ -196,7 +196,7 @@ func TestScanEnvironForPairs_KeepsUsernameLikeNames(t *testing.T) {
 
 func TestScanEnvironForPairs_DropsEmptyKeys(t *testing.T) {
 	environ := []string{
-		"=lonelyvalue",      // no key — drop
+		"=lonelyvalue", // no key — drop
 		"DB_USER=alice",
 	}
 	got := ScanEnvironForPairs(environ)

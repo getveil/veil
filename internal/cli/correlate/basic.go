@@ -5,7 +5,7 @@ import "regexp"
 // basicUserRegex captures decoration around a USERNAME / USER token.
 // `(?:NAME)?` is non-capturing so submatch indices stay at 1=prefix,
 // 2=middle, 3=suffix. The `.*?` is non-greedy so the shortest prefix
-// wins (`DB_USERNAME` -> prefix=`DB_`, middle=`USERNAME`, suffix=``).
+// wins (`DB_USERNAME` -> prefix=`DB_`, middle=`USERNAME`, suffix is empty).
 var basicUserRegex = regexp.MustCompile(`^(.*?)(USER(?:NAME)?)(.*)$`)
 
 // basicPasswordPartners lists the partner middle tokens to try, in

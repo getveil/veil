@@ -38,9 +38,9 @@ func TestIsSecretLike_SecretKeyName_GatedByValueShape(t *testing.T) {
 
 	// Name match with a value that clears len>=12 AND distinct>=6 still passes.
 	stillSecret := []struct{ name, value string }{
-		{"API_KEY", "abcdef123456"},                 // len=12, distinct=12
-		{"DB_PASSWORD", "ghp_realtoken1234567890"},  // realistic token
-		{"AUTH_TOKEN", "xoxb-1234-5678-abcdef"},     // slack-style
+		{"API_KEY", "abcdef123456"},                // len=12, distinct=12
+		{"DB_PASSWORD", "ghp_realtoken1234567890"}, // realistic token
+		{"AUTH_TOKEN", "xoxb-1234-5678-abcdef"},    // slack-style
 	}
 	for _, kv := range stillSecret {
 		if !IsSecretLike(kv.name, kv.value) {
