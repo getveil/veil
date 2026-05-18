@@ -105,7 +105,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return wrapErr("scanning .env files", err)
 	}
-	mcpConfigPath, err := mcpconfig.Discover()
+	mcpConfigs, err := mcpconfig.Discover()
 	if err != nil {
 		return wrapErr("discovering MCP config", err)
 	}
@@ -114,7 +114,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	// wrongly bypass that gate; processShellEnv drops them anyway.
 	shellCandidates := scanner.ScanEnviron(os.Environ())
 	shellCandidates = nonEmptyShellCandidates(shellCandidates)
-	if len(envPaths) == 0 && mcpConfigPath == "" && len(shellCandidates) == 0 {
+	if len(envPaths) == 0 && len(mcpConfigs) == 0 && len(shellCandidates) == 0 {
 		_, _ = fmt.Fprintf(w, "no .env files, MCP configs, or shell-exported secrets found in %s\n", root)
 		return nil
 	}
@@ -124,18 +124,18 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if len(envPaths) > 0 {
 		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
 	}
-	if mcpConfigPath != "" {
-		ui.Step(w, "Found 1 MCP config")
+	if len(mcpConfigs) > 0 {
+		ui.Step(w, fmt.Sprintf("Found %d MCP %s", len(mcpConfigs), plural(len(mcpConfigs), "config", "configs")))
 	}
 	_, _ = fmt.Fprintln(w)
 
 	// Both gates run BEFORE buildKeystore / CreateVault so a refused project
 	// never reaches the destructive keystore-delete / vault-recreate path
 	// that --force would otherwise trigger.
-	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigPath); err != nil {
+	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigs); err != nil {
 		return err
 	}
-	if err := refusePlaceholderInputs(root, envPaths, mcpConfigPath, force); err != nil {
+	if err := refusePlaceholderInputs(root, envPaths, mcpConfigs, force); err != nil {
 		return err
 	}
 
@@ -179,15 +179,15 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 
 	mcpConfigsProcessed := 0
-	if mcpConfigPath != "" {
-		n, s, err := processMCPConfig(cmd, in, v, root, mcpConfigPath, force, dryRun, interactive)
+	for _, cfg := range mcpConfigs {
+		n, s, err := processMCPConfig(cmd, in, v, root, cfg.Path, force, dryRun, interactive)
 		if err != nil {
 			return err
 		}
 		secretsVaulted += n
 		secretsScoped += s
 		if n > 0 {
-			mcpConfigsProcessed = 1
+			mcpConfigsProcessed++
 		}
 	}
 

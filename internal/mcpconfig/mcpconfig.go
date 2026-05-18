@@ -1,4 +1,6 @@
-// Package mcpconfig discovers, parses, and rewrites Claude Desktop MCP configuration files.
+// Package mcpconfig discovers, parses, and rewrites MCP configuration files
+// for Claude Desktop, Claude Code, and Cursor (both user-global and
+// project-local scope).
 package mcpconfig
 
 import (
@@ -12,90 +14,101 @@ import (
 	"github.com/getveil/veil/internal/envkeys"
 )
 
-const configFileName = "claude_desktop_config.json"
-
-// Discover returns the path to Claude Desktop's MCP config file, or "" if not found.
-// If envkeys.MCPConfigOverride is set, it is used instead (for testing).
-func Discover() (string, error) {
-	if override := os.Getenv(envkeys.MCPConfigOverride); override != "" {
-		info, err := os.Stat(override) // #nosec G304 G703 -- override is an opt-in test hook
-		if err != nil {
-			return "", nil
+// claudeDesktopUserLocation returns the platform-specific subpath of Claude
+// Desktop's user-global config, or ok=false on unsupported platforms.
+// Exposed for tests; production callers route through userLocations().
+func claudeDesktopUserLocation() (parts []string, ok bool) {
+	for _, loc := range userLocations() {
+		if loc.Client != ClaudeDesktop || loc.Scope != UserScope {
+			continue
 		}
-		if info.IsDir() {
-			return "", nil
-		}
-		return override, nil
+		parts = loc.subpath(runtime.GOOS)
+		return parts, parts != nil
 	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir, err := claudeConfigDir(runtime.GOOS, home)
-	if err != nil {
-		return "", nil // unsupported platform — not an error, just no config
-	}
-	return discoverIn(dir)
+	return nil, false
 }
 
-// discoverIn checks whether claude_desktop_config.json exists in dir.
-// Exported for testing with controlled paths.
-func discoverIn(dir string) (string, error) {
-	p := filepath.Join(dir, configFileName)
-	info, err := os.Stat(p)
-	if err != nil {
-		return "", nil // file doesn't exist
-	}
-	if info.IsDir() {
-		return "", nil
-	}
-	return p, nil
-}
-
-// claudeConfigSubpath returns the path components beneath the user's home
-// directory where Claude Desktop stores its config on goos, or ok=false on
-// unsupported platforms.
-func claudeConfigSubpath(goos string) (parts []string, ok bool) {
-	switch goos {
-	case "darwin":
-		return []string{"Library", "Application Support", "Claude"}, true
-	case "linux":
-		return []string{".config", "Claude"}, true
-	default:
-		return nil, false
-	}
-}
-
-// claudeConfigDir returns the platform-specific Claude Desktop config directory.
-func claudeConfigDir(goos, home string) (string, error) {
-	parts, ok := claudeConfigSubpath(goos)
-	if !ok {
-		return "", fmt.Errorf("unsupported platform: %s", goos)
-	}
-	return filepath.Join(append([]string{home}, parts...)...), nil
-}
-
-// ParentAnchor returns the trust anchor (the user's home directory) the init
-// guard should walk down from to verify the discovered config path has no
-// symlinked parent component, plus the unresolved subpath the verifier should
-// traverse. The guard Lstats each component literally — EvalSymlinks would
-// silently follow the very attacker-controlled symlink we are trying to
-// detect. Returns ok=false when the override env var is set (the user
-// explicitly chose a path) or the platform has no canonical location.
-func ParentAnchor() (anchor string, subpath []string, ok bool, err error) {
-	if os.Getenv(envkeys.MCPConfigOverride) != "" {
-		return "", nil, false, nil
+// Discover returns every user-global MCP config Veil should consider. The
+// returned slice is empty (not an error) when no configs are found, when the
+// platform is unsupported, or when VEIL_MCP_DISABLE_DISCOVERY is set.
+//
+// Backward compat: if VEIL_MCP_CONFIG_PATH is set, it replaces the Claude
+// Desktop entry only — other clients (Claude Code, Cursor) are still probed.
+func Discover() ([]DiscoveredConfig, error) {
+	if os.Getenv(envkeys.MCPDisableDiscovery) != "" {
+		return nil, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", nil, false, err
+		return nil, err
 	}
-	parts, ok := claudeConfigSubpath(runtime.GOOS)
-	if !ok {
-		return "", nil, false, nil
+
+	override := os.Getenv(envkeys.MCPConfigOverride)
+	var out []DiscoveredConfig
+
+	for _, loc := range userLocations() {
+		if loc.Client == ClaudeDesktop && override != "" {
+			p, ok := resolveOverride(override)
+			if ok {
+				out = append(out, DiscoveredConfig{Path: p, Client: ClaudeDesktop, Scope: UserScope})
+			}
+			continue
+		}
+		sub := loc.subpath(runtime.GOOS)
+		if sub == nil {
+			continue
+		}
+		p := filepath.Join(append([]string{home}, sub...)...)
+		info, err := os.Lstat(p)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, DiscoveredConfig{Path: p, Client: loc.Client, Scope: UserScope})
 	}
-	return home, parts, true, nil
+	return out, nil
+}
+
+// resolveOverride checks the VEIL_MCP_CONFIG_PATH value. Missing files yield
+// (_, false) so the caller drops the override (same semantics as the legacy
+// discoverIn).
+func resolveOverride(p string) (string, bool) {
+	info, err := os.Stat(p) // #nosec G304 G703 -- override is an opt-in test hook
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return p, true
+}
+
+// ParentAnchors returns one anchor per user-scope location for the symlink
+// guard. Override-pinned Claude Desktop is omitted (the user explicitly
+// chose the path). Project-scope configs anchor at the project root and are
+// walked by the existing project-side guard.
+func ParentAnchors() ([]ParentAnchor, error) {
+	if os.Getenv(envkeys.MCPDisableDiscovery) != "" {
+		return nil, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	override := os.Getenv(envkeys.MCPConfigOverride)
+
+	var out []ParentAnchor
+	for _, loc := range userLocations() {
+		if loc.Client == ClaudeDesktop && override != "" {
+			continue
+		}
+		sub := loc.subpath(runtime.GOOS)
+		if sub == nil {
+			continue
+		}
+		out = append(out, ParentAnchor{
+			Anchor:  home,
+			Subpath: sub,
+			Client:  loc.Client,
+		})
+	}
+	return out, nil
 }
 
 // ServerConfig represents a single MCP server entry.
@@ -112,7 +125,7 @@ type ServerConfig struct {
 	overflow map[string]json.RawMessage
 }
 
-// ConfigFile represents a parsed Claude Desktop configuration file.
+// ConfigFile represents a parsed MCP config file.
 type ConfigFile struct {
 	path    string
 	servers map[string]*ServerConfig
@@ -122,7 +135,7 @@ type ConfigFile struct {
 	topLevel map[string]json.RawMessage
 }
 
-// Parse reads and parses the Claude Desktop config file at path.
+// Parse reads and parses the MCP config file at path.
 func Parse(path string) (*ConfigFile, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path from Discover(), not user input
 	if err != nil {

@@ -391,6 +391,8 @@ func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	// Ensure no MCP config is discovered either.
 	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 	// Strip CI/dev-shell secret-like exports so the shell-env scan also finds
@@ -502,6 +504,8 @@ func TestInitGitignoreAppend(t *testing.T) {
 
 func TestInitWithMCPConfig(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -580,6 +584,8 @@ func TestInitWithMCPConfig(t *testing.T) {
 
 func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -628,6 +634,8 @@ func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
 
 func TestInitMCPDryRun(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -694,6 +702,8 @@ func TestInitMCPDryRun(t *testing.T) {
 
 func TestInitMCPForceWithExistingBackup(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -767,6 +777,8 @@ func TestInitMCPForceWithExistingBackup(t *testing.T) {
 
 func TestInitMCPCredentialNameFormat(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -833,6 +845,8 @@ func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
 	// than silently skipping (which would yield fewer secrets in the vault than
 	// the user expected).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1820,6 +1834,8 @@ func TestInitRefusesSymlinkedEnv(t *testing.T) {
 // stayed cleartext in claude_desktop_config.json after veil init.
 func TestInitVaultsMCPArgsToken(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1886,6 +1902,8 @@ func TestInitVaultsMCPArgsToken(t *testing.T) {
 // DSN (and its embedded password) stayed cleartext after init.
 func TestInitVaultsMCPArgsDSN(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1956,6 +1974,8 @@ func TestInitVaultsMCPArgsDSN(t *testing.T) {
 // "--port" don't drag innocent values into the vault.
 func TestInitSkipsBenignMCPArgs(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -2012,6 +2032,8 @@ func TestInitSkipsBenignMCPArgs(t *testing.T) {
 // destroy every copy of the original secret Veil controlled.
 func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -2090,6 +2112,8 @@ func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 // symlink isn't filtered out before the destructive write runs.
 func TestInitRefusesPrePlantedBackupSymlink(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
 	// Stand-in for the attacker's chosen exfiltration target (e.g. ~/.ssh/
@@ -2186,6 +2210,7 @@ func TestReclaimOrphanedBackupRefusesSymlink(t *testing.T) {
 // trust anchor down and refuses if any is a symlink.
 func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
 
 	// Build a fake home where the platform-canonical Claude config dir
 	// is a symlink to an attacker-chosen directory. We need
@@ -2198,11 +2223,20 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	// symlink guard does, so the layout matches whatever platform the
 	// test is running on (.config/Claude on Linux, Library/Application
 	// Support/Claude on macOS).
-	anchor, subpath, ok, err := mcpconfig.ParentAnchor()
+	anchors, err := mcpconfig.ParentAnchors()
 	if err != nil {
-		t.Fatalf("ParentAnchor: %v", err)
+		t.Fatalf("ParentAnchors: %v", err)
 	}
-	if !ok || len(subpath) == 0 {
+	var anchor string
+	var subpath []string
+	for _, pa := range anchors {
+		if pa.Client == mcpconfig.ClaudeDesktop {
+			anchor = pa.Anchor
+			subpath = pa.Subpath
+			break
+		}
+	}
+	if anchor == "" || len(subpath) == 0 {
 		t.Skip("no canonical Claude config path on this platform")
 	}
 	if anchor != fakeHome {
@@ -2236,8 +2270,15 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if discovered == "" {
-		t.Fatalf("discovery returned empty — fake home layout is wrong")
+	var desktopPath string
+	for _, dc := range discovered {
+		if dc.Client == mcpconfig.ClaudeDesktop {
+			desktopPath = dc.Path
+			break
+		}
+	}
+	if desktopPath == "" {
+		t.Fatalf("discovery returned no Claude Desktop config — fake home layout is wrong")
 	}
 
 	projectDir := t.TempDir()

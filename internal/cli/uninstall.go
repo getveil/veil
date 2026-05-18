@@ -133,18 +133,23 @@ func discoverBackups(root string) ([]backupPair, error) {
 		seen[orig] = true
 	}
 
-	mcpPath, err := mcpconfigDiscover()
+	mcpConfigs, err := mcpconfigDiscover()
 	if err != nil {
 		return nil, fmt.Errorf("discovering MCP config: %w", err)
 	}
-	if mcpPath != "" && !seen[mcpPath] {
-		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
-			pairs = append(pairs, backupPair{
-				original: mcpPath,
-				backup:   mcpPath + backupSuffix,
-				kind:     backupKindMCP,
-			})
+	for _, cfg := range mcpConfigs {
+		if seen[cfg.Path] {
+			continue
 		}
+		if _, err := os.Stat(cfg.Path + backupSuffix); err != nil {
+			continue
+		}
+		pairs = append(pairs, backupPair{
+			original: cfg.Path,
+			backup:   cfg.Path + backupSuffix,
+			kind:     backupKindMCP,
+		})
+		seen[cfg.Path] = true
 	}
 	return pairs, nil
 }
@@ -189,7 +194,7 @@ func kindFromVault(k vault.FileKind) backupKind {
 
 // mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
 // without importing the package into the uninstall_test package.
-var mcpconfigDiscover = func() (string, error) { return mcpconfig.Discover() }
+var mcpconfigDiscover = func() ([]mcpconfig.DiscoveredConfig, error) { return mcpconfig.Discover() }
 
 // classification enumerates how a (current, backup) pair relates.
 type classification int

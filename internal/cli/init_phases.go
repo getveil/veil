@@ -136,14 +136,14 @@ func firstSymlinkInChain(anchor string, subpath []string) string {
 // project while cleartext lands at the link target — strictly worse exposure
 // than not running Veil. Aggregates every violation so the user fixes them
 // in one pass.
-func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string) error {
+func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigs []mcpconfig.DiscoveredConfig) error {
 	var hits []string
 
 	for _, p := range envPaths {
 		hits = appendIfSymlink(hits, p, displayRel(root, p))
 	}
-	if mcpConfigPath != "" {
-		hits = appendIfSymlink(hits, mcpConfigPath, displayRel(root, mcpConfigPath))
+	for _, cfg := range mcpConfigs {
+		hits = appendIfSymlink(hits, cfg.Path, displayRel(root, cfg.Path))
 	}
 
 	checkChain := func(anchor string, subpath []string, leafDisplay string) {
@@ -164,12 +164,13 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string)
 		}
 		checkChain(root, strings.Split(filepath.ToSlash(rel), "/"), displayRel(root, p))
 	}
-	// MCP anchor is the user's home (default discovery); skipped under the
-	// test-override env var since that path is explicitly user-chosen.
-	if mcpConfigPath != "" {
-		if anchor, subpath, ok, _ := mcpconfig.ParentAnchor(); ok {
-			checkChain(anchor, subpath, mcpConfigPath)
-		}
+
+	anchors, err := mcpconfig.ParentAnchors()
+	if err != nil {
+		return wrapErr("resolving MCP parent anchors", err)
+	}
+	for _, pa := range anchors {
+		checkChain(pa.Anchor, pa.Subpath, fmt.Sprintf("%s (%s, user)", filepath.Join(append([]string{pa.Anchor}, pa.Subpath...)...), pa.Client))
 	}
 
 	if len(hits) == 0 {
@@ -218,7 +219,7 @@ func mcpSentinelHits(root, mcpConfigPath string) []string {
 // destroying every copy of the original secret Veil controls. Files with an
 // existing sibling .veil-backup are skipped unless --force is set, since the
 // downstream "already has a backup" short-circuit makes them safe.
-func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath string, force bool) error {
+func refusePlaceholderInputs(root string, envPaths []string, mcpConfigs []mcpconfig.DiscoveredConfig, force bool) error {
 	var hits []string
 
 	for _, p := range envPaths {
@@ -240,8 +241,11 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath strin
 		}
 	}
 
-	if mcpConfigPath != "" && (force || !backupExists(mcpConfigPath)) {
-		hits = append(hits, mcpSentinelHits(root, mcpConfigPath)...)
+	for _, cfg := range mcpConfigs {
+		if !force && backupExists(cfg.Path) {
+			continue
+		}
+		hits = append(hits, mcpSentinelHits(root, cfg.Path)...)
 	}
 
 	if len(hits) == 0 {

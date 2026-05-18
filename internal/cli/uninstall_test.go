@@ -127,6 +127,8 @@ func TestDiscoverBackupsSkipsOriginalWithoutBackup(t *testing.T) {
 }
 
 func TestDiscoverBackupsIncludesMCPWhenDiscoverable(t *testing.T) {
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	// Set up a fake MCP config + backup via the test env var.
 	mcpDir := t.TempDir()
@@ -911,6 +913,8 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 // so the MCP file's backup survived uninstall and the placeholder remained.
 func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -986,6 +990,8 @@ func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 // classifies as Unmodified and uninstall fully restores the original bytes.
 func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -1074,6 +1080,8 @@ func findPlanLineFor(plan, path string) string {
 // same vaulted set as the first init.
 func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)

@@ -25,6 +25,14 @@ type DiscoveredConfig struct {
 	Scope  Scope
 }
 
+// ParentAnchor describes the trust anchor (home dir) and subpath the symlink
+// guard should walk for a user-global config.
+type ParentAnchor struct {
+	Anchor  string
+	Subpath []string
+	Client  Client
+}
+
 // userLocation describes one user-global MCP config location. The subpath
 // resolver receives goos so platform-specific paths (Claude Desktop on
 // macOS vs Linux) stay encapsulated.

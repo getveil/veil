@@ -8,35 +8,166 @@ import (
 )
 
 func TestDiscoverFindsExistingConfig(t *testing.T) {
-	// Create a fake Claude config directory structure.
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, "Claude")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_CONFIG_PATH", "")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+
+	loc, ok := claudeDesktopUserLocation()
+	if !ok {
+		t.Skip("no Claude Desktop subpath on this platform")
+	}
+	configPath := filepath.Join(append([]string{fakeHome}, loc...)...)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(configDir, "claude_desktop_config.json")
-	if err := os.WriteFile(configPath, []byte(`{}`), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := discoverIn(configDir)
+	got, err := Discover()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Discover: %v", err)
 	}
-	if got != configPath {
-		t.Errorf("got %q, want %q", got, configPath)
+	for _, dc := range got {
+		if dc.Client == ClaudeDesktop && dc.Path == configPath {
+			return
+		}
+	}
+	t.Errorf("Discover() did not return Claude Desktop config at %s; got %+v", configPath, got)
+}
+
+func TestDiscoverReturnsAllUserScopeHits(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_CONFIG_PATH", "")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+
+	claudeCodePath := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeCodePath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cursorDir := filepath.Join(fakeHome, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cursorPath := filepath.Join(cursorDir, "mcp.json")
+	if err := os.WriteFile(cursorPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	seenClients := map[Client]string{}
+	for _, dc := range got {
+		seenClients[dc.Client] = dc.Path
+	}
+	if seenClients[ClaudeCode] != claudeCodePath {
+		t.Errorf("Claude Code path = %q, want %q", seenClients[ClaudeCode], claudeCodePath)
+	}
+	if seenClients[Cursor] != cursorPath {
+		t.Errorf("Cursor path = %q, want %q", seenClients[Cursor], cursorPath)
 	}
 }
 
-func TestDiscoverReturnsEmptyWhenMissing(t *testing.T) {
-	tmpDir := t.TempDir()
+func TestDiscoverEmptyWhenDisabled(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
 
-	got, err := discoverIn(tmpDir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := os.WriteFile(filepath.Join(fakeHome, ".claude.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got != "" {
-		t.Errorf("expected empty string for missing config, got %q", got)
+
+	got, err := Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Discover() returned %d configs, want 0 when VEIL_MCP_DISABLE_DISCOVERY=1", len(got))
+	}
+}
+
+func TestDiscoverOverridePinsClaudeDesktopOnly(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+
+	overrideDir := t.TempDir()
+	overridePath := filepath.Join(overrideDir, "claude_desktop_config.json")
+	if err := os.WriteFile(overridePath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", overridePath)
+
+	claudeCodePath := filepath.Join(fakeHome, ".claude.json")
+	if err := os.WriteFile(claudeCodePath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover()
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	var sawDesktop, sawCode bool
+	for _, dc := range got {
+		if dc.Client == ClaudeDesktop && dc.Path == overridePath {
+			sawDesktop = true
+		}
+		if dc.Client == ClaudeCode && dc.Path == claudeCodePath {
+			sawCode = true
+		}
+	}
+	if !sawDesktop {
+		t.Errorf("Claude Desktop discovery did not honor VEIL_MCP_CONFIG_PATH override")
+	}
+	if !sawCode {
+		t.Errorf("Claude Code discovery was suppressed by Claude Desktop's override")
+	}
+}
+
+func TestParentAnchorsReturnsOnePerUserLocation(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_CONFIG_PATH", "")
+
+	got, err := ParentAnchors()
+	if err != nil {
+		t.Fatalf("ParentAnchors: %v", err)
+	}
+
+	seen := map[Client]bool{}
+	for _, pa := range got {
+		seen[pa.Client] = true
+		if pa.Anchor != fakeHome {
+			t.Errorf("anchor = %q, want fakeHome %q", pa.Anchor, fakeHome)
+		}
+	}
+	if !seen[ClaudeCode] {
+		t.Errorf("ParentAnchors missing ClaudeCode")
+	}
+	if !seen[Cursor] {
+		t.Errorf("ParentAnchors missing Cursor")
+	}
+}
+
+func TestParentAnchorsSkipsOverriddenClaudeDesktop(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "x.json"))
+
+	got, err := ParentAnchors()
+	if err != nil {
+		t.Fatalf("ParentAnchors: %v", err)
+	}
+	for _, pa := range got {
+		if pa.Client == ClaudeDesktop {
+			t.Errorf("Claude Desktop anchor returned despite VEIL_MCP_CONFIG_PATH override")
+		}
 	}
 }
 
