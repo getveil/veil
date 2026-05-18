@@ -524,6 +524,73 @@ func TestProcessEnvFileForceRemovesAndReplaces(t *testing.T) {
 	}
 }
 
+// TestInit_BasicPairAutoVaultedFromEnvFile verifies the init flow
+// detects a USER+PASSWORD pair in a .env file and writes one
+// basic-scheme credential whose Username field carries the user half.
+func TestInit_BasicPairAutoVaultedFromEnvFile(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	envBody := "GH_USERNAME=alice\n" +
+		"GH_PASSWORD=ghp_realtoken1234\n" +
+		"STRIPE_API_KEY=sk_test_aBcDeFgHiJkLmN\n"
+	if err := os.WriteFile(envPath, []byte(envBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --yes failed: %v", err)
+	}
+
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+
+	// Basic cred: name = password var; Username field = user value.
+	bc, ok := v.Get("GH_PASSWORD")
+	if !ok {
+		t.Fatal("expected GH_PASSWORD credential present")
+	}
+	if bc.Username != "alice" {
+		t.Errorf("Username = %q, want alice", bc.Username)
+	}
+	if bc.UsernamePlaceholder == "" {
+		t.Error("UsernamePlaceholder unset")
+	}
+	if bc.Real != "ghp_realtoken1234" {
+		t.Errorf("Real = %q", bc.Real)
+	}
+
+	// GH_USERNAME must NOT be a separate credential.
+	if _, ok := v.Get("GH_USERNAME"); ok {
+		t.Error("GH_USERNAME should be folded into GH_PASSWORD basic cred, not vaulted separately")
+	}
+
+	// Bearer cred for STRIPE_API_KEY.
+	if _, ok := v.Get("STRIPE_API_KEY"); !ok {
+		t.Error("expected STRIPE_API_KEY bearer credential present")
+	}
+
+	// .env file must have both halves replaced with their placeholders.
+	rewritten, _ := os.ReadFile(envPath)
+	if !bytes.Contains(rewritten, []byte("GH_USERNAME="+bc.UsernamePlaceholder)) {
+		t.Errorf(".env not rewritten with user placeholder: %s", rewritten)
+	}
+	if !bytes.Contains(rewritten, []byte("GH_PASSWORD="+bc.Placeholder)) {
+		t.Errorf(".env not rewritten with password placeholder: %s", rewritten)
+	}
+}
+
 // TestProcessEnvFileDryRunNoSideEffects asserts that --dry-run performs no
 // disk I/O: .env unchanged, no backup, no meta entry, no vault changes.
 func TestProcessEnvFileDryRunNoSideEffects(t *testing.T) {

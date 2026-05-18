@@ -354,11 +354,16 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	var secrets []secretLine
+	var allCandidates []correlate.Candidate
 	w := cmd.OutOrStdout()
 	for i, line := range envFile.Lines {
 		if line.Kind != scanner.KVLine {
 			continue
 		}
+		// Feed every KV line into the correlator pool so basicCorrelator
+		// can see USER/USERNAME halves whose values (typical identifiers
+		// like "alice") would not pass IsSecretLike on their own.
+		allCandidates = append(allCandidates, correlate.Candidate{Key: line.Key, Value: line.Value})
 		if !placeholder.IsSecretLike(line.Key, line.Value) {
 			if flagVerbose {
 				ui.Dimf(w, "  skip (not secret-like): %s", line.Key)
@@ -367,18 +372,15 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		}
 		secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
 	}
-	if len(secrets) == 0 {
+	groups, remaining := correlate.DetectAll(allCandidates)
+	// filterSecretsByRemaining keeps only entries that were both in the
+	// original secret-like-filtered list AND not consumed by a correlator,
+	// so non-secret-shaped candidates that fell through stay out of the
+	// loose-bearer path.
+	remainingSecrets := filterSecretsByRemaining(secrets, remaining)
+	if len(groups) == 0 && len(remainingSecrets) == 0 {
 		return 0, 0, nil
 	}
-
-	// Correlate multi-value schemes (e.g., AWS triples) before prompting so
-	// the user sees grouped rows and members cannot be split individually.
-	cands := make([]correlate.Candidate, len(secrets))
-	for i, s := range secrets {
-		cands[i] = correlate.Candidate{Key: s.key, Value: s.value}
-	}
-	groups, remaining := correlate.DetectAll(cands)
-	remainingSecrets := filterSecretsByRemaining(secrets, remaining)
 
 	selectedGroups, selectedSecrets := selectEnvKeys(in, w, root, envPath, groups, remainingSecrets, interactive)
 	if len(selectedGroups) == 0 && len(selectedSecrets) == 0 {
@@ -442,45 +444,79 @@ func buildEnvFileCredentials(
 	seen placeholder.Set,
 ) (creds []*vault.Credential, vaulted, scoped int, err error) {
 	for _, g := range groups {
-		secretPh, gErr := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
-		if gErr != nil {
-			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), gErr)
-		}
-		seen[secretPh] = struct{}{}
-
-		akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
-		seen[akIDPh] = struct{}{}
-
-		var sessPh string
-		if g.AWS.SessionToken != "" {
-			sessPh, gErr = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
+		switch g.Scheme {
+		case "aws":
+			secretPh, gErr := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
 			if gErr != nil {
-				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), gErr)
+				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), gErr)
 			}
-			seen[sessPh] = struct{}{}
-		}
+			seen[secretPh] = struct{}{}
 
-		creds = append(creds, &vault.Credential{
-			ID:                         vault.NewID(),
-			Name:                       g.Name,
-			Real:                       g.AWS.SecretKey,
-			Placeholder:                secretPh,
-			Source:                     "init",
-			AllowedHosts:               []string{"*.amazonaws.com"},
-			CreatedAt:                  time.Now(),
-			Scheme:                     "aws",
-			AWSAccessKeyID:             g.AWS.AccessKeyID,
-			AWSAccessKeyIDPlaceholder:  akIDPh,
-			AWSSessionToken:            g.AWS.SessionToken,
-			AWSSessionTokenPlaceholder: sessPh,
-		})
-		envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
-		envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
-		if g.AWS.SessionTokenVar != "" {
-			envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
+			akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
+			seen[akIDPh] = struct{}{}
+
+			var sessPh string
+			if g.AWS.SessionToken != "" {
+				sessPh, gErr = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
+				if gErr != nil {
+					return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), gErr)
+				}
+				seen[sessPh] = struct{}{}
+			}
+
+			creds = append(creds, &vault.Credential{
+				ID:                         vault.NewID(),
+				Name:                       g.Name,
+				Real:                       g.AWS.SecretKey,
+				Placeholder:                secretPh,
+				Source:                     "init",
+				AllowedHosts:               []string{"*.amazonaws.com"},
+				CreatedAt:                  time.Now(),
+				Scheme:                     "aws",
+				AWSAccessKeyID:             g.AWS.AccessKeyID,
+				AWSAccessKeyIDPlaceholder:  akIDPh,
+				AWSSessionToken:            g.AWS.SessionToken,
+				AWSSessionTokenPlaceholder: sessPh,
+			})
+			envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
+			envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
+			if g.AWS.SessionTokenVar != "" {
+				envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
+			}
+			vaulted++
+			scoped++
+
+		case "basic":
+			userPh, gErr := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
+			if gErr != nil {
+				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), gErr)
+			}
+			seen[userPh] = struct{}{}
+			passPh, gErr := placeholder.Generate(g.Basic.PasswordVar, g.Basic.Password, seen)
+			if gErr != nil {
+				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), gErr)
+			}
+			seen[passPh] = struct{}{}
+
+			credHosts := placeholder.HostsForCredential(g.Basic.PasswordVar, g.Basic.Password)
+			creds = append(creds, &vault.Credential{
+				ID:                  vault.NewID(),
+				Name:                g.Name, // password var's key
+				Real:                g.Basic.Password,
+				Placeholder:         passPh,
+				Source:              "init",
+				AllowedHosts:        credHosts,
+				CreatedAt:           time.Now(),
+				Username:            g.Basic.Username,
+				UsernamePlaceholder: userPh,
+			})
+			envFile.SetValue(g.Basic.UsernameVar, userPh)
+			envFile.SetValue(g.Basic.PasswordVar, passPh)
+			vaulted++
+			if len(credHosts) > 0 {
+				scoped++
+			}
 		}
-		vaulted++
-		scoped++
 	}
 
 	for _, s := range secrets {
@@ -515,7 +551,8 @@ func buildEnvFileCredentials(
 // buildEnvFileCredentials and just calls envFile.Bytes() there.
 func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) []byte {
 	for _, c := range creds {
-		if c.Scheme == "aws" {
+		switch c.Scheme {
+		case "aws":
 			// AWS creds rewrite up to three vars. Name (= AccessKeyIDVar)
 			// is the only var name on the credential; for the other two
 			// (secret access key, optional session token), value-match the
@@ -525,9 +562,15 @@ func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) 
 			if c.AWSSessionToken != "" {
 				replaceValueIfMatches(envFile, c.AWSSessionToken, c.AWSSessionTokenPlaceholder)
 			}
-			continue
+		default:
+			// For basic credentials, also rewrite the username var using a
+			// value-match since the original username var name isn't stored
+			// separately (only Username and UsernamePlaceholder are).
+			if c.UsernamePlaceholder != "" && c.Username != "" {
+				replaceValueIfMatches(envFile, c.Username, c.UsernamePlaceholder)
+			}
+			envFile.SetValue(c.Name, c.Placeholder)
 		}
-		envFile.SetValue(c.Name, c.Placeholder)
 	}
 	return envFile.Bytes()
 }
@@ -554,11 +597,18 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 		}
 		c := creds[ci]
 		ci++
-		ui.Dimf(w, "  would vault (aws): %s", g.Name)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, c.AWSAccessKeyIDPlaceholder)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, c.Placeholder)
-		if g.AWS.SessionToken != "" {
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, c.AWSSessionTokenPlaceholder)
+		switch g.Scheme {
+		case "aws":
+			ui.Dimf(w, "  would vault (aws): %s", g.Name)
+			ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, c.AWSAccessKeyIDPlaceholder)
+			ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, c.Placeholder)
+			if g.AWS.SessionToken != "" {
+				ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, c.AWSSessionTokenPlaceholder)
+			}
+		case "basic":
+			ui.Dimf(w, "  would vault (basic): %s", g.Name)
+			ui.Dimf(w, "    %-24s -> %s", g.Basic.UsernameVar, c.UsernamePlaceholder)
+			ui.Dimf(w, "    %-24s -> %s", g.Basic.PasswordVar, c.Placeholder)
 		}
 	}
 	for _, s := range secrets {
@@ -582,6 +632,9 @@ func needsEnvRewrite(envPath string, creds []*vault.Credential) (bool, error) {
 	}
 	for _, c := range creds {
 		if c.Placeholder != "" && bytes.Contains(data, []byte(c.Placeholder)) {
+			return false, nil
+		}
+		if c.UsernamePlaceholder != "" && bytes.Contains(data, []byte(c.UsernamePlaceholder)) {
 			return false, nil
 		}
 		if c.AWSAccessKeyIDPlaceholder != "" && bytes.Contains(data, []byte(c.AWSAccessKeyIDPlaceholder)) {
@@ -718,25 +771,50 @@ func selectEnvKeys(
 		total += len(g.Members)
 	}
 	header := fmt.Sprintf("\nDetected %d %s in %s", total, plural(total, "secret", "secrets"), rel)
-	switch len(groups) {
-	case 0:
+	awsCount, basicCount := 0, 0
+	for _, g := range groups {
+		switch g.Scheme {
+		case "aws":
+			awsCount++
+		case "basic":
+			basicCount++
+		}
+	}
+	switch {
+	case awsCount == 0 && basicCount == 0:
 		header += ":"
-	case 1:
-		header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+	case awsCount > 0 && basicCount == 0:
+		if awsCount == 1 {
+			header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
+		} else {
+			header += fmt.Sprintf(" (%d AWS credentials):", awsCount)
+		}
+	case awsCount == 0 && basicCount > 0:
+		if basicCount == 1 {
+			header += " (1 correlated as HTTP Basic):"
+		} else {
+			header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
+		}
 	default:
-		header += fmt.Sprintf(" (%d AWS credentials):", len(groups))
+		header += fmt.Sprintf(" (%d AWS, %d HTTP Basic):", awsCount, basicCount)
 	}
 	_, _ = fmt.Fprintln(w, header)
 
 	var names []string
 	for _, g := range groups {
-		label := fmt.Sprintf("[aws] %s", g.Name)
+		var tag string
+		switch g.Scheme {
+		case "aws":
+			tag = "[aws]"
+		case "basic":
+			tag = "[basic]"
+		}
+		label := fmt.Sprintf("%s %s", tag, g.Name)
 		for i, m := range g.Members {
-			key := m.Key
 			if i == 0 {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "[aws]", key, ui.Muted.Sprint(redactValue(m.Value)))
+				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", tag, m.Key, ui.Muted.Sprint(redactValue(m.Value)))
 			} else {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", key, ui.Muted.Sprint(redactValue(m.Value)))
+				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
 			}
 		}
 		names = append(names, label)
@@ -758,7 +836,14 @@ func selectEnvKeys(
 			picked[n] = true
 		}
 		for _, g := range groups {
-			if picked[fmt.Sprintf("[aws] %s", g.Name)] {
+			var tag string
+			switch g.Scheme {
+			case "aws":
+				tag = "[aws]"
+			case "basic":
+				tag = "[basic]"
+			}
+			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {
 				selectedGroups = append(selectedGroups, g)
 			}
 		}
