@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -122,6 +123,9 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	ui.Dim(os.Stderr, "───────────────────────────────────────")
 	if warning := formatStartupWarning(credCount); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
+	}
+	for _, bw := range detectBypassClients(runtime.GOOS, exec.LookPath) {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Warning.Sprint("!"), bw.Message)
 	}
 
 	// Strip shell-exported vars whose name matches a vault credential and

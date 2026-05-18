@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1162,5 +1163,55 @@ func TestPrintSessionFooter_F9_RealStoreShortSession(t *testing.T) {
 	wantCount := "Injections:  4 across 2 host(s)"
 	if !strings.Contains(out, wantCount) {
 		t.Fatalf("F-9 regression: footer should report %q for 4 buffered rows, got:\n%s", wantCount, out)
+	}
+}
+
+// TestRunEmitsBypassWarningWhenDockerOnPath locks in F12/F14: when `docker`
+// is on the host's PATH and we're on macOS, the startup banner emits the
+// docker-bypass warning. PATH is rewritten via t.Setenv so the test works
+// regardless of whether docker is actually installed on the host.
+func TestRunEmitsBypassWarningWhenDockerOnPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("docker bypass warning is darwin-only")
+	}
+
+	// Put a fake `docker` binary on PATH so detectBypassClients finds it.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "docker")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	_, err := Run(ctx, Config{
+		Root:            root,
+		Command:         "echo",
+		Args:            []string{"hi"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
+	})
+	_ = w.Close()
+	os.Stderr = oldStderr
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	stderr := buf.String()
+
+	if !strings.Contains(stderr, "docker") || !strings.Contains(stderr, "docs/DOCKER.md") {
+		t.Errorf("startup banner should warn about docker on macOS; stderr=\n%s", stderr)
 	}
 }
