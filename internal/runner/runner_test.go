@@ -629,14 +629,16 @@ func TestBuildChildEnv_StripVaultNameCaseInsensitive(t *testing.T) {
 // env vars never reach the agent. On Linux file-keystore systems VEIL_PASSPHRASE
 // is sufficient (with read access to master.key.age) to decrypt the entire
 // vault — so it must be stripped even though it is not a vault credential name.
-// VEIL_TEST_KEYSTORE and VEIL_MCP_CONFIG_PATH could be used by an agent that
-// shells out to "veil" to redirect Veil's own behavior; strip them too.
+// VEIL_TEST_KEYSTORE, VEIL_MCP_CONFIG_PATH, and VEIL_MCP_DISABLE_DISCOVERY
+// could be used by an agent that shells out to "veil" to redirect Veil's
+// own behavior; strip them too.
 func TestBuildChildEnv_StripsVeilInternalKeys(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",
 		"VEIL_PASSPHRASE=correct-horse-battery-staple",
 		"VEIL_TEST_KEYSTORE=mem",
 		"VEIL_MCP_CONFIG_PATH=/tmp/agent-controlled.json",
+		"VEIL_MCP_DISABLE_DISCOVERY=1",
 		"OTHER_VAR=keep-me",
 	}
 	env, _, strippedInternal := buildChildEnv(base, "http://127.0.0.1:8080", "/tmp/bundle.pem", "/tmp/fake-truststore.p12", "test-pw", nil, nil)
@@ -647,7 +649,7 @@ func TestBuildChildEnv_StripsVeilInternalKeys(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if k == "VEIL_PASSPHRASE" || k == "VEIL_TEST_KEYSTORE" || k == "VEIL_MCP_CONFIG_PATH" {
+		if k == "VEIL_PASSPHRASE" || k == "VEIL_TEST_KEYSTORE" || k == "VEIL_MCP_CONFIG_PATH" || k == "VEIL_MCP_DISABLE_DISCOVERY" {
 			t.Fatalf("veil-internal var %s reached agent env: %s", k, kv)
 		}
 		for _, leak := range leakValues {
@@ -658,12 +660,13 @@ func TestBuildChildEnv_StripsVeilInternalKeys(t *testing.T) {
 	}
 
 	wantInternal := map[string]bool{
-		"VEIL_PASSPHRASE":      true,
-		"VEIL_TEST_KEYSTORE":   true,
-		"VEIL_MCP_CONFIG_PATH": true,
+		"VEIL_PASSPHRASE":            true,
+		"VEIL_TEST_KEYSTORE":         true,
+		"VEIL_MCP_CONFIG_PATH":       true,
+		"VEIL_MCP_DISABLE_DISCOVERY": true,
 	}
 	if len(strippedInternal) != len(wantInternal) {
-		t.Fatalf("strippedInternal = %v, want all three keys", strippedInternal)
+		t.Fatalf("strippedInternal = %v, want all four keys", strippedInternal)
 	}
 	for _, n := range strippedInternal {
 		if !wantInternal[n] {
