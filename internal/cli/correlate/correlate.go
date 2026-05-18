@@ -20,6 +20,7 @@ type Group struct {
 	Name    string
 	Members []Candidate
 	AWS     *AWSGroup
+	Basic   *BasicGroup
 }
 
 // AWSGroup carries the real values and source variable names for an AWS
@@ -31,6 +32,17 @@ type AWSGroup struct {
 	AccessKeyIDVar  string
 	SecretKeyVar    string
 	SessionTokenVar string
+}
+
+// BasicGroup carries the real values and source variable names for an
+// HTTP Basic credential pair. UsernameVar/PasswordVar hold the original
+// env-var names so the init flow can rewrite the source file with
+// placeholders for both halves.
+type BasicGroup struct {
+	Username    string
+	Password    string
+	UsernameVar string
+	PasswordVar string
 }
 
 // Correlator consumes a flat list of secret-like candidates and returns
