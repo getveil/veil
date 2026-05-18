@@ -2319,3 +2319,60 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 		t.Errorf("attacker file was rewritten — placeholder substitution leaked through symlinked parent")
 	}
 }
+
+func TestFilterInputs_NoOpWhenOnlyOneInput(t *testing.T) {
+	// With exactly one input total, the upfront filter must NOT prompt
+	// (matches today's filterEnvPaths short-circuit).
+	in := strings.NewReader("")
+	out := new(bytes.Buffer)
+	envs, mcps := filterInputs(in, out, "/tmp/root",
+		[]string{"/tmp/root/.env"},
+		nil,
+		true,
+	)
+	if len(envs) != 1 || len(mcps) != 0 {
+		t.Errorf("expected pass-through, got envs=%v mcps=%v", envs, mcps)
+	}
+	if out.Len() > 0 {
+		t.Errorf("filterInputs printed unexpectedly: %q", out.String())
+	}
+}
+
+func TestFilterInputs_NonInteractivePassThrough(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	mcps := []mcpconfig.DiscoveredConfig{
+		{Path: "/tmp/.mcp.json", Client: mcpconfig.ClaudeCode, Scope: mcpconfig.ProjectScope},
+	}
+	in := strings.NewReader("")
+	out := new(bytes.Buffer)
+	gotEnvs, gotMCPs := filterInputs(in, out, "/tmp", envs, mcps, false)
+	if len(gotEnvs) != 2 || len(gotMCPs) != 1 {
+		t.Errorf("non-interactive must pass through: %v / %v", gotEnvs, gotMCPs)
+	}
+}
+
+func TestFilterInputs_AcceptAll(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	mcps := []mcpconfig.DiscoveredConfig{
+		{Path: "/tmp/.mcp.json", Client: mcpconfig.ClaudeCode, Scope: mcpconfig.ProjectScope},
+	}
+	in := strings.NewReader("y\n")
+	out := new(bytes.Buffer)
+	gotEnvs, gotMCPs := filterInputs(in, out, "/tmp", envs, mcps, true)
+	if len(gotEnvs) != 2 || len(gotMCPs) != 1 {
+		t.Errorf("expected accept-all, got %v / %v", gotEnvs, gotMCPs)
+	}
+}
+
+func TestFilterInputs_DeclineDropsAll(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	mcps := []mcpconfig.DiscoveredConfig{
+		{Path: "/tmp/.mcp.json", Client: mcpconfig.ClaudeCode, Scope: mcpconfig.ProjectScope},
+	}
+	in := strings.NewReader("n\n")
+	out := new(bytes.Buffer)
+	gotEnvs, gotMCPs := filterInputs(in, out, "/tmp", envs, mcps, true)
+	if len(gotEnvs) != 0 || len(gotMCPs) != 0 {
+		t.Errorf("decline must drop all, got %v / %v", gotEnvs, gotMCPs)
+	}
+}

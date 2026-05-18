@@ -125,7 +125,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		return nil
 	}
 
-	envPaths = filterEnvPaths(in, w, root, envPaths, interactive)
+	envPaths, mcpConfigs = filterInputs(in, w, root, envPaths, mcpConfigs, interactive)
 
 	if len(envPaths) > 0 {
 		ui.Step(w, fmt.Sprintf("Found %d .env %s:", len(envPaths), plural(len(envPaths), "file", "files")))

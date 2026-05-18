@@ -262,39 +262,87 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigs []mcpcon
 	)
 }
 
-// filterEnvPaths asks the user to narrow the set of .env files to scan when
-// there is more than one. In non-interactive mode or with a single file the
-// input is returned unchanged.
-func filterEnvPaths(in io.Reader, w io.Writer, root string, envPaths []string, interactive bool) []string {
-	if !interactive || len(envPaths) <= 1 {
-		return envPaths
+// filterInputs asks the user to narrow the combined set of .env files and
+// MCP configs to scan when there is more than one. In non-interactive mode,
+// or when only a single input was discovered, the inputs pass through
+// unchanged. A "Y" answer keeps everything; "n" drops everything; "s" lets
+// the user multi-select across both kinds in one list. Per-secret prompts
+// inside each config still run during processing.
+func filterInputs(
+	in io.Reader,
+	w io.Writer,
+	root string,
+	envPaths []string,
+	mcpConfigs []mcpconfig.DiscoveredConfig,
+	interactive bool,
+) ([]string, []mcpconfig.DiscoveredConfig) {
+	total := len(envPaths) + len(mcpConfigs)
+	if !interactive || total <= 1 {
+		return envPaths, mcpConfigs
 	}
-	_, _ = fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
-	names := make([]string, len(envPaths))
+
+	type entry struct {
+		display string
+		envIdx  int // >= 0 means index into envPaths
+		mcpIdx  int // >= 0 means index into mcpConfigs
+	}
+	var entries []entry
+	_, _ = fmt.Fprintf(w, "\nFound %d %s to process:\n", total, plural(total, "input", "inputs"))
 	for i, p := range envPaths {
 		rel := displayRel(root, p)
-		names[i] = rel
 		_, _ = fmt.Fprintf(w, "  %s\n", rel)
+		entries = append(entries, entry{display: rel, envIdx: i, mcpIdx: -1})
+	}
+	for i, cfg := range mcpConfigs {
+		display := mcpDisplayLabel(root, cfg)
+		_, _ = fmt.Fprintf(w, "  %s\n", display)
+		entries = append(entries, entry{display: display, envIdx: -1, mcpIdx: i})
 	}
 	_, _ = fmt.Fprintln(w)
+
 	switch promptYNS(in, w, "Scan all?") {
+	case choiceYes:
+		return envPaths, mcpConfigs
 	case choiceNo:
-		return nil
+		return nil, nil
 	case choiceSelect:
-		selected := promptMultiSelect(in, w, names)
-		selectedSet := make(map[string]bool, len(selected))
-		for _, s := range selected {
-			selectedSet[s] = true
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.display
 		}
-		var filtered []string
-		for i, p := range envPaths {
-			if selectedSet[names[i]] {
-				filtered = append(filtered, p)
+		picked := make(map[string]bool, len(entries))
+		for _, n := range promptMultiSelect(in, w, names) {
+			picked[n] = true
+		}
+		var selEnvs []string
+		var selMCPs []mcpconfig.DiscoveredConfig
+		for _, e := range entries {
+			if !picked[e.display] {
+				continue
+			}
+			if e.envIdx >= 0 {
+				selEnvs = append(selEnvs, envPaths[e.envIdx])
+			} else {
+				selMCPs = append(selMCPs, mcpConfigs[e.mcpIdx])
 			}
 		}
-		return filtered
+		return selEnvs, selMCPs
 	}
-	return envPaths
+	return envPaths, mcpConfigs
+}
+
+// mcpDisplayLabel formats an MCP config for user-visible lists. User-scope
+// configs under the home dir collapse to "~/..."; project-scope show a
+// path relative to root. Both append "[client, scope]" to disambiguate.
+func mcpDisplayLabel(root string, cfg mcpconfig.DiscoveredConfig) string {
+	if cfg.Scope == mcpconfig.ProjectScope {
+		return fmt.Sprintf("%s  [%s, %s]", displayRel(root, cfg.Path), cfg.Client, cfg.Scope)
+	}
+	display := cfg.Path
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(cfg.Path, home+string(os.PathSeparator)) {
+		display = "~" + strings.TrimPrefix(cfg.Path, home)
+	}
+	return fmt.Sprintf("%s  [%s, %s]", display, cfg.Client, cfg.Scope)
 }
 
 // secretLine is one vaultable key/value pair discovered in a .env file.
