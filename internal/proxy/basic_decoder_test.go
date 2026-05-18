@@ -184,3 +184,37 @@ func TestDecodeBasic_PlaceholderOnlyInSecretHalf(t *testing.T) {
 		t.Errorf("expected 0 swaps when username half does not match, got %d", len(swaps))
 	}
 }
+
+func TestParseBasicHeader(t *testing.T) {
+	cases := []struct {
+		name     string
+		header   string
+		wantUser string
+		wantPass string
+		wantOK   bool
+	}{
+		{"happy std encoding", "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:secret")), "alice", "secret", true},
+		{"happy url encoding", "Basic " + base64.URLEncoding.EncodeToString([]byte("alice:secret")), "alice", "secret", true},
+		{"case-insensitive scheme", "basic " + base64.StdEncoding.EncodeToString([]byte("u:p")), "u", "p", true},
+		{"empty", "", "", "", false},
+		{"too short", "Basic", "", "", false},
+		{"not basic", "Bearer xyz", "", "", false},
+		{"malformed base64", "Basic !!!", "", "", false},
+		{"missing colon", "Basic " + base64.StdEncoding.EncodeToString([]byte("nocolon")), "", "", false},
+		{"empty user empty pass", "Basic " + base64.StdEncoding.EncodeToString([]byte(":")), "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			user, pass, ok := parseBasicHeader(tc.header)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if user != tc.wantUser {
+				t.Errorf("user = %q, want %q", user, tc.wantUser)
+			}
+			if pass != tc.wantPass {
+				t.Errorf("pass = %q, want %q", pass, tc.wantPass)
+			}
+		})
+	}
+}

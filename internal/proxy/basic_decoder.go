@@ -54,29 +54,43 @@ func decodeAndSwapBasic(hdr map[string][]string, pmap map[string]*vault.Credenti
 	return out
 }
 
-// tryRewriteBasic parses one header value. Returns (credential, new-value, true)
-// when a swap should be performed; (nil, "", false) otherwise.
-func tryRewriteBasic(value string, pmap map[string]*vault.Credential, host string) (*vault.Credential, string, bool) {
+// parseBasicHeader decodes a "Basic <base64(user:pass)>" header value
+// and returns the user and password halves. Both std and URL base64
+// alphabets are accepted. Returns ok=false for any non-Basic value,
+// empty value, malformed base64, or payload missing the "user:pass"
+// colon. Used by tryRewriteBasic (to find the swap target) and
+// Injector.ClassifyBasicLeak (to diagnose unpaired-credential leaks).
+func parseBasicHeader(value string) (user, secret string, ok bool) {
 	if value == "" {
-		return nil, "", false
+		return "", "", false
 	}
 	const schemeLen = len("Basic ")
 	if len(value) <= schemeLen {
-		return nil, "", false
+		return "", "", false
 	}
 	if !strings.EqualFold(value[:schemeLen], "Basic ") {
-		return nil, "", false
+		return "", "", false
 	}
 	encoded := strings.TrimSpace(value[schemeLen:])
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		raw, err = base64.URLEncoding.DecodeString(encoded)
 		if err != nil {
-			return nil, "", false
+			return "", "", false
 		}
 	}
 	userPart, secretPart, found := strings.Cut(string(raw), ":")
 	if !found {
+		return "", "", false
+	}
+	return userPart, secretPart, true
+}
+
+// tryRewriteBasic parses one header value. Returns (credential, new-value, true)
+// when a swap should be performed; (nil, "", false) otherwise.
+func tryRewriteBasic(value string, pmap map[string]*vault.Credential, host string) (*vault.Credential, string, bool) {
+	userPart, secretPart, ok := parseBasicHeader(value)
+	if !ok {
 		return nil, "", false
 	}
 
