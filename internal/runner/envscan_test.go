@@ -104,6 +104,25 @@ func TestScanUnvaultedSecretLikes_IgnoresPOSIXNames(t *testing.T) {
 	}
 }
 
+// TestScanUnvaultedSecretLikes_NameGateFiltersTrivialValues asserts the
+// IsSecretLike value-shape gate prevents the runtime "unvaulted" warning
+// from firing on trivial-value name matches like LOG_LEVEL_AUTH=info,
+// which used to force users to add --allow-env-secret for every match.
+func TestScanUnvaultedSecretLikes_NameGateFiltersTrivialValues(t *testing.T) {
+	environ := []string{
+		"LOG_LEVEL_AUTH=info",
+		"AUTH_METHOD=oauth",
+		"DB_PASSWORD_PROMPT=true",
+		"KEY_LAYOUT=us",
+		// And a real-shaped secret that must still be reported.
+		"GHCR_TOKEN=ghp_realtoken1234567",
+	}
+	got := scanUnvaultedSecretLikes(environ, nil, nil)
+	if len(got) != 1 || got[0] != "GHCR_TOKEN" {
+		t.Fatalf("got %v, want [GHCR_TOKEN]", got)
+	}
+}
+
 func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 	var buf bytes.Buffer
 	printUnvaultedWarning(&buf, []string{"FOO_TOKEN", "BAR_SECRET"})
