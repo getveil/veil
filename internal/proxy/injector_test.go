@@ -716,3 +716,93 @@ func TestProcessRequest_WiresGitHubAppSigner(t *testing.T) {
 		t.Errorf("no github_app_jwt_resigned injection")
 	}
 }
+
+func TestClassifyBasicLeak_TwoSeparateCreds(t *testing.T) {
+	credUser := &vault.Credential{
+		ID:                  "u",
+		Name:                "GH_USER",
+		Real:                "alice",
+		Placeholder:         "VEIL_GH_USER_X",
+		UsernamePlaceholder: "VEIL_GH_USER_X",
+	}
+	credPass := &vault.Credential{
+		ID:          "p",
+		Name:        "GH_PASSWORD",
+		Real:        "ghp_real",
+		Placeholder: "VEIL_GH_SECRET_Y",
+	}
+	pmap := map[string]*vault.Credential{
+		"VEIL_GH_USER_X":   credUser,
+		"VEIL_GH_SECRET_Y": credPass,
+	}
+	inj := NewInjector(pmap, nil, 0, "test")
+
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("VEIL_GH_USER_X:VEIL_GH_SECRET_Y")))
+
+	hint := inj.ClassifyBasicLeak(hdr)
+	if hint == "" {
+		t.Fatal("expected non-empty hint for two-separate-creds Basic leak")
+	}
+	if !strings.Contains(hint, "GH_USER") || !strings.Contains(hint, "GH_PASSWORD") {
+		t.Errorf("hint should reference both cred names, got: %q", hint)
+	}
+	if !strings.Contains(hint, "veil add") {
+		t.Errorf("hint should suggest a fix command, got: %q", hint)
+	}
+}
+
+func TestClassifyBasicLeak_SameCredReturnsEmpty(t *testing.T) {
+	// A correctly-paired basic cred should not produce a hint — the leak
+	// must be from host scope or something else, not from unpaired vars.
+	cred := &vault.Credential{
+		ID:                  "p",
+		Name:                "GH",
+		Real:                "ghp_real",
+		Username:            "alice",
+		Placeholder:         "VEIL_GH_SECRET",
+		UsernamePlaceholder: "VEIL_GH_USER",
+	}
+	pmap := map[string]*vault.Credential{
+		"VEIL_GH_USER":   cred,
+		"VEIL_GH_SECRET": cred,
+	}
+	inj := NewInjector(pmap, nil, 0, "test")
+
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("VEIL_GH_USER:VEIL_GH_SECRET")))
+
+	if got := inj.ClassifyBasicLeak(hdr); got != "" {
+		t.Errorf("expected empty hint when both halves point to same cred, got: %q", got)
+	}
+}
+
+func TestClassifyBasicLeak_UnknownPlaceholderReturnsEmpty(t *testing.T) {
+	inj := NewInjector(map[string]*vault.Credential{}, nil, 0, "test")
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("unrelated:value")))
+	if got := inj.ClassifyBasicLeak(hdr); got != "" {
+		t.Errorf("expected empty hint when halves are not placeholders, got: %q", got)
+	}
+}
+
+func TestClassifyBasicLeak_NoBasicHeaderReturnsEmpty(t *testing.T) {
+	inj := NewInjector(map[string]*vault.Credential{}, nil, 0, "test")
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer abcdef")
+	if got := inj.ClassifyBasicLeak(hdr); got != "" {
+		t.Errorf("expected empty hint when no Basic header present, got: %q", got)
+	}
+}
+
+func TestClassifyBasicLeak_ProxyAuthorizationToo(t *testing.T) {
+	credUser := &vault.Credential{ID: "u", Name: "U", UsernamePlaceholder: "VEIL_U"}
+	credPass := &vault.Credential{ID: "p", Name: "P", Placeholder: "VEIL_P"}
+	pmap := map[string]*vault.Credential{"VEIL_U": credUser, "VEIL_P": credPass}
+	inj := NewInjector(pmap, nil, 0, "test")
+	hdr := http.Header{}
+	hdr.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("VEIL_U:VEIL_P")))
+	if got := inj.ClassifyBasicLeak(hdr); got == "" {
+		t.Error("expected hint for Proxy-Authorization too")
+	}
+}

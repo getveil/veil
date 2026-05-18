@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -413,4 +414,47 @@ func parseRequestURL(rawURL string) (host, path, rawQuery string) {
 		return "", "", ""
 	}
 	return u.Host, u.Path, u.RawQuery
+}
+
+// ClassifyBasicLeak inspects Authorization / Proxy-Authorization headers
+// in hdr. When a Basic value's two halves are both placeholders
+// belonging to *different* vault credentials, returns a targeted "how
+// to fix" hint pointing the user at `veil add --scheme basic` or
+// `veil init --force`. Returns "" when no Basic header is present,
+// when the halves cannot be decoded, when at least one half is not a
+// known placeholder, or when both halves point to the same credential
+// (in which case the leak is from a different cause, e.g. host scope).
+//
+// Intended to be called by the leak handler in proxy.go right after
+// detectLeak fires, to enrich the 502 body.
+func (inj *Injector) ClassifyBasicLeak(hdr http.Header) string {
+	inj.mu.RLock()
+	creds := inj.creds
+	inj.mu.RUnlock()
+	if creds == nil {
+		return ""
+	}
+	for _, name := range basicSchemes {
+		for _, v := range hdr[name] {
+			user, secret, ok := parseBasicHeader(v)
+			if !ok {
+				continue
+			}
+			userCred, userOK := creds[user]
+			passCred, passOK := creds[secret]
+			if !userOK || !passOK {
+				continue
+			}
+			if userCred == passCred {
+				continue
+			}
+			return fmt.Sprintf(
+				"Both halves of the Authorization header point to separate vault credentials (%q and %q). "+
+					"Combine them with `veil add NAME --scheme basic --user %s --value-stdin`, "+
+					"or rerun `veil init --force` so the basic-pair correlator can detect them.",
+				userCred.Name, passCred.Name, userCred.Name,
+			)
+		}
+	}
+	return ""
 }
