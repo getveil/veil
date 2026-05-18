@@ -450,9 +450,9 @@ func (inj *Injector) ClassifyBasicLeak(hdr http.Header) string {
 			}
 			return fmt.Sprintf(
 				"Both halves of the Authorization header point to separate vault credentials (%q and %q). "+
-					"Combine them with `veil add NAME --scheme basic --user %s --value-stdin`, "+
-					"or rerun `veil init --force` so the basic-pair correlator can detect them.",
-				userCred.Name, passCred.Name, userCred.Name,
+					"Rerun `veil init --force` so the basic-pair correlator can detect them as one credential, "+
+					"or vault them manually with `veil add %s --user <username> --value-stdin`.",
+				userCred.Name, passCred.Name, passCred.Name,
 			)
 		}
 	}

@@ -186,7 +186,7 @@ func TestBasicLeak_502ContainsHint_TwoSeparateCreds(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
-	for _, want := range []string{"GH_USERNAME", "GH_PASSWORD", "veil add", "--scheme basic"} {
+	for _, want := range []string{"GH_USERNAME", "GH_PASSWORD", "veil init --force", "--user"} {
 		if !strings.Contains(bodyStr, want) {
 			t.Errorf("body missing %q: %q", want, bodyStr)
 		}
