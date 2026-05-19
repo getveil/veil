@@ -50,6 +50,18 @@ type EnvFile struct {
 	Path            string
 	Lines           []Line
 	trailingNewline bool
+
+	// hasBOM is true when the input began with a UTF-8 BOM (U+FEFF). The
+	// BOM is stripped before parsing so it does not become part of the
+	// first KV's key, and re-emitted by Bytes() so the user's encoding
+	// marker round-trips.
+	hasBOM bool
+
+	// lineSep is the file's line-ending style ("\n" for LF, "\r\n" for
+	// CRLF). Detected at parse time so dirty (re-emitted) KV lines match
+	// the surrounding file convention; without this, rewriting one KV in
+	// a CRLF file would leave that single line LF-terminated.
+	lineSep string
 }
 
 // ParseFile reads and parses the .env file at path.
@@ -70,6 +82,22 @@ func ParseBytes(data []byte) *EnvFile {
 }
 
 func parseContent(content string) *EnvFile {
+	f := &EnvFile{lineSep: "\n"}
+	// Strip a leading UTF-8 BOM so it doesn't become part of the first KV's
+	// key (TrimSpace doesn't treat U+FEFF as whitespace). Re-emitted in Bytes
+	// so the file's encoding marker round-trips.
+	const bom = "\uFEFF"
+	if strings.HasPrefix(content, bom) {
+		f.hasBOM = true
+		content = content[len(bom):]
+	}
+	// Detect line-ending style from the first newline encountered. CRLF files
+	// (typical of Windows editors) keep \r on every untouched line via Raw;
+	// dirty re-emissions need lineSep to match or the file ends up with
+	// mixed terminators.
+	if i := strings.IndexByte(content, '\n'); i > 0 && content[i-1] == '\r' {
+		f.lineSep = "\r\n"
+	}
 	// Split into lines. We handle the trailing newline carefully:
 	// if the file ends with \n, the last split element will be empty
 	// and we should NOT include it as a line (it's the terminator, not
@@ -78,7 +106,6 @@ func parseContent(content string) *EnvFile {
 	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
 		rawLines = rawLines[:len(rawLines)-1]
 	}
-	f := &EnvFile{}
 	f.trailingNewline = len(content) > 0 && content[len(content)-1] == '\n'
 	for i := 0; i < len(rawLines); {
 		raw := rawLines[i]
@@ -172,6 +199,15 @@ func unclosedQuoteChar(line string) byte {
 // cap on the identifier rules out base64-encoded PEM body lines, which can
 // contain a trailing "=" padding character (e.g.
 // "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDb...=").
+//
+// SHORT-base64 caveat: PEM keys end with a final body line whose length is
+// whatever the encoding leaves, often <=32 chars and frequently ending in "="
+// or "==" padding (e.g. "abcdefghi=="). Such a line would otherwise pass the
+// length cap and ident shape checks. We additionally require the name to
+// contain at least one uppercase ASCII letter, which real env vars carry by
+// convention (UPPER_CASE / camelCase / PascalCase) and random base64 chunks
+// of all-lowercase do not — without this the safety check itself caused
+// vault rewrites to silently leave PEM bodies in plaintext on disk.
 func looksLikeIndependentKV(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
@@ -188,12 +224,16 @@ func looksLikeIndependentKV(line string) bool {
 	if !isShellIdentStart(name[0]) {
 		return false
 	}
+	hasUpper := name[0] >= 'A' && name[0] <= 'Z'
 	for i := 1; i < len(name); i++ {
 		if !isShellIdentContinue(name[i]) {
 			return false
 		}
+		if name[i] >= 'A' && name[i] <= 'Z' {
+			hasUpper = true
+		}
 	}
-	return true
+	return hasUpper
 }
 
 func isShellIdentStart(b byte) bool {
@@ -399,6 +439,9 @@ func extractTrailingComment(rest string) string {
 // Bytes reconstructs the file content from Lines with round-trip fidelity.
 func (f *EnvFile) Bytes() []byte {
 	var buf bytes.Buffer
+	if f.hasBOM {
+		buf.WriteString("\uFEFF")
+	}
 	for i, l := range f.Lines {
 		switch {
 		case l.Kind == KVLine && l.dirty:
@@ -418,6 +461,12 @@ func (f *EnvFile) Bytes() []byte {
 					buf.WriteByte(' ')
 				}
 				buf.WriteString(l.TrailingComment)
+			}
+			// Untouched lines keep the original CR via Raw; the rebuilt
+			// line has none, so add one when the file's convention is CRLF
+			// to avoid mixed line endings in the rewritten file.
+			if f.lineSep == "\r\n" {
+				buf.WriteByte('\r')
 			}
 		default:
 			// Emit the original line verbatim for round-trip fidelity.
