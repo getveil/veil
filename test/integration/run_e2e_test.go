@@ -297,6 +297,9 @@ func TestE2E_EnvRoundTrip(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 
+	// DB_PASSWORD has no named provider in v0.1.x, so it goes to the
+	// "Unrecognized" bucket and is left as-is. OPENAI_API_KEY (named
+	// provider) and URL_WITH_PASS (URL-with-password) are vaulted.
 	envContent := `# Database config
 export DB_HOST=localhost
 DB_PORT=5432
@@ -352,10 +355,12 @@ URL_WITH_PASS=postgres://admin:secretpass123456789@db.example.com:5432/app
 		t.Error("EMPTY_VAL should be unchanged")
 	}
 
-	// Secret values should be replaced.
-	if strings.Contains(envStr, "mysecretpassword1234567890") {
-		t.Error("DB_PASSWORD was not replaced")
+	// DB_PASSWORD has no named provider — it is left as-is (Unrecognized).
+	if !strings.Contains(envStr, "DB_PASSWORD=mysecretpassword1234567890") {
+		t.Error("DB_PASSWORD should be left unchanged (no named provider in v0.1.x)")
 	}
+
+	// Named-provider and URL-with-password secrets should be replaced.
 	if strings.Contains(envStr, "sk-proj-1234567890abcdef") {
 		t.Error("OPENAI_API_KEY was not replaced")
 	}

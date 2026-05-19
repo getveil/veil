@@ -439,17 +439,23 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		return 0, 0, nil
 	}
 
-	creds, vaulted, scoped, err := buildEnvFileCredentials(envFile, selectedGroups, selectedSecrets, seen)
+	res, err := buildEnvFileCredentials(envFile, selectedGroups, selectedSecrets, seen)
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(creds) == 0 {
+	if len(res.Creds) == 0 && len(res.NotManaged) == 0 && len(res.Unrecognized) == 0 {
 		return 0, 0, nil
 	}
 
+	printVaultSummary(w, res)
+
 	if dryRun {
-		printDryRunVaultLines(w, selectedGroups, selectedSecrets, creds)
-		return vaulted, scoped, nil
+		printDryRunVaultLines(w, selectedGroups, selectedSecrets, res.Creds)
+		return res.Vaulted, res.Scoped, nil
+	}
+
+	if len(res.Creds) == 0 {
+		return 0, 0, nil
 	}
 
 	// envFile has already been mutated in place; freeze the bytes before any
@@ -460,7 +466,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	// duplicate at AddBatch time means a prior partial run stranded a cred
 	// without a matching backup/rewrite; skipping silently would strand it.
 	if force {
-		for _, c := range creds {
+		for _, c := range res.Creds {
 			if v.HasCredential(c.Name) {
 				if _, err := v.Delete(c.Name); err != nil {
 					return 0, 0, wrapErr(fmt.Sprintf("clearing existing %s for --force", c.Name), err)
@@ -472,7 +478,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err := writeBackup(envPath); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 	}
-	if err := v.AddBatch(creds); err != nil {
+	if err := v.AddBatch(res.Creds); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", envPath), err)
 	}
 	if err := registerVaultedFile(root, envPath, vault.KindEnv); err != nil {
@@ -481,7 +487,27 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err := atomicWriteFile(envPath, newBytes); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing %s", envPath), err)
 	}
-	return vaulted, scoped, nil
+	return res.Vaulted, res.Scoped, nil
+}
+
+// skippedEntry is a secret that `veil init` decided not to vault.
+// Reason is the human-readable label shown in the summary.
+type skippedEntry struct {
+	key      string
+	value    string
+	provider string
+	reason   string
+}
+
+// vaultBuildResult bundles the outputs of buildEnvFileCredentials so
+// callers can render the three-section summary without changing the
+// function's positional return list every time a new bucket is added.
+type vaultBuildResult struct {
+	Creds        []*vault.Credential
+	Vaulted      int
+	Scoped       int
+	NotManaged   []skippedEntry // recognized provider but not vault-eligible
+	Unrecognized []secretLine   // no provider matched (charclass fallback)
 }
 
 // buildEnvFileCredentials constructs the credentials for one .env file from
@@ -494,64 +520,48 @@ func buildEnvFileCredentials(
 	groups []correlate.Group,
 	secrets []secretLine,
 	seen placeholder.Set,
-) (creds []*vault.Credential, vaulted, scoped int, err error) {
+) (vaultBuildResult, error) {
+	var res vaultBuildResult
 	for _, g := range groups {
 		switch g.Scheme {
 		case "aws":
-			secretPh, gErr := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
-			if gErr != nil {
-				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), gErr)
-			}
-			seen[secretPh] = struct{}{}
-
-			akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
-			seen[akIDPh] = struct{}{}
-
-			var sessPh string
-			if g.AWS.SessionToken != "" {
-				sessPh, gErr = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
-				if gErr != nil {
-					return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), gErr)
-				}
-				seen[sessPh] = struct{}{}
-			}
-
-			creds = append(creds, &vault.Credential{
-				ID:                         vault.NewID(),
-				Name:                       g.Name,
-				Real:                       g.AWS.SecretKey,
-				Placeholder:                secretPh,
-				Source:                     "init",
-				AllowedHosts:               []string{"*.amazonaws.com"},
-				CreatedAt:                  time.Now(),
-				Scheme:                     "aws",
-				AWSAccessKeyID:             g.AWS.AccessKeyID,
-				AWSAccessKeyIDPlaceholder:  akIDPh,
-				AWSSessionToken:            g.AWS.SessionToken,
-				AWSSessionTokenPlaceholder: sessPh,
-			})
-			envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
-			envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
+			res.NotManaged = append(res.NotManaged,
+				skippedEntry{
+					key:      g.AWS.AccessKeyIDVar,
+					value:    g.AWS.AccessKeyID,
+					provider: "aws",
+					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+				},
+				skippedEntry{
+					key:      g.AWS.SecretKeyVar,
+					value:    g.AWS.SecretKey,
+					provider: "aws",
+					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+				})
 			if g.AWS.SessionTokenVar != "" {
-				envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
+				res.NotManaged = append(res.NotManaged, skippedEntry{
+					key:      g.AWS.SessionTokenVar,
+					value:    g.AWS.SessionToken,
+					provider: "aws",
+					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+				})
 			}
-			vaulted++
-			scoped++
+			continue
 
 		case "basic":
 			userPh, gErr := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
 			if gErr != nil {
-				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), gErr)
+				return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), gErr)
 			}
 			seen[userPh] = struct{}{}
 			passPh, gErr := placeholder.Generate(g.Basic.PasswordVar, g.Basic.Password, seen)
 			if gErr != nil {
-				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), gErr)
+				return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), gErr)
 			}
 			seen[passPh] = struct{}{}
 
 			credHosts := placeholder.HostsForCredential(g.Basic.PasswordVar, g.Basic.Password)
-			creds = append(creds, &vault.Credential{
+			res.Creds = append(res.Creds, &vault.Credential{
 				ID:                  vault.NewID(),
 				Name:                g.Name, // password var's key
 				Real:                g.Basic.Password,
@@ -565,20 +575,40 @@ func buildEnvFileCredentials(
 			})
 			envFile.SetValue(g.Basic.UsernameVar, userPh)
 			envFile.SetValue(g.Basic.PasswordVar, passPh)
-			vaulted++
+			res.Vaulted++
 			if len(credHosts) > 0 {
-				scoped++
+				res.Scoped++
 			}
 		}
 	}
 
 	for _, s := range secrets {
+		p := placeholder.DefaultRegistry().Match(s.key, s.value)
+		if p == nil {
+			// A nil match means no named provider claimed this secret.
+			// URL-with-password values (postgres://, mysql://, etc.) are
+			// vault-eligible via the URL rewrite path even without a named
+			// provider. Pure charclass fallbacks are unrecognized.
+			if !placeholder.IsURLWithPassword(s.value) {
+				res.Unrecognized = append(res.Unrecognized, s)
+				continue
+			}
+			// Fall through to vault as URL credential.
+		} else if !placeholder.VaultEligible(p) {
+			res.NotManaged = append(res.NotManaged, skippedEntry{
+				key:      s.key,
+				value:    s.value,
+				provider: p.Name,
+				reason:   placeholder.AuthSchemeReason(p.AuthScheme),
+			})
+			continue
+		}
 		ph, gErr := placeholder.Generate(s.key, s.value, seen)
 		if gErr != nil {
-			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), gErr)
+			return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), gErr)
 		}
 		credHosts := placeholder.HostsForCredential(s.key, s.value)
-		creds = append(creds, &vault.Credential{
+		res.Creds = append(res.Creds, &vault.Credential{
 			ID:           vault.NewID(),
 			Name:         s.key,
 			Real:         s.value,
@@ -589,13 +619,13 @@ func buildEnvFileCredentials(
 		})
 		envFile.SetValue(s.key, ph)
 		seen[ph] = struct{}{}
-		vaulted++
+		res.Vaulted++
 		if len(credHosts) > 0 {
-			scoped++
+			res.Scoped++
 		}
 	}
 
-	return creds, vaulted, scoped, nil
+	return res, nil
 }
 
 // applyEnvFileMutations rewrites envFile in place so each credential's source
@@ -642,22 +672,20 @@ func replaceValueIfMatches(envFile *scanner.EnvFile, oldVal, newVal string) {
 // printDryRunVaultLines emits the same "would vault" lines the legacy code
 // path produced, derived from the prepared credentials. Group lines list
 // each member var. Both groups and creds[] share appearance order.
+// AWS groups are skipped here because they are no longer vault-eligible
+// and appear instead in the "Not managed" section via printVaultSummary.
 func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secretLine, creds []*vault.Credential) {
 	ci := 0
 	for _, g := range groups {
+		if g.Scheme == "aws" {
+			continue // AWS is not vault-eligible; shown in Not-managed summary
+		}
 		if ci >= len(creds) {
 			break
 		}
 		c := creds[ci]
 		ci++
 		switch g.Scheme {
-		case "aws":
-			ui.Dimf(w, "  would vault (aws): %s", g.Name)
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, c.AWSAccessKeyIDPlaceholder)
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, c.Placeholder)
-			if g.AWS.SessionToken != "" {
-				ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, c.AWSSessionTokenPlaceholder)
-			}
 		case "basic":
 			ui.Dimf(w, "  would vault (basic): %s", g.Name)
 			ui.Dimf(w, "    %-24s -> %s", g.Basic.UsernameVar, c.UsernamePlaceholder)
@@ -671,6 +699,30 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 		c := creds[ci]
 		ci++
 		ui.Dimf(w, "  would vault: %s -> %s", s.key, c.Placeholder)
+	}
+}
+
+// printVaultSummary emits the three-section summary: Managed, Not managed,
+// and Unrecognized. Called on every run (not just --dry-run) after
+// buildEnvFileCredentials returns.
+func printVaultSummary(w io.Writer, res vaultBuildResult) {
+	if len(res.Creds) > 0 {
+		fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
+		for _, c := range res.Creds {
+			fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
+		}
+	}
+	if len(res.NotManaged) > 0 {
+		fmt.Fprintf(w, "\nNot managed — Veil v0.1.x doesn't mediate these yet (%d):\n", len(res.NotManaged))
+		for _, s := range res.NotManaged {
+			fmt.Fprintf(w, "    %-30s %s\n", s.key, s.reason)
+		}
+	}
+	if len(res.Unrecognized) > 0 {
+		fmt.Fprintf(w, "\nUnrecognized — left as-is (%d):\n", len(res.Unrecognized))
+		for _, s := range res.Unrecognized {
+			fmt.Fprintf(w, "    %-30s %s\n", s.key, "no known format")
+		}
 	}
 }
 

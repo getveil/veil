@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -701,5 +702,58 @@ func TestProcessEnvFileDryRunNoSideEffects(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "would vault:") {
 		t.Errorf("expected dry-run output, got: %s", out.String())
+	}
+}
+
+func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
+	envFile := scanner.ParseBytes([]byte(
+		"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n" +
+			"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
+			"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"))
+
+	// Build the secret list the way processEnvFile would, but skip the
+	// correlator so the AWS pair stays out of the `groups` argument; this
+	// test isolates the loose-secret loop.
+	var secrets []secretLine
+	for i, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
+			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
+		}
+	}
+
+	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	if err != nil {
+		t.Fatalf("buildEnvFileCredentials: %v", err)
+	}
+
+	// Only GITHUB_TOKEN may be vaulted; both AWS_* go to NotManaged.
+	if len(res.Creds) != 1 || res.Creds[0].Name != "GITHUB_TOKEN" {
+		t.Fatalf("Creds = %+v, want exactly GITHUB_TOKEN", res.Creds)
+	}
+	if len(res.NotManaged) != 2 {
+		t.Fatalf("NotManaged len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.NotManaged))
+	}
+}
+
+func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
+	envFile := scanner.ParseBytes([]byte(
+		"OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF01\n" +
+			"WEIRD_SECRET=just_a_long_random_value_with_no_known_format_42\n"))
+	var secrets []secretLine
+	for i, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
+			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
+		}
+	}
+
+	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	if err != nil {
+		t.Fatalf("buildEnvFileCredentials: %v", err)
+	}
+	if len(res.Creds) != 1 || res.Creds[0].Name != "OPENAI_API_KEY" {
+		t.Fatalf("Creds = %+v, want exactly OPENAI_API_KEY", res.Creds)
+	}
+	if len(res.Unrecognized) != 1 || res.Unrecognized[0].key != "WEIRD_SECRET" {
+		t.Fatalf("Unrecognized = %+v, want exactly WEIRD_SECRET", res.Unrecognized)
 	}
 }

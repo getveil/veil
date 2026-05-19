@@ -20,6 +20,14 @@ var allowedSchemes = map[string]bool{
 	"https":       true,
 }
 
+// IsURLWithPassword reports whether value is a URL carrying a password in a
+// supported scheme (postgres, mysql, redis, etc.). Used by `veil init` to
+// decide whether a nil-registry-match should be vaulted via the URL path
+// rather than classified as unrecognized.
+func IsURLWithPassword(value string) bool {
+	return isURLWithPassword(value)
+}
+
 // isURLWithPassword checks if value is a URL with a password in a supported
 // scheme, without generating any fake data (no RNG consumption).
 func isURLWithPassword(value string) bool {
