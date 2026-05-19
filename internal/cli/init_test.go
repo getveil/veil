@@ -555,7 +555,7 @@ func TestInitWithMCPConfig(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--scan-mcp"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
@@ -626,7 +626,7 @@ func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--scan-mcp"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
@@ -681,7 +681,7 @@ func TestInitMCPDryRun(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir, "--scan-mcp"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init --dry-run failed: %v", err)
@@ -748,7 +748,7 @@ func TestInitMCPForceWithExistingBackup(t *testing.T) {
 	cmd1 := NewRoot("test")
 	cmd1.SetOut(new(bytes.Buffer))
 	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir})
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--scan-mcp"})
 	if err := cmd1.Execute(); err != nil {
 		t.Fatalf("first init failed: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestInitMCPForceWithExistingBackup(t *testing.T) {
 	cmd2 := NewRoot("test")
 	cmd2.SetOut(new(bytes.Buffer))
 	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
+	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir, "--scan-mcp"})
 
 	if err := cmd2.Execute(); err != nil {
 		t.Fatalf("init --force failed: %v", err)
@@ -823,7 +823,7 @@ func TestInitMCPCredentialNameFormat(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--scan-mcp"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
@@ -905,7 +905,7 @@ func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
 	errBuf := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(errBuf)
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init with orphan backup failed: %v", err)
@@ -1882,7 +1882,7 @@ func TestInitVaultsMCPArgsToken(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -1949,7 +1949,7 @@ func TestInitVaultsMCPArgsDSN(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -2019,7 +2019,7 @@ func TestInitSkipsBenignMCPArgs(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -2082,7 +2082,7 @@ func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 	cmd1 := NewRoot("test")
 	cmd1.SetOut(new(bytes.Buffer))
 	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
 	if err := cmd1.Execute(); err != nil {
 		t.Fatalf("first init failed: %v", err)
 	}
@@ -2101,7 +2101,7 @@ func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 	cmd2 := NewRoot("test")
 	cmd2.SetOut(new(bytes.Buffer))
 	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--force", "--yes"})
+	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--force", "--yes", "--scan-mcp"})
 	if err := cmd2.Execute(); err == nil {
 		t.Fatal("expected --force to refuse re-vaulting placeholder-laden MCP args, got nil error")
 	}
@@ -2500,7 +2500,7 @@ func TestInit_DiscoversMultipleMCPConfigs(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", root, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init: %v\n%s", err, out.String())
 	}
@@ -2524,5 +2524,282 @@ func TestInit_DiscoversMultipleMCPConfigs(t *testing.T) {
 		if _, err := os.Stat(p + ".veil-backup"); err != nil {
 			t.Errorf("missing backup for %s: %v", p, err)
 		}
+	}
+}
+
+// TestInit_ScanMCPFlag_DefaultOffSkipsMCPProcessing verifies that without the
+// --scan-mcp flag init does NOT walk into mcpconfig.Discover() (user-scope) and
+// does NOT consume scanRes.MCPConfigs (project-scope). Both kinds of MCP config
+// must remain unmodified, no backup must be written next to them, and the
+// output must not mention MCP at all.
+func TestInit_ScanMCPFlag_DefaultOffSkipsMCPProcessing(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Opt back in to user-scope discovery so the *absence* of --scan-mcp is
+	// what must suppress it (not the test-suite default).
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+	t.Setenv("HOME", t.TempDir())
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// .env so init does not bail early.
+	envContent := "OPENAI_API_KEY=sk-proj-env-1234567890abcdef\n"
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project-scope MCP config: .mcp.json in project root.
+	projectMCPPath := filepath.Join(tmpDir, ".mcp.json")
+	projectJSON := `{"mcpServers":{"oa":{"command":"npx","args":["-y","x"],"env":{"OPENAI_MCP_KEY":"sk-proj-mcp1234567890abcdef"}}}}`
+	if err := os.WriteFile(projectMCPPath, []byte(projectJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// User-scope MCP config via VEIL_MCP_CONFIG_PATH override (Claude Desktop slot).
+	userMCPDir := t.TempDir()
+	userMCPPath := filepath.Join(userMCPDir, "claude_desktop_config.json")
+	userJSON := `{"mcpServers":{"gh":{"command":"npx","args":["-y","x"],"env":{"GITHUB_MCP_TOKEN":"ghp_mcp1234567890abcdef1234567890abcdef"}}}}`
+	if err := os.WriteFile(userMCPPath, []byte(userJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", userMCPPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	// Both MCP configs must be byte-identical to what we wrote.
+	if got, err := os.ReadFile(projectMCPPath); err != nil {
+		t.Fatal(err)
+	} else if string(got) != projectJSON {
+		t.Errorf("project MCP config was modified despite --scan-mcp off:\ngot:  %s\nwant: %s", got, projectJSON)
+	}
+	if got, err := os.ReadFile(userMCPPath); err != nil {
+		t.Fatal(err)
+	} else if string(got) != userJSON {
+		t.Errorf("user-scope MCP config was modified despite --scan-mcp off:\ngot:  %s\nwant: %s", got, userJSON)
+	}
+
+	// No backup files written next to either MCP config.
+	if _, err := os.Stat(projectMCPPath + ".veil-backup"); err == nil {
+		t.Error("project MCP backup exists; --scan-mcp off must skip processing")
+	}
+	if _, err := os.Stat(userMCPPath + ".veil-backup"); err == nil {
+		t.Error("user-scope MCP backup exists; --scan-mcp off must skip processing")
+	}
+
+	// Output must not surface anything from the MCP scanning path.
+	// Match phrases that only appear when MCP scanning ran (and not the
+	// test name "MCP" that leaks into temp dir paths in the output).
+	outStr := out.String()
+	for _, forbidden := range []string{"MCP config", "MCP configs", "mcp:", "would vault: mcp"} {
+		if strings.Contains(outStr, forbidden) {
+			t.Errorf("output mentions %q despite --scan-mcp being off:\n%s", forbidden, outStr)
+		}
+	}
+}
+
+// TestInit_ScanMCPFlag_OnProcessesBothScopes verifies that --scan-mcp opts in
+// to both user-scope (mcpconfig.Discover) and project-scope (scanRes.MCPConfigs)
+// processing.
+func TestInit_ScanMCPFlag_OnProcessesBothScopes(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+	t.Setenv("HOME", t.TempDir())
+	clearShellEnvTestNoise(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-proj-env-1234567890abcdef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	projectMCPPath := filepath.Join(tmpDir, ".mcp.json")
+	projectSecret := "sk-proj-mcp1234567890abcdef"
+	projectJSON := `{"mcpServers":{"oa":{"command":"npx","args":["-y","x"],"env":{"OPENAI_MCP_KEY":"` + projectSecret + `"}}}}`
+	if err := os.WriteFile(projectMCPPath, []byte(projectJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	userMCPDir := t.TempDir()
+	userMCPPath := filepath.Join(userMCPDir, "claude_desktop_config.json")
+	userSecret := "ghp_mcp1234567890abcdef1234567890abcdef"
+	userJSON := `{"mcpServers":{"gh":{"command":"npx","args":["-y","x"],"env":{"GITHUB_MCP_TOKEN":"` + userSecret + `"}}}}`
+	if err := os.WriteFile(userMCPPath, []byte(userJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", userMCPPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	for _, p := range []struct {
+		path   string
+		secret string
+	}{
+		{projectMCPPath, projectSecret},
+		{userMCPPath, userSecret},
+	} {
+		data, err := os.ReadFile(p.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), p.secret) {
+			t.Errorf("%s still contains real secret after --scan-mcp init", p.path)
+		}
+		if _, err := os.Stat(p.path + ".veil-backup"); err != nil {
+			t.Errorf("missing backup for %s: %v", p.path, err)
+		}
+	}
+
+	if !strings.Contains(out.String(), "MCP configs processed:") {
+		t.Errorf("expected MCP summary line with --scan-mcp on, got:\n%s", out.String())
+	}
+}
+
+// TestInit_ScanShellEnvFlag_DefaultOffSkipsShellScan verifies that without
+// --scan-shell-env init does NOT call scanner.ScanEnviron(os.Environ()), so
+// a shell-exported secret remains uncaptured and the shell-env phase emits
+// no output.
+func TestInit_ScanShellEnvFlag_DefaultOffSkipsShellScan(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A .env with a different (.env-only) key so init has something to process
+	// — we want to reach past the early-exit gate, then assert the shell value
+	// was NOT picked up.
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte("HOSTNAME=myserver\nDATABASE_URL=postgres://u:pw@h/db\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	if _, ok := v.Get("OPENAI_API_KEY"); ok {
+		t.Errorf("vault has OPENAI_API_KEY despite --scan-shell-env being off; names=%v", v.Names())
+	}
+
+	outStr := out.String()
+	for _, forbidden := range []string{"Scanning shell environment", "shell-exported", "from shell"} {
+		if strings.Contains(outStr, forbidden) {
+			t.Errorf("output mentions %q despite --scan-shell-env being off:\n%s", forbidden, outStr)
+		}
+	}
+}
+
+// TestInit_ScanShellEnvFlag_OnCapturesSecret verifies that --scan-shell-env
+// opts in to the shell-environment scanning path.
+func TestInit_ScanShellEnvFlag_OnCapturesSecret(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-shell-env"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	c, ok := v.Get("OPENAI_API_KEY")
+	if !ok {
+		t.Fatalf("vault missing OPENAI_API_KEY with --scan-shell-env on; names=%v", v.Names())
+	}
+	if c.Real != "sk-proj-shell-1234567890abcdef" {
+		t.Errorf("vaulted value=%q", c.Real)
+	}
+}
+
+// TestInit_ScanFlagsIndependent verifies the two flags are independent: turning
+// on --scan-mcp must not enable shell-env scanning, and vice versa.
+func TestInit_ScanFlagsIndependent(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
+	t.Setenv("HOME", t.TempDir())
+	clearShellEnvTestNoise(t)
+	t.Setenv("STRIPE_API_KEY", "sk_test_shellonly1234567890abcdef")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectMCPPath := filepath.Join(tmpDir, ".mcp.json")
+	projectSecret := "ghp_mcponly1234567890abcdef1234567890abcdef"
+	projectJSON := `{"mcpServers":{"gh":{"command":"npx","args":["-y","x"],"env":{"GITHUB_MCP_TOKEN":"` + projectSecret + `"}}}}`
+	if err := os.WriteFile(projectMCPPath, []byte(projectJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only --scan-mcp: MCP must process, shell-env must NOT.
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
+	}
+
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	if _, ok := v.Get("STRIPE_API_KEY"); ok {
+		t.Errorf("shell-exported STRIPE_API_KEY was vaulted with only --scan-mcp set")
+	}
+	data, err := os.ReadFile(projectMCPPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), projectSecret) {
+		t.Errorf("project MCP secret was NOT vaulted with --scan-mcp set")
 	}
 }

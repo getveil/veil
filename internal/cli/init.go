@@ -59,22 +59,24 @@ func (l *lineReader) Read(p []byte) (int, error) {
 }
 
 func initCmd() *cobra.Command {
-	var force, dryRun, yes bool
+	var force, dryRun, yes, scanShellEnv, scanMCP bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize Veil for the current project",
 		Long:  "Scan .env files, vault secrets, and replace them with placeholders.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInit(cmd, force, dryRun, yes)
+			return runInit(cmd, force, dryRun, yes, scanShellEnv, scanMCP)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "reinitialize even if .veil/ exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be vaulted without making changes")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept all defaults non-interactively")
+	cmd.Flags().BoolVar(&scanShellEnv, "scan-shell-env", false, "scan os.Environ() for secret-like shell exports")
+	cmd.Flags().BoolVar(&scanMCP, "scan-mcp", false, "scan for MCP configs (user-global and project-scope)")
 	return cmd
 }
 
-func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
+func runInit(cmd *cobra.Command, force, dryRun, yes, scanShellEnv, scanMCP bool) error {
 	w := cmd.OutOrStdout()
 	stdin := cmd.InOrStdin()
 	interactive, announce := detectInteractive(stdin, yes)
@@ -107,19 +109,29 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 	envPaths := scanRes.EnvPaths
 
-	userMCP, err := mcpconfig.Discover()
-	if err != nil {
-		return wrapErr("discovering MCP config", err)
+	// --scan-mcp gates BOTH user-scope discovery (mcpconfig.Discover) and
+	// project-scope configs returned by scanner.ScanAll. When off, no MCP
+	// path emits output, prompts, or processing work — the loops below
+	// iterate over an empty slice.
+	var mcpConfigs []mcpconfig.DiscoveredConfig
+	if scanMCP {
+		userMCP, err := mcpconfig.Discover()
+		if err != nil {
+			return wrapErr("discovering MCP config", err)
+		}
+		// User-scope first (typically external paths), then project-scope (inside
+		// root). Order shapes the summary print and prompt list — predictable.
+		mcpConfigs = append(mcpConfigs, userMCP...)
+		mcpConfigs = append(mcpConfigs, scanRes.MCPConfigs...)
 	}
-	// User-scope first (typically external paths), then project-scope (inside
-	// root). Order shapes the summary print and prompt list — predictable.
-	mcpConfigs := append([]mcpconfig.DiscoveredConfig{}, userMCP...)
-	mcpConfigs = append(mcpConfigs, scanRes.MCPConfigs...)
-	// Precompute shell-env candidates so the early-exit gate considers all
-	// three sources. Empty-valued candidates are dropped so they don't
-	// wrongly bypass that gate; processShellEnv drops them anyway.
-	shellCandidates := scanner.ScanEnviron(os.Environ())
-	shellCandidates = nonEmptyShellCandidates(shellCandidates)
+	// --scan-shell-env gates scanner.ScanEnviron(os.Environ()). When off,
+	// the candidate list stays empty so the early-exit gate, the shell-env
+	// phase header, and processShellEnv are all skipped silently.
+	var shellCandidates []scanner.EnvironCandidate
+	if scanShellEnv {
+		shellCandidates = scanner.ScanEnviron(os.Environ())
+		shellCandidates = nonEmptyShellCandidates(shellCandidates)
+	}
 	if len(envPaths) == 0 && len(mcpConfigs) == 0 && len(shellCandidates) == 0 {
 		_, _ = fmt.Fprintf(w, "no .env files, MCP configs, or shell-exported secrets found in %s\n", root)
 		return nil
