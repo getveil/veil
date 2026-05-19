@@ -107,50 +107,12 @@ const (
 //   - The key name matches common secret-related patterns.
 //   - The value is long, has high Shannon entropy, AND has enough distinct
 //     bytes to rule out repetitive strings and typical file paths.
+//
+// IsSecretLike is a thin wrapper over DetectWithReason; callers that need
+// to know which gate matched should call DetectWithReason directly.
 func IsSecretLike(name, value string) bool {
-	// Pre-gate: env-var names with front-end build-system public-bundle
-	// prefixes (NEXT_PUBLIC_, VITE_, REACT_APP_, etc.) are intentionally
-	// shipped to clients and must not be vaulted.
-	if hasPublicEnvPrefix(name) {
-		return false
-	}
-
-	// Pre-gate: developer stub values (your_token_here, <TOKEN>, {{key}},
-	// ${KEY}, xxxx+) must never be classified as real secrets, regardless
-	// of name or downstream gates.
-	if isStubValue(value) {
-		return false
-	}
-
-	// 1. Check provider patterns (Priority-sorted).
-	for _, p := range DefaultRegistry().All() {
-		if p.Match(name, value) {
-			return true
-		}
-	}
-
-	// 2. Check URL with password.
-	if isURLWithPassword(value) {
-		return true
-	}
-
-	// 3. Check key name heuristic, gated by a value-shape floor so trivial
-	// values like "info", "oauth", "true" don't trip the heuristic just
-	// because the name contains "auth"/"token"/"pwd"/etc.
-	if secretNamePattern.MatchString(name) {
-		if len(value) >= nameMatchMinLength && distinctBytes(value) >= nameMatchMinDistinct {
-			return true
-		}
-	}
-
-	// 4. Length + entropy + distinct-byte check.
-	if len(value) >= secretMinLength &&
-		shannonEntropy(value) >= secretMinEntropy &&
-		distinctBytes(value) >= secretMinDistinct {
-		return true
-	}
-
-	return false
+	ok, _ := DetectWithReason(name, value)
+	return ok
 }
 
 // shannonEntropy computes Shannon entropy in bits per character over byte

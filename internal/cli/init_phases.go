@@ -503,6 +503,7 @@ type skippedEntry struct {
 // function's positional return list every time a new bucket is added.
 type vaultBuildResult struct {
 	Creds        []*vault.Credential
+	CredReasons  []placeholder.Reason // parallel to Creds; describes which detection gate fired
 	Vaulted      int
 	Scoped       int
 	NotManaged   []skippedEntry // recognized provider but not vault-eligible
@@ -569,6 +570,11 @@ func buildEnvFileCredentials(
 				UsernamePlaceholder: userPh,
 				UsernameVar:         g.Basic.UsernameVar,
 			})
+			// Basic pairs are produced by the correlator's name-pattern
+			// pairing, so the most honest reason is the name-gate
+			// applied to the password var.
+			_, reason := placeholder.DetectWithReason(g.Basic.PasswordVar, g.Basic.Password)
+			res.CredReasons = append(res.CredReasons, reason)
 			envFile.SetValue(g.Basic.UsernameVar, userPh)
 			envFile.SetValue(g.Basic.PasswordVar, passPh)
 			res.Vaulted++
@@ -580,6 +586,7 @@ func buildEnvFileCredentials(
 
 	for _, s := range secrets {
 		p := placeholder.DefaultRegistry().Match(s.key, s.value)
+		var reason placeholder.Reason
 		if p == nil {
 			// A nil match means no named provider claimed this secret.
 			// URL-with-password values (postgres://, mysql://, etc.) are
@@ -590,6 +597,7 @@ func buildEnvFileCredentials(
 				continue
 			}
 			// Fall through to vault as URL credential.
+			reason = placeholder.Reason{Kind: placeholder.ReasonURLUserinfo}
 		} else if !placeholder.VaultEligible(p) {
 			res.NotManaged = append(res.NotManaged, skippedEntry{
 				key:    s.key,
@@ -597,6 +605,8 @@ func buildEnvFileCredentials(
 				reason: placeholder.AuthSchemeReason(p.AuthScheme),
 			})
 			continue
+		} else {
+			reason = placeholder.Reason{Kind: placeholder.ReasonProvider, Detail: p.Name}
 		}
 		ph, gErr := placeholder.Generate(s.key, s.value, seen)
 		if gErr != nil {
@@ -612,6 +622,7 @@ func buildEnvFileCredentials(
 			AllowedHosts: credHosts,
 			CreatedAt:    time.Now(),
 		})
+		res.CredReasons = append(res.CredReasons, reason)
 		envFile.SetValue(s.key, ph)
 		seen[ph] = struct{}{}
 		res.Vaulted++
@@ -705,8 +716,16 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 	if !dryRun && len(res.Creds) > 0 {
 		_, _ = fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
-		for _, c := range res.Creds {
-			_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
+		for i, c := range res.Creds {
+			ann := ""
+			if i < len(res.CredReasons) {
+				ann = res.CredReasons[i].Annotation()
+			}
+			if ann == "" {
+				_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
+			} else {
+				_, _ = fmt.Fprintf(w, "    %s    %s  %s\n", c.Name, c.Placeholder, ann)
+			}
 		}
 	}
 	if len(res.NotManaged) > 0 {

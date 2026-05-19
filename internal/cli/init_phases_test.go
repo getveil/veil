@@ -782,3 +782,88 @@ func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 		t.Fatalf("Unrecognized = %+v, want exactly WEIRD_SECRET", res.Unrecognized)
 	}
 }
+
+// TestBuildEnvFileCredentials_PopulatesCredReasons verifies that each entry
+// in res.Creds has a parallel entry in res.CredReasons describing which
+// detection gate fired.
+func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
+	envFile := scanner.ParseBytes([]byte(
+		"OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n" +
+			"DATABASE_URL=postgres://u:longerpassword@db.prod.internal/app\n"))
+
+	var secrets []secretLine
+	for i, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
+			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
+		}
+	}
+
+	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	if err != nil {
+		t.Fatalf("buildEnvFileCredentials: %v", err)
+	}
+	if len(res.Creds) != 2 {
+		t.Fatalf("Creds len = %d, want 2", len(res.Creds))
+	}
+	if len(res.CredReasons) != len(res.Creds) {
+		t.Fatalf("CredReasons len = %d, want %d (same as Creds)", len(res.CredReasons), len(res.Creds))
+	}
+	// OPENAI_API_KEY → provider:openai.
+	openaiIdx := -1
+	for i, c := range res.Creds {
+		if c.Name == "OPENAI_API_KEY" {
+			openaiIdx = i
+		}
+	}
+	if openaiIdx == -1 {
+		t.Fatal("OPENAI_API_KEY not in Creds")
+	}
+	if res.CredReasons[openaiIdx].Kind != placeholder.ReasonProvider {
+		t.Errorf("OPENAI reason kind = %v, want ReasonProvider", res.CredReasons[openaiIdx].Kind)
+	}
+	if res.CredReasons[openaiIdx].Detail != "openai" {
+		t.Errorf("OPENAI reason detail = %q, want %q", res.CredReasons[openaiIdx].Detail, "openai")
+	}
+	// DATABASE_URL → url userinfo.
+	dbIdx := -1
+	for i, c := range res.Creds {
+		if c.Name == "DATABASE_URL" {
+			dbIdx = i
+		}
+	}
+	if dbIdx == -1 {
+		t.Fatal("DATABASE_URL not in Creds")
+	}
+	if res.CredReasons[dbIdx].Kind != placeholder.ReasonURLUserinfo {
+		t.Errorf("DATABASE_URL reason kind = %v, want ReasonURLUserinfo", res.CredReasons[dbIdx].Kind)
+	}
+}
+
+// TestPrintVaultSummary_AnnotatesManagedReason verifies that each Managed
+// line in the summary carries a parenthesized annotation describing why
+// the value was classified as a secret. The annotation is transparent
+// info — it does not gate which credentials get vaulted.
+func TestPrintVaultSummary_AnnotatesManagedReason(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
+			{Name: "DATABASE_URL", Placeholder: "veilph-url-XX"},
+		},
+		CredReasons: []placeholder.Reason{
+			{Kind: placeholder.ReasonProvider, Detail: "openai"},
+			{Kind: placeholder.ReasonURLUserinfo},
+		},
+	}
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	out := buf.String()
+	if !strings.Contains(out, "OPENAI_API_KEY") {
+		t.Errorf("output missing OPENAI_API_KEY:\n%s", out)
+	}
+	if !strings.Contains(out, "(provider:openai)") {
+		t.Errorf("output missing (provider:openai) annotation:\n%s", out)
+	}
+	if !strings.Contains(out, "(url)") {
+		t.Errorf("output missing (url) annotation:\n%s", out)
+	}
+}
