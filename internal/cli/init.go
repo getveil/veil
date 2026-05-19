@@ -267,6 +267,10 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		}
 		_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
 		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Bold.Sprint("Next:"))
+		_, _ = fmt.Fprintf(w, "  veil run claude     %s\n", ui.Muted.Sprint("# or your agent of choice"))
+		_, _ = fmt.Fprintf(w, "  veil status         %s\n", ui.Muted.Sprint("# see what's protected"))
+		_, _ = fmt.Fprintln(w)
 	}
 	return nil
 }
