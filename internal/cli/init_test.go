@@ -849,6 +849,84 @@ func TestInitMCPCredentialNameFormat(t *testing.T) {
 	}
 }
 
+// TestMCPCredsGetReasonsAnnotation verifies that MCP-discovered credentials
+// receive the same (provider:X) annotation in the "Managed by Veil" summary
+// that env-discovered creds get. The env path emits this via printVaultSummary
+// using res.CredReasons populated by buildEnvFileCredentials; the MCP path
+// must produce an equivalent annotation so a user reading the init output
+// sees a consistent "why is this vaulted" signal for both sources.
+func TestMCPCredsGetReasonsAnnotation(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// .env carries a Stripe-shaped key so we can compare env-side annotation
+	// against MCP-side annotation in the same run.
+	envContent := "STRIPE_KEY=sk_live_abcdefghijklmnopqrstuvwx\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// MCP config carries a GitHub-shaped token so the MCP path also has a
+	// recognizable provider match — used to assert the (provider:github)
+	// annotation appears under the MCP "Managed by Veil" section.
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpContent := `{
+  "mcpServers": {
+    "github-server": {
+      "command": "npx",
+      "env": {
+        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--scan-mcp"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	outStr := out.String()
+
+	// Env-discovered Stripe key should carry (provider:stripe) — this is the
+	// baseline behavior the MCP path is expected to mirror.
+	if !strings.Contains(outStr, "(provider:stripe)") {
+		t.Errorf("expected env summary to contain (provider:stripe) annotation, got:\n%s", outStr)
+	}
+
+	// MCP-discovered GitHub token should carry (provider:github) on its
+	// summary line. Without the helper-driven reason emission, the MCP path
+	// prints no annotation at all.
+	if !strings.Contains(outStr, "(provider:github)") {
+		t.Errorf("expected MCP-discovered cred to carry (provider:github) annotation, got:\n%s", outStr)
+	}
+
+	// The MCP summary line must use the canonical mcp:server:key name so a
+	// user can match the annotation to the credential it describes.
+	if !strings.Contains(outStr, "mcp:github-server:GITHUB_TOKEN") {
+		t.Errorf("expected MCP summary line for mcp:github-server:GITHUB_TOKEN, got:\n%s", outStr)
+	}
+}
+
 func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
 	// F-12 regression: an orphaned .veil-backup (no entry in vault.meta) means
 	// the prior Veil install was uninstalled or its state was wiped. Init must

@@ -585,28 +585,18 @@ func buildEnvFileCredentials(
 	}
 
 	for _, s := range secrets {
-		p := placeholder.DefaultRegistry().Match(s.key, s.value)
-		var reason placeholder.Reason
-		if p == nil {
-			// A nil match means no named provider claimed this secret.
-			// URL-with-password values (postgres://, mysql://, etc.) are
-			// vault-eligible via the URL rewrite path even without a named
-			// provider. Pure charclass fallbacks are unrecognized.
-			if !placeholder.IsURLWithPassword(s.value) {
-				res.Unrecognized = append(res.Unrecognized, s)
-				continue
-			}
-			// Fall through to vault as URL credential.
-			reason = placeholder.Reason{Kind: placeholder.ReasonURLUserinfo}
-		} else if !placeholder.VaultEligible(p) {
+		bucket, reason, scheme := classifyCredential(s.key, s.value)
+		switch bucket {
+		case bucketUnrecognized:
+			res.Unrecognized = append(res.Unrecognized, s)
+			continue
+		case bucketNotManaged:
 			res.NotManaged = append(res.NotManaged, skippedEntry{
 				key:    s.key,
 				value:  s.value,
-				reason: placeholder.AuthSchemeReason(p.AuthScheme),
+				reason: placeholder.AuthSchemeReason(scheme),
 			})
 			continue
-		} else {
-			reason = placeholder.Reason{Kind: placeholder.ReasonProvider, Detail: p.Name}
 		}
 		ph, gErr := placeholder.Generate(s.key, s.value, seen)
 		if gErr != nil {
@@ -706,6 +696,45 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 		ci++
 		ui.Dimf(w, "  would vault: %s -> %s", s.key, c.Placeholder)
 	}
+}
+
+// credBucket is the disposition classifyCredential returns: which of the
+// three summary sections (Unrecognized / Not managed / Managed) a
+// (name, value) pair lands in.
+type credBucket int
+
+const (
+	bucketUnrecognized credBucket = iota
+	bucketNotManaged
+	bucketEligible
+)
+
+// classifyCredential mirrors the provider / URL / not-managed gate order
+// used by both buildEnvFileCredentials and processMCPConfig so the two
+// paths bucket a (name, value) pair identically AND produce the same
+// (provider:X) annotation on the Managed-by-Veil line. Without this
+// helper the two paths drifted: env emitted annotations, MCP did not.
+//
+// Returns the bucket plus, for bucketEligible, the Reason that should
+// annotate the Managed line; for bucketNotManaged, the AuthScheme the
+// caller renders via placeholder.AuthSchemeReason. The Reason / scheme
+// values are zero for buckets that don't use them.
+func classifyCredential(name, value string) (credBucket, placeholder.Reason, placeholder.AuthScheme) {
+	p := placeholder.DefaultRegistry().Match(name, value)
+	if p == nil {
+		// A nil match means no named provider claimed this secret.
+		// URL-with-password values (postgres://, mysql://, etc.) are
+		// vault-eligible via the URL rewrite path even without a named
+		// provider. Pure charclass fallbacks are unrecognized.
+		if placeholder.IsURLWithPassword(value) {
+			return bucketEligible, placeholder.Reason{Kind: placeholder.ReasonURLUserinfo}, 0
+		}
+		return bucketUnrecognized, placeholder.Reason{}, 0
+	}
+	if !placeholder.VaultEligible(p) {
+		return bucketNotManaged, placeholder.Reason{}, p.AuthScheme
+	}
+	return bucketEligible, placeholder.Reason{Kind: placeholder.ReasonProvider, Detail: p.Name}, 0
 }
 
 // printVaultSummary emits the three-section summary: Managed, Not managed,

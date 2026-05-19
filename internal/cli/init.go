@@ -313,6 +313,16 @@ type skippedMCP struct {
 	reason string
 }
 
+// managedMCP records an MCP-discovered secret that veil init DID vault, with
+// the placeholder it now resolves to and the Reason describing which detection
+// gate fired. Used to render the "Managed by Veil" summary block with the same
+// (provider:X) annotation the env-side path emits via printVaultSummary.
+type managedMCP struct {
+	name        string             // canonical mcp:server:key form
+	placeholder string             // the generated placeholder token
+	reason      placeholder.Reason // from classifyCredential
+}
+
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
 // rewrites the config with placeholders. Returns the number of secrets vaulted
 // and the number auto-scoped to hosts.
@@ -435,6 +445,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 	configChanged := false
 	seen := make(placeholder.Set)
 	var (
+		managed      []managedMCP
 		notManaged   []skippedMCP
 		unrecognized []string
 	)
@@ -444,18 +455,21 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 			continue
 		}
 
-		// Gate on VaultEligible: skip recognized-but-unsupported schemes
-		// and unrecognized formats, mirroring buildEnvFileCredentials.
-		p := placeholder.DefaultRegistry().Match(s.key, s.value)
+		// classifyCredential is the shared helper that env-side
+		// buildEnvFileCredentials also uses, so both paths bucket secrets
+		// identically AND produce the same (provider:X) annotation on the
+		// Managed-by-Veil line. Without it, MCP creds were vaulted but
+		// printed with no annotation while env creds carried one.
 		credName := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-		if p == nil && !placeholder.IsURLWithPassword(s.value) {
+		bucket, reason, scheme := classifyCredential(s.key, s.value)
+		switch bucket {
+		case bucketUnrecognized:
 			unrecognized = append(unrecognized, credName)
 			continue
-		}
-		if p != nil && !placeholder.VaultEligible(p) {
+		case bucketNotManaged:
 			notManaged = append(notManaged, skippedMCP{
 				name:   credName,
-				reason: placeholder.AuthSchemeReason(p.AuthScheme),
+				reason: placeholder.AuthSchemeReason(scheme),
 			})
 			continue
 		}
@@ -482,6 +496,7 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 			return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")
 		}
 		seen[ph] = struct{}{}
+		managed = append(managed, managedMCP{name: credName, placeholder: ph, reason: reason})
 
 		count++
 		if len(credHosts) > 0 {
@@ -500,6 +515,23 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 		}
 	}
 
+	// "Managed by Veil" summary mirrors the env-side block emitted by
+	// printVaultSummary. Suppressed in dry-run because the "  would vault: ..."
+	// lines above already enumerate the same credentials and we don't want to
+	// double-print. The annotation comes from classifyCredential and uses the
+	// identical (provider:X) / (url) format as the env summary so callers can
+	// grep/parse both the same way.
+	if !dryRun && len(managed) > 0 {
+		_, _ = fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(managed))
+		for _, m := range managed {
+			ann := m.reason.Annotation()
+			if ann == "" {
+				_, _ = fmt.Fprintf(w, "    %s    %s\n", m.name, m.placeholder)
+			} else {
+				_, _ = fmt.Fprintf(w, "    %s    %s  %s\n", m.name, m.placeholder, ann)
+			}
+		}
+	}
 	if len(notManaged) > 0 {
 		_, _ = fmt.Fprintf(w, "\nNot managed — MCP secrets Veil v0.1.x doesn't mediate (%d):\n", len(notManaged))
 		for _, s := range notManaged {
