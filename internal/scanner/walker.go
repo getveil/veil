@@ -65,14 +65,46 @@ type walkResult struct {
 	mcpConfigs []mcpconfig.DiscoveredConfig
 }
 
-// gitignoreStack tracks per-directory .gitignore matchers, applied from root
-// downward. Each entry's Dir is the directory that owns the .gitignore; its
-// patterns apply to that directory and below.
+// gitignoreStack tracks the .gitignore matchers active for the directory
+// currently being walked, ordered from root down to (and including) that
+// directory. Each entry's Dir is the directory that owns the .gitignore;
+// its patterns apply to that directory and below.
+//
+// Invariant maintained by pushFor: every entry's Dir is an ancestor of (or
+// equal to) the directory most recently passed to pushFor. Entries for
+// sibling subtrees are popped before the new entry is pushed, so the stack
+// length is bounded by the current depth rather than by the total number
+// of .gitignore files seen during the walk.
 type gitignoreStack []gitignoreEntry
 
 type gitignoreEntry struct {
 	Dir     string
 	Matcher *gitignore.GitIgnore
+}
+
+// pushFor adjusts the stack for entering directory dir. It pops any
+// trailing entries whose Dir is not an ancestor of (or equal to) dir,
+// then appends a new entry if matcher is non-nil. Returns the new stack.
+//
+// Filepath.WalkDir visits directories in lexical DFS order, so by the
+// time we arrive at dir, the entries that should remain in the stack are
+// exactly the chain of dir's ancestors. Non-ancestors live at the top of
+// the stack (DFS leaves sibling subtrees on top after they finish) and
+// are popped here.
+func (s gitignoreStack) pushFor(dir string, matcher *gitignore.GitIgnore) gitignoreStack {
+	for len(s) > 0 {
+		top := s[len(s)-1]
+		rel, err := filepath.Rel(top.Dir, dir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
+	}
+	if matcher != nil {
+		s = append(s, gitignoreEntry{Dir: dir, Matcher: matcher})
+	}
+	return s
 }
 
 // loadGitignore returns the matcher for the .gitignore file in dir, or nil
@@ -158,9 +190,6 @@ func projectMCPMatch(root, path string) (mcpconfig.Client, bool) {
 func walkProject(root string) (walkResult, error) {
 	var res walkResult
 	stack := gitignoreStack{}
-	if m := loadGitignore(root); m != nil {
-		stack = append(stack, gitignoreEntry{Dir: root, Matcher: m})
-	}
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -171,6 +200,8 @@ func walkProject(root string) (walkResult, error) {
 		}
 		if d.IsDir() {
 			if path == root {
+				// Root's own .gitignore (if any) seeds the stack.
+				stack = stack.pushFor(path, loadGitignore(path))
 				return nil
 			}
 			// Baseline pruning takes precedence over .gitignore negation —
@@ -182,10 +213,11 @@ func walkProject(root string) (walkResult, error) {
 			if stack.matchesDir(path) {
 				return fs.SkipDir
 			}
-			// Layer this directory's .gitignore onto the stack for its subtree.
-			if m := loadGitignore(path); m != nil {
-				stack = append(stack, gitignoreEntry{Dir: path, Matcher: m})
-			}
+			// Layer this directory's .gitignore onto the stack for its
+			// subtree. pushFor also pops entries for sibling subtrees that
+			// the walker has finished — keeping the stack bounded to the
+			// active ancestor chain.
+			stack = stack.pushFor(path, loadGitignore(path))
 			return nil
 		}
 		// filepath.WalkDir does not follow symbolic links: a symlinked
