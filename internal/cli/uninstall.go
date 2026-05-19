@@ -89,13 +89,19 @@ type backupPair struct {
 	kind     backupKind
 }
 
-// envCuratedNames mirrors scanner.curatedNames. Kept local to avoid
-// exporting scanner internals; the list changes rarely.
+// envCuratedNames mirrors the names a legacy curated-probe install would
+// have written backups for, PLUS the newer names the recursive walker
+// added. Kept local to avoid exporting scanner internals; the list changes
+// rarely.
 var envCuratedNames = []string{
 	".env",
-	".env.local",
+	".env.ci",
 	".env.development",
+	".env.local",
+	".env.preview",
 	".env.production",
+	".env.staging",
+	".env.test",
 }
 
 // discoverBackups returns every (original, backup) pair uninstall should
@@ -133,18 +139,43 @@ func discoverBackups(root string) ([]backupPair, error) {
 		seen[orig] = true
 	}
 
-	mcpPath, err := mcpconfigDiscover()
+	mcpConfigs, err := mcpconfigDiscover()
 	if err != nil {
 		return nil, fmt.Errorf("discovering MCP config: %w", err)
 	}
-	if mcpPath != "" && !seen[mcpPath] {
-		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
-			pairs = append(pairs, backupPair{
-				original: mcpPath,
-				backup:   mcpPath + backupSuffix,
-				kind:     backupKindMCP,
-			})
+	for _, cfg := range mcpConfigs {
+		if seen[cfg.Path] {
+			continue
 		}
+		if _, err := os.Stat(cfg.Path + backupSuffix); err != nil {
+			continue
+		}
+		pairs = append(pairs, backupPair{
+			original: cfg.Path,
+			backup:   cfg.Path + backupSuffix,
+			kind:     backupKindMCP,
+		})
+		seen[cfg.Path] = true
+	}
+
+	// Project-local MCP fallback: check known per-client paths at the project
+	// root, in case the registry lost a project-scoped backup (e.g., crashed
+	// init before registry write). Sub-tree project MCP configs cannot be
+	// covered without re-walking, so this only catches the common root case.
+	for _, pf := range mcpconfig.ProjectFilenames() {
+		full := filepath.Join(append([]string{root}, pf.Path...)...)
+		if seen[full] {
+			continue
+		}
+		if _, err := os.Stat(full + backupSuffix); err != nil {
+			continue
+		}
+		pairs = append(pairs, backupPair{
+			original: full,
+			backup:   full + backupSuffix,
+			kind:     backupKindMCP,
+		})
+		seen[full] = true
 	}
 	return pairs, nil
 }
@@ -189,7 +220,7 @@ func kindFromVault(k vault.FileKind) backupKind {
 
 // mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
 // without importing the package into the uninstall_test package.
-var mcpconfigDiscover = func() (string, error) { return mcpconfig.Discover() }
+var mcpconfigDiscover = func() ([]mcpconfig.DiscoveredConfig, error) { return mcpconfig.Discover() }
 
 // classification enumerates how a (current, backup) pair relates.
 type classification int

@@ -101,41 +101,53 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	ui.Phase(w, "Scanning project...")
 
-	envPaths, err := scanner.Scan(root)
+	scanRes, err := scanner.ScanAll(root)
 	if err != nil {
-		return wrapErr("scanning .env files", err)
+		return wrapErr("scanning project", err)
 	}
-	mcpConfigPath, err := mcpconfig.Discover()
+	envPaths := scanRes.EnvPaths
+
+	userMCP, err := mcpconfig.Discover()
 	if err != nil {
 		return wrapErr("discovering MCP config", err)
 	}
+	// User-scope first (typically external paths), then project-scope (inside
+	// root). Order shapes the summary print and prompt list — predictable.
+	mcpConfigs := append([]mcpconfig.DiscoveredConfig{}, userMCP...)
+	mcpConfigs = append(mcpConfigs, scanRes.MCPConfigs...)
 	// Precompute shell-env candidates so the early-exit gate considers all
 	// three sources. Empty-valued candidates are dropped so they don't
 	// wrongly bypass that gate; processShellEnv drops them anyway.
 	shellCandidates := scanner.ScanEnviron(os.Environ())
 	shellCandidates = nonEmptyShellCandidates(shellCandidates)
-	if len(envPaths) == 0 && mcpConfigPath == "" && len(shellCandidates) == 0 {
+	if len(envPaths) == 0 && len(mcpConfigs) == 0 && len(shellCandidates) == 0 {
 		_, _ = fmt.Fprintf(w, "no .env files, MCP configs, or shell-exported secrets found in %s\n", root)
 		return nil
 	}
 
-	envPaths = filterEnvPaths(in, w, root, envPaths, interactive)
+	envPaths, mcpConfigs = filterInputs(in, w, root, envPaths, mcpConfigs, interactive)
 
 	if len(envPaths) > 0 {
-		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
+		ui.Step(w, fmt.Sprintf("Found %d .env %s:", len(envPaths), plural(len(envPaths), "file", "files")))
+		for _, p := range envPaths {
+			ui.Dim(w, "  "+displayRel(root, p))
+		}
 	}
-	if mcpConfigPath != "" {
-		ui.Step(w, "Found 1 MCP config")
+	if len(mcpConfigs) > 0 {
+		ui.Step(w, fmt.Sprintf("Found %d MCP %s:", len(mcpConfigs), plural(len(mcpConfigs), "config", "configs")))
+		for _, c := range mcpConfigs {
+			ui.Dim(w, "  "+mcpDisplayLabel(root, c))
+		}
 	}
 	_, _ = fmt.Fprintln(w)
 
 	// Both gates run BEFORE buildKeystore / CreateVault so a refused project
 	// never reaches the destructive keystore-delete / vault-recreate path
 	// that --force would otherwise trigger.
-	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigPath); err != nil {
+	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigs); err != nil {
 		return err
 	}
-	if err := refusePlaceholderInputs(root, envPaths, mcpConfigPath, force); err != nil {
+	if err := refusePlaceholderInputs(root, envPaths, mcpConfigs, force); err != nil {
 		return err
 	}
 
@@ -179,15 +191,15 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 
 	mcpConfigsProcessed := 0
-	if mcpConfigPath != "" {
-		n, s, err := processMCPConfig(cmd, in, v, root, mcpConfigPath, force, dryRun, interactive)
+	for _, cfg := range mcpConfigs {
+		n, s, err := processMCPConfig(cmd, in, v, root, cfg.Path, force, dryRun, interactive)
 		if err != nil {
 			return err
 		}
 		secretsVaulted += n
 		secretsScoped += s
 		if n > 0 {
-			mcpConfigsProcessed = 1
+			mcpConfigsProcessed++
 		}
 	}
 

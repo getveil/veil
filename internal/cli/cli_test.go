@@ -15,6 +15,21 @@ import (
 	"github.com/getveil/veil/internal/skiphost"
 )
 
+// TestMain defaults VEIL_MCP_DISABLE_DISCOVERY=1 for every test in this
+// package so the init/uninstall code paths cannot accidentally walk into
+// the developer's real ~/.claude.json, ~/.cursor/mcp.json, or Claude
+// Desktop config when a test forgets to override HOME. Tests that
+// explicitly exercise discovery opt back in with
+// t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") at their top — that override
+// is scoped to the test and gets reverted when it returns, so other tests
+// in the package remain hermetic.
+func TestMain(m *testing.M) {
+	if err := os.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1"); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
 // It returns the project root path.
 func initProject(t *testing.T) string {

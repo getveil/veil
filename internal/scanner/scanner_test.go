@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestScan_CuratedFilesOnly(t *testing.T) {
+func TestScan_RootCuratedAndBeyond(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create all the test files
@@ -19,7 +19,7 @@ func TestScan_CuratedFilesOnly(t *testing.T) {
 		".env.sample",
 		".env.custom.example",
 		".env.custom.sample",
-		".env.test", // not in curated list
+		".env.test", // now included under the recursive walker's name match
 	}
 	for _, name := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("X=1\n"), 0o644); err != nil {
@@ -37,6 +37,7 @@ func TestScan_CuratedFilesOnly(t *testing.T) {
 		filepath.Join(dir, ".env.development"),
 		filepath.Join(dir, ".env.local"),
 		filepath.Join(dir, ".env.production"),
+		filepath.Join(dir, ".env.test"),
 	}
 
 	if len(got) != len(want) {

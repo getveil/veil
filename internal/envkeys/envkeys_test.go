@@ -1,6 +1,9 @@
 package envkeys
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestProxyKeysCoverage guards against silent drift: a new proxy-related
 // env var must be added here, so the runner's strip logic stays in sync.
@@ -63,6 +66,18 @@ func TestToggleConstants(t *testing.T) {
 	}
 }
 
+func TestMCPDisableDiscoveryConstant(t *testing.T) {
+	if MCPDisableDiscovery != "VEIL_MCP_DISABLE_DISCOVERY" {
+		t.Errorf("MCPDisableDiscovery = %q, want VEIL_MCP_DISABLE_DISCOVERY", MCPDisableDiscovery)
+	}
+}
+
+func TestVeilInternalKeysContainsDisableDiscovery(t *testing.T) {
+	if !slices.Contains(VeilInternalKeys, MCPDisableDiscovery) {
+		t.Errorf("VeilInternalKeys missing %q — agent could re-enable discovery via inherited env", MCPDisableDiscovery)
+	}
+}
+
 // TestVeilInternalKeysCoverage guards against silent drift: any new Veil-
 // internal env var that the runner must strip from the child environment
 // has to be added here so the runner's strip helper picks it up
@@ -71,9 +86,10 @@ func TestToggleConstants(t *testing.T) {
 // attack.
 func TestVeilInternalKeysCoverage(t *testing.T) {
 	want := map[string]bool{
-		"VEIL_PASSPHRASE":      true,
-		"VEIL_TEST_KEYSTORE":   true,
-		"VEIL_MCP_CONFIG_PATH": true,
+		"VEIL_PASSPHRASE":            true,
+		"VEIL_TEST_KEYSTORE":         true,
+		"VEIL_MCP_CONFIG_PATH":       true,
+		"VEIL_MCP_DISABLE_DISCOVERY": true,
 	}
 	got := make(map[string]bool, len(VeilInternalKeys))
 	for _, k := range VeilInternalKeys {

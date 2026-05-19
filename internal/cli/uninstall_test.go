@@ -127,6 +127,8 @@ func TestDiscoverBackupsSkipsOriginalWithoutBackup(t *testing.T) {
 }
 
 func TestDiscoverBackupsIncludesMCPWhenDiscoverable(t *testing.T) {
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	// Set up a fake MCP config + backup via the test env var.
 	mcpDir := t.TempDir()
@@ -911,6 +913,8 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 // so the MCP file's backup survived uninstall and the placeholder remained.
 func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -986,6 +990,8 @@ func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 // classifies as Unmodified and uninstall fully restores the original bytes.
 func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -1074,6 +1080,8 @@ func findPlanLineFor(plan, path string) string {
 // same vaulted set as the first init.
 func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -1240,6 +1248,62 @@ func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
 	}
 	if string(gotSensitive) != sensitiveContent {
 		t.Errorf("sensitive file modified after refusal\n got: %q\nwant: %q", gotSensitive, sensitiveContent)
+	}
+}
+
+func TestDiscoverBackups_FindsExtendedEnvNames(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
+
+	root := t.TempDir()
+	for _, name := range []string{".env.test", ".env.staging", ".env.ci", ".env.preview"} {
+		orig := filepath.Join(root, name)
+		if err := os.WriteFile(orig, []byte("X=1"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(orig+backupSuffix, []byte("X=real"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 4 {
+		t.Errorf("expected 4 backup pairs, got %d: %+v", len(pairs), pairs)
+	}
+}
+
+func TestDiscoverBackups_FindsProjectMCPBackups(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1")
+
+	root := t.TempDir()
+	for _, name := range []string{".mcp.json", filepath.Join(".cursor", "mcp.json")} {
+		full := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full+backupSuffix, []byte(`{"real":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Errorf("expected 2 MCP backup pairs, got %d: %+v", len(pairs), pairs)
+	}
+	for _, p := range pairs {
+		if p.kind != backupKindMCP {
+			t.Errorf("kind = %v, want backupKindMCP for %s", p.kind, p.original)
+		}
 	}
 }
 
