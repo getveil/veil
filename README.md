@@ -11,7 +11,7 @@
 Veil is a local CLI that sits between your AI coding agents and the network via a local HTTPS proxy. It replaces real secrets with format-aware placeholders, then injects the real credentials at the proxy layer — so the agent never sees them. Works with any agent or tool that respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables, including Claude Code, Cursor, curl, and most HTTP clients.
 
 > **What's in scope today.** v0.1.x mediates HTTP Bearer and HTTP Basic
-> credentials for ~19 providers (GitHub PATs, OpenAI, Anthropic, Stripe,
+> credentials for 17 providers (GitHub PATs, OpenAI, Anthropic, Stripe,
 > Slack, npm/PyPI registry tokens, and more). AWS SigV4, GitHub App
 > JWTs, Google service-accounts, and HMAC webhook signing are on the
 > roadmap — Veil leaves them in place and won't pretend to manage them.
@@ -29,7 +29,7 @@ Your AI agent can read every secret in your project — every `.env`, every MCP 
 
 ## How it works
 
-1. `veil init` scans your `.env` files and MCP configs, moves secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
+1. `veil init` scans your `.env` files (and, with `--scan-mcp`, your MCP configs), moves secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
 2. `veil run <agent>` starts a local HTTPS proxy and launches your agent with `HTTP_PROXY` / `HTTPS_PROXY` set. The proxy swaps placeholders for real credentials on outbound requests.
 3. Every credential injection and agent action is logged to local SQLite. Query with `veil log`.
 
@@ -133,9 +133,9 @@ veil uninstall --dry-run    # preview the plan without changes
 
 | | Status |
 |---|---|
-| **Bearer/Basic providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · Twilio · SendGrid · Resend · Postmark · Supabase · Vercel · Replicate · Hugging Face · Datadog · GitLab · npm · PyPI · Docker Hub · Quay |
+| **Bearer/Basic providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · Twilio · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab · npm · PyPI · Docker Hub |
 | **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
-| **MCP configs** | Auto-detected and migrated alongside `.env` (Claude Desktop, Cursor, etc.) |
+| **MCP configs** | Opt-in via `veil init --scan-mcp` (Claude Desktop, Claude Code, Cursor, project-local `.mcp.json`) |
 | **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |
 | **Roadmap** | AWS SigV4 · GitHub App JWT · Google service-accounts · HMAC webhooks · gRPC · Windows |
 

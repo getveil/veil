@@ -16,7 +16,7 @@ The MVP free tier is this binary. Everything below is what that binary does toda
 
 Mapped to the four outcomes Veil targets.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files and MCP configs into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). **AWS SigV4** (including STS session-token credentials) and **GitHub Apps** (api.github.com and GitHub Enterprise Server) are also mediated end-to-end: Veil re-signs the request at the proxy with the real SecretAccessKey or RSA private key. The remaining keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files (and, with `--scan-mcp`, MCP configs) into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). Keyed-crypto schemes — **AWS SigV4**, **GitHub App** JWTs, HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5). Native re-signing infrastructure for AWS SigV4 and GitHub Apps ships in the binary but is gated behind `veil add --experimental` for v0.1.x and is not part of the stable surface (see "Experimental, not yet stable" below).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -34,10 +34,10 @@ The public contract. Names and flags below are stable for the MVP series.
 
 | Command | Behavior |
 |---|---|
-| `veil init` | Scan the project for `.env` files and MCP configs, vault any secrets found, write placeholders back, install the local CA. |
+| `veil init` | Scan the project for `.env` files (and, with `--scan-mcp`, MCP configs), vault any secrets found, write placeholders back, install the local CA. |
 | `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
-| `veil add <name>` | Add a credential to the vault. Flags select the scheme: `--user` for HTTP Basic, `--scheme aws` for AWS SigV4 (with `--aws-access-key-id` and `--aws-session-token-file`/`--aws-session-token-stdin`), `--scheme github_app` for GitHub App JWT (with `--github-app-id`, `--github-installation-id`). Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
+| `veil add <name>` | Add a credential to the vault. Default scheme is Bearer; `--user` switches to HTTP Basic. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. (AWS SigV4 and GitHub App schemes are gated behind `--experimental` and are not part of the stable v0.1.x surface — see "Experimental, not yet stable" below.) |
 | `veil list` | List managed credentials by name. Basic credentials tagged `(basic)`. Values are never printed unless `--reveal` is passed. |
 | `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed`. `--suspect` rows are marked `[!]`. |
 | `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. `--list` shows the current list; `--remove <host>` deletes an entry. |
@@ -65,7 +65,8 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 |---|---|---|
 | Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement | Kernel enforcement — [`ARCHITECTURE.md`](ARCHITECTURE.md) Part II |
 | HTTP/2 (gRPC), QUIC, raw TCP, SSH | Proxy is HTTP/1.1 CONNECT only | Per-protocol handlers / kernel interception — Part II |
-| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. AWS SigV4 and GitHub App JWT are now re-signed natively (see §2). |
+| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. |
+| AWS SigV4 / GitHub App JWT | Keyed-crypto: secret never appears on the wire as a bearer | Native re-signing infrastructure ships in the binary but is gated behind `veil add --experimental` for v0.1.x. Stable support is on the roadmap (see "Experimental, not yet stable" below). |
 | mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
 | Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded | Decompression risk exceeds the gap |
@@ -73,6 +74,21 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 | Windows | No proxy substrate yet | Part II |
 
 The transform-mismatch detector deserves a specific note: when a request to a credentialed host carries an auth-shaped signal (Authorization / Proxy-Authorization / Cookie / `X-*-{token,auth,key,sig,signature}` / auth-shaped query params) but no injection fires, Veil emits a structured WARN and flags the audit row. `veil log --suspect` surfaces these. It is **a signal, not enforcement** — the real secret still exists wherever the agent read it from.
+
+### Experimental, not yet stable
+
+The binary ships with native re-signing infrastructure for **AWS SigV4** (including STS session-token credentials) and **GitHub App** JWTs (api.github.com and GitHub Enterprise Server). The plumbing is in tree, exercised by tests, and end-to-end-functional, but the surface is **not part of the stable v0.1.x contract** — flags, on-disk layout, and behavior may change between point releases without notice.
+
+To opt in, pass `--experimental` to `veil add`:
+
+```
+veil add AWS_PROD --scheme aws --experimental \
+  --aws-access-key-id AKIA... --value-stdin
+veil add GH_APP --scheme github_app --experimental \
+  --github-app-id 123456 --value-stdin < app.pem
+```
+
+Without `--experimental`, both `--scheme aws` and `--scheme github_app` refuse the operation with an error pointing here. Stable, supported promotion is on the roadmap; until then, do not depend on these flags in scripts or CI.
 
 ---
 
