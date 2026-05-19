@@ -735,6 +735,31 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 	}
 }
 
+func TestBuildEnvFileCredentials_URLWithPasswordIsVaulted(t *testing.T) {
+	envFile := scanner.ParseBytes([]byte(
+		"DATABASE_URL=postgres://user:secret@db.example.com/app\n"))
+	var secrets []secretLine
+	for i, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
+			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
+		}
+	}
+
+	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	if err != nil {
+		t.Fatalf("buildEnvFileCredentials: %v", err)
+	}
+	if len(res.Creds) != 1 || res.Creds[0].Name != "DATABASE_URL" {
+		t.Fatalf("Creds = %+v, want exactly DATABASE_URL", res.Creds)
+	}
+	if len(res.Unrecognized) != 0 {
+		t.Fatalf("Unrecognized = %+v, want empty (URL-with-password should be vaulted)", res.Unrecognized)
+	}
+	if len(res.NotManaged) != 0 {
+		t.Fatalf("NotManaged = %+v, want empty", res.NotManaged)
+	}
+}
+
 func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 	envFile := scanner.ParseBytes([]byte(
 		"OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF01\n" +

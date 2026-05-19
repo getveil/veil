@@ -447,7 +447,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		return 0, 0, nil
 	}
 
-	printVaultSummary(w, res)
+	printVaultSummary(w, res, dryRun)
 
 	if dryRun {
 		printDryRunVaultLines(w, selectedGroups, selectedSecrets, res.Creds)
@@ -493,10 +493,9 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 // skippedEntry is a secret that `veil init` decided not to vault.
 // Reason is the human-readable label shown in the summary.
 type skippedEntry struct {
-	key      string
-	value    string
-	provider string
-	reason   string
+	key    string
+	value  string
+	reason string
 }
 
 // vaultBuildResult bundles the outputs of buildEnvFileCredentials so
@@ -527,23 +526,20 @@ func buildEnvFileCredentials(
 		case "aws":
 			res.NotManaged = append(res.NotManaged,
 				skippedEntry{
-					key:      g.AWS.AccessKeyIDVar,
-					value:    g.AWS.AccessKeyID,
-					provider: "aws",
-					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+					key:    g.AWS.AccessKeyIDVar,
+					value:  g.AWS.AccessKeyID,
+					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
 				},
 				skippedEntry{
-					key:      g.AWS.SecretKeyVar,
-					value:    g.AWS.SecretKey,
-					provider: "aws",
-					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+					key:    g.AWS.SecretKeyVar,
+					value:  g.AWS.SecretKey,
+					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
 				})
 			if g.AWS.SessionTokenVar != "" {
 				res.NotManaged = append(res.NotManaged, skippedEntry{
-					key:      g.AWS.SessionTokenVar,
-					value:    g.AWS.SessionToken,
-					provider: "aws",
-					reason:   placeholder.AuthSchemeReason(placeholder.AuthSigV4),
+					key:    g.AWS.SessionTokenVar,
+					value:  g.AWS.SessionToken,
+					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
 				})
 			}
 			continue
@@ -596,10 +592,9 @@ func buildEnvFileCredentials(
 			// Fall through to vault as URL credential.
 		} else if !placeholder.VaultEligible(p) {
 			res.NotManaged = append(res.NotManaged, skippedEntry{
-				key:      s.key,
-				value:    s.value,
-				provider: p.Name,
-				reason:   placeholder.AuthSchemeReason(p.AuthScheme),
+				key:    s.key,
+				value:  s.value,
+				reason: placeholder.AuthSchemeReason(p.AuthScheme),
 			})
 			continue
 		}
@@ -704,9 +699,11 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 
 // printVaultSummary emits the three-section summary: Managed, Not managed,
 // and Unrecognized. Called on every run (not just --dry-run) after
-// buildEnvFileCredentials returns.
-func printVaultSummary(w io.Writer, res vaultBuildResult) {
-	if len(res.Creds) > 0 {
+// buildEnvFileCredentials returns. When dryRun is true the Managed section is
+// suppressed — printDryRunVaultLines already shows those keys as "would vault"
+// lines, so printing them here too would double-print each credential.
+func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
+	if !dryRun && len(res.Creds) > 0 {
 		fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
 		for _, c := range res.Creds {
 			fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
