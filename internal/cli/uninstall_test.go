@@ -346,8 +346,8 @@ func TestRenderUnifiedDiffF11ScatteredChanges(t *testing.T) {
 		"SLACK_BOT_TOKEN=xoxb-1234567890-abcdef\n" +
 		"# section divider\n" +
 		"ANTHROPIC_API_KEY=sk-ant-1234567890abcdef\n" +
-		"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"DOUBLE_QUOTED=\"real-secret-double\"\n" +
 		"SINGLE_QUOTED='real-secret-single'\n" +
 		"WITH_COMMENT=real-value # this is a comment\n" +
@@ -361,8 +361,8 @@ func TestRenderUnifiedDiffF11ScatteredChanges(t *testing.T) {
 		{"-STRIPE_SECRET_KEY=sk_live_VEILxxxxxxxxxxxxxxxx", "+STRIPE_SECRET_KEY=sk_live_1234567890abcdef"},
 		{"-SLACK_BOT_TOKEN=xoxb-VEILxxxxxxxxxx", "+SLACK_BOT_TOKEN=xoxb-1234567890-abcdef"},
 		{"-ANTHROPIC_API_KEY=sk-ant-VEILxxxxxxxxxxxxxx", "+ANTHROPIC_API_KEY=sk-ant-1234567890abcdef"},
-		{"-AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx", "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"},
-		{"-AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx", "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{"-AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx", "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD"},
+		{"-AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx", "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{"-DOUBLE_QUOTED=\"VEILsecretdouble\"", "+DOUBLE_QUOTED=\"real-secret-double\""},
 		{"-SINGLE_QUOTED='VEILsecretsingle'", "+SINGLE_QUOTED='real-secret-single'"},
 		{"-WITH_COMMENT=VEILvalue # this is a comment", "+WITH_COMMENT=real-value # this is a comment"},

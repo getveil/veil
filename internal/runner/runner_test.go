@@ -965,7 +965,9 @@ func TestRun_FailsClosedOnUnvaultedShellSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+	// Value avoids stub markers ("fake", "dummy", "example", etc.) so the
+	// placeholder stub-value denylist doesn't short-circuit IsSecretLike.
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-live-highentropy-1234567890abcdef")
 
 	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -991,7 +993,9 @@ func TestRun_AllowEnvSecretBypass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-fake-highentropy-1234567890abcdef")
+	// Value avoids stub markers ("fake", "dummy", "example", etc.) so the
+	// placeholder stub-value denylist doesn't short-circuit IsSecretLike.
+	t.Setenv("FAKE_PROVIDER_API_KEY", "sk-live-highentropy-1234567890abcdef")
 
 	root, ks := testutil.SetupVaultProject(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

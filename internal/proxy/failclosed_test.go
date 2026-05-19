@@ -130,7 +130,7 @@ func TestProxy_FailsClosedOnSignerFailure(t *testing.T) {
 		ID:                        "c1",
 		Name:                      "aws-prod",
 		Scheme:                    "aws",
-		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY",
 		AWSAccessKeyID:            "AKIAREAL000000000000",
 		AWSAccessKeyIDPlaceholder: "AKIAPH00000000000000",
 		AllowedHosts:              []string{hostOnly, upstreamHost},

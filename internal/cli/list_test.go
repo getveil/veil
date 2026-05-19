@@ -30,7 +30,7 @@ func TestListCmd_TagsSchemes(t *testing.T) {
 	}
 	if err := v.Add(&vault.Credential{
 		ID: vault.NewID(), Name: "aws-prod",
-		Real: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", Placeholder: "p-aws",
+		Real: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY", Placeholder: "p-aws",
 		Scheme:                    "aws",
 		AWSAccessKeyID:            "AKIAREAL000000000000",
 		AWSAccessKeyIDPlaceholder: "AKIAPH00000000000000",
@@ -188,7 +188,7 @@ func TestList_AWSCredentialMultiRow(t *testing.T) {
 	const (
 		akid     = "AKIAREAL000000000000"
 		akidPh   = "AKIAPH00000000000000"
-		secret   = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+		secret   = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY"
 		secretPh = "wJaPHX00000000000000000000000000PLACEHO"
 		sessTok  = "FwoGZXIvYXdzEJrSESSIONTOKEN1234567890"
 		sessPh   = "FwoGZXPHESSIONTOKEN0000000000000000000"

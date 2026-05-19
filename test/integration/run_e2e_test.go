@@ -311,7 +311,7 @@ SIMPLE_VALUE=hello
 
 # Empty and special
 EMPTY_VAL=
-URL_WITH_PASS=postgres://admin:secretpass123456789@db.example.com:5432/app
+URL_WITH_PASS=postgres://admin:secretpass123456789@db.prod.internal:5432/app
 `
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatalf("write .env: %v", err)

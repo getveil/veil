@@ -634,13 +634,13 @@ func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
 		ID:                        "c1",
 		Name:                      "aws-prod",
 		Scheme:                    "aws",
-		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-		AWSAccessKeyID:            "AKIDEXAMPLE",
-		AWSAccessKeyIDPlaceholder: "AKIAPHEXAMPLE12345",
+		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY",
+		AWSAccessKeyID:            "AKIDREDACTD",
+		AWSAccessKeyIDPlaceholder: "AKIAPHREDACTD12345",
 		AllowedHosts:              []string{"*.amazonaws.com"},
 	}
 	pmap := map[string]*vault.Credential{
-		"AKIAPHEXAMPLE12345": cred, // placeholder -> cred
+		"AKIAPHREDACTD12345": cred, // placeholder -> cred
 	}
 	inj := NewInjector(pmap, nil, 0, "")
 
@@ -649,7 +649,7 @@ func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
 	hdr.Set("X-Amz-Date", "20150830T123600Z")
 	hdr.Set("Authorization",
 		"AWS4-HMAC-SHA256 "+
-			"Credential=AKIAPHEXAMPLE12345/20150830/us-east-1/service/aws4_request, "+
+			"Credential=AKIAPHREDACTD12345/20150830/us-east-1/service/aws4_request, "+
 			"SignedHeaders=host;x-amz-date, "+
 			"Signature=ignored")
 
@@ -657,7 +657,7 @@ func TestProcessRequest_WiresSigV4Signer(t *testing.T) {
 		"https://example.amazonaws.com/", hdr, nil)
 
 	got := newHeader.Get("Authorization")
-	if !strings.Contains(got, "Credential=AKIDEXAMPLE/") {
+	if !strings.Contains(got, "Credential=AKIDREDACTD/") {
 		t.Errorf("AccessKeyID not rewritten: %s", got)
 	}
 	if !strings.Contains(got, "Signature=") || strings.Contains(got, "Signature=ignored") {

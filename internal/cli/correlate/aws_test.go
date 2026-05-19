@@ -29,29 +29,29 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "lone access-key-ID stays bearer",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
 			},
 			wantGroups: nil,
 			wantRem: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
 			},
 		},
 		{
 			name: "canonical pair (no session)",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 			},
 			wantGroups: []Group{{
 				Scheme: "aws",
 				Name:   "AWS_ACCESS_KEY_ID",
 				Members: []Candidate{
-					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
-					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:    "AKIAIOSFODNN7REDACTD",
+					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					AccessKeyIDVar: "AWS_ACCESS_KEY_ID",
 					SecretKeyVar:   "AWS_SECRET_ACCESS_KEY",
 				},
@@ -61,21 +61,21 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "canonical triple",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "ASIAIOSFODNN7EXAMPLE"},
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "ASIAIOSFODNN7REDACTD"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				{Key: "AWS_SESSION_TOKEN", Value: "FwoGZXIvYXdzEJr//////////wEaDP"},
 			},
 			wantGroups: []Group{{
 				Scheme: "aws",
 				Name:   "AWS_ACCESS_KEY_ID",
 				Members: []Candidate{
-					{Key: "AWS_ACCESS_KEY_ID", Value: "ASIAIOSFODNN7EXAMPLE"},
-					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "AWS_ACCESS_KEY_ID", Value: "ASIAIOSFODNN7REDACTD"},
+					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 					{Key: "AWS_SESSION_TOKEN", Value: "FwoGZXIvYXdzEJr//////////wEaDP"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:     "ASIAIOSFODNN7EXAMPLE",
-					SecretKey:       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:     "ASIAIOSFODNN7REDACTD",
+					SecretKey:       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					SessionToken:    "FwoGZXIvYXdzEJr//////////wEaDP",
 					AccessKeyIDVar:  "AWS_ACCESS_KEY_ID",
 					SecretKeyVar:    "AWS_SECRET_ACCESS_KEY",
@@ -87,19 +87,19 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "prefixed pair",
 			input: []Candidate{
-				{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-				{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+				{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 			},
 			wantGroups: []Group{{
 				Scheme: "aws",
 				Name:   "PROD_AWS_ACCESS_KEY_ID",
 				Members: []Candidate{
-					{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-					{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+					{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
-					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:    "AKIAIOSFODNN7REDACTD",
+					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					AccessKeyIDVar: "PROD_AWS_ACCESS_KEY_ID",
 					SecretKeyVar:   "PROD_AWS_SECRET_ACCESS_KEY",
 				},
@@ -109,19 +109,19 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "suffixed pair",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID_OLD", Value: "AKIAIOSFODNN7EXAMPLE"},
-				{Key: "AWS_SECRET_ACCESS_KEY_OLD", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_ACCESS_KEY_ID_OLD", Value: "AKIAIOSFODNN7REDACTD"},
+				{Key: "AWS_SECRET_ACCESS_KEY_OLD", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 			},
 			wantGroups: []Group{{
 				Scheme: "aws",
 				Name:   "AWS_ACCESS_KEY_ID_OLD",
 				Members: []Candidate{
-					{Key: "AWS_ACCESS_KEY_ID_OLD", Value: "AKIAIOSFODNN7EXAMPLE"},
-					{Key: "AWS_SECRET_ACCESS_KEY_OLD", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "AWS_ACCESS_KEY_ID_OLD", Value: "AKIAIOSFODNN7REDACTD"},
+					{Key: "AWS_SECRET_ACCESS_KEY_OLD", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
-					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:    "AKIAIOSFODNN7REDACTD",
+					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					AccessKeyIDVar: "AWS_ACCESS_KEY_ID_OLD",
 					SecretKeyVar:   "AWS_SECRET_ACCESS_KEY_OLD",
 				},
@@ -131,9 +131,9 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "two disjoint groups (PROD_ and DEV_)",
 			input: []Candidate{
-				{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAPRODEXAMPLE00001"},
+				{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAPRODREDACTD00001"},
 				{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "prod/secret/example"},
-				{Key: "DEV_AWS_ACCESS_KEY_ID", Value: "AKIADEVEXAMPLE000001"},
+				{Key: "DEV_AWS_ACCESS_KEY_ID", Value: "AKIADEVREDACTD000001"},
 				{Key: "DEV_AWS_SECRET_ACCESS_KEY", Value: "dev/secret/example"},
 			},
 			wantGroups: []Group{
@@ -141,11 +141,11 @@ func TestAWSCorrelator(t *testing.T) {
 					Scheme: "aws",
 					Name:   "PROD_AWS_ACCESS_KEY_ID",
 					Members: []Candidate{
-						{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAPRODEXAMPLE00001"},
+						{Key: "PROD_AWS_ACCESS_KEY_ID", Value: "AKIAPRODREDACTD00001"},
 						{Key: "PROD_AWS_SECRET_ACCESS_KEY", Value: "prod/secret/example"},
 					},
 					AWS: &AWSGroup{
-						AccessKeyID:    "AKIAPRODEXAMPLE00001",
+						AccessKeyID:    "AKIAPRODREDACTD00001",
 						SecretKey:      "prod/secret/example",
 						AccessKeyIDVar: "PROD_AWS_ACCESS_KEY_ID",
 						SecretKeyVar:   "PROD_AWS_SECRET_ACCESS_KEY",
@@ -155,11 +155,11 @@ func TestAWSCorrelator(t *testing.T) {
 					Scheme: "aws",
 					Name:   "DEV_AWS_ACCESS_KEY_ID",
 					Members: []Candidate{
-						{Key: "DEV_AWS_ACCESS_KEY_ID", Value: "AKIADEVEXAMPLE000001"},
+						{Key: "DEV_AWS_ACCESS_KEY_ID", Value: "AKIADEVREDACTD000001"},
 						{Key: "DEV_AWS_SECRET_ACCESS_KEY", Value: "dev/secret/example"},
 					},
 					AWS: &AWSGroup{
-						AccessKeyID:    "AKIADEVEXAMPLE000001",
+						AccessKeyID:    "AKIADEVREDACTD000001",
 						SecretKey:      "dev/secret/example",
 						AccessKeyIDVar: "DEV_AWS_ACCESS_KEY_ID",
 						SecretKeyVar:   "DEV_AWS_SECRET_ACCESS_KEY",
@@ -171,20 +171,20 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "canonical + orphan _OLD suffix stays bearer",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				{Key: "AWS_ACCESS_KEY_ID_OLD", Value: "AKIAOLDROTATED000001"},
 			},
 			wantGroups: []Group{{
 				Scheme: "aws",
 				Name:   "AWS_ACCESS_KEY_ID",
 				Members: []Candidate{
-					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
-					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:    "AKIAIOSFODNN7REDACTD",
+					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					AccessKeyIDVar: "AWS_ACCESS_KEY_ID",
 					SecretKeyVar:   "AWS_SECRET_ACCESS_KEY",
 				},
@@ -210,11 +210,11 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "secret without ID stays bearer",
 			input: []Candidate{
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 			},
 			wantGroups: nil,
 			wantRem: []Candidate{
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 			},
 		},
 		{
@@ -230,8 +230,8 @@ func TestAWSCorrelator(t *testing.T) {
 		{
 			name: "non-AWS noise preserved alongside group",
 			input: []Candidate{
-				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+				{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+				{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				{Key: "DATABASE_URL", Value: "postgres://u:p@h/db"},
 				{Key: "OPENAI_API_KEY", Value: "sk-proj-1234567890abcdef"},
 			},
@@ -239,12 +239,12 @@ func TestAWSCorrelator(t *testing.T) {
 				Scheme: "aws",
 				Name:   "AWS_ACCESS_KEY_ID",
 				Members: []Candidate{
-					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+					{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+					{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 				},
 				AWS: &AWSGroup{
-					AccessKeyID:    "AKIAIOSFODNN7EXAMPLE",
-					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+					AccessKeyID:    "AKIAIOSFODNN7REDACTD",
+					SecretKey:      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 					AccessKeyIDVar: "AWS_ACCESS_KEY_ID",
 					SecretKeyVar:   "AWS_SECRET_ACCESS_KEY",
 				},

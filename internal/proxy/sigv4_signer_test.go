@@ -52,14 +52,14 @@ func TestCanonicalQueryString(t *testing.T) {
 
 func TestParseSigV4Authorization(t *testing.T) {
 	value := "AWS4-HMAC-SHA256 " +
-		"Credential=AKIAIOSFODNN7EXAMPLE/20150830/us-east-1/iam/aws4_request, " +
+		"Credential=AKIAIOSFODNN7REDACTD/20150830/us-east-1/iam/aws4_request, " +
 		"SignedHeaders=content-type;host;x-amz-date, " +
 		"Signature=5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7"
 	got, err := parseSigV4Authorization(value)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+	if got.AccessKeyID != "AKIAIOSFODNN7REDACTD" {
 		t.Errorf("AccessKeyID = %q", got.AccessKeyID)
 	}
 	if got.Date != "20150830" || got.Region != "us-east-1" || got.Service != "iam" {
@@ -89,6 +89,9 @@ func TestParseSigV4Authorization_Malformed(t *testing.T) {
 
 // AWS SigV4 signing-key derivation test vector, published at:
 // https://docs.aws.amazon.com/general/latest/gr/signature-v4-examples.html
+// The secret value is AWS's documented example — required for the published
+// hash to match. The placeholder stub-value denylist does not apply here:
+// this test calls deriveSigningKey directly, not IsSecretLike.
 func TestDeriveSigningKey_PublishedVector(t *testing.T) {
 	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 	date := "20150830"
@@ -118,6 +121,9 @@ func TestCanonicalHeaders(t *testing.T) {
 
 // From AWS SigV4 test suite "get-vanilla":
 // https://github.com/aws-samples/sigv4-test-suite
+// Values are AWS's documented vector — required for the published signature
+// to match. The placeholder stub-value denylist does not apply here:
+// this test calls signAWSSigV4 directly, not IsSecretLike.
 func TestSignAWSSigV4_GetVanilla(t *testing.T) {
 	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 	akid := "AKIDEXAMPLE"

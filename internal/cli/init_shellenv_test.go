@@ -201,8 +201,8 @@ func TestInit_CorrelatesAWSTripleFromShellEnv(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	clearShellEnvTestNoise(t)
 
-	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7REDACTD")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY")
 	t.Setenv("AWS_SESSION_TOKEN", "FwoGZXIvYXdzEJr//////////wEaDPshell")
 
 	tmp := t.TempDir()
@@ -236,10 +236,10 @@ func TestInit_CorrelatesAWSTripleFromShellEnv(t *testing.T) {
 	if awsCred.Scheme != "aws" {
 		t.Errorf("Scheme = %q, want aws", awsCred.Scheme)
 	}
-	if awsCred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+	if awsCred.AWSAccessKeyID != "AKIAIOSFODNN7REDACTD" {
 		t.Errorf("AWSAccessKeyID = %q", awsCred.AWSAccessKeyID)
 	}
-	if awsCred.Real != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+	if awsCred.Real != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY" {
 		t.Errorf("Real = %q", awsCred.Real)
 	}
 	if awsCred.AWSSessionToken != "FwoGZXIvYXdzEJr//////////wEaDPshell" {
@@ -307,8 +307,8 @@ func TestInit_ShellAWSWithSameNameInVaultDropsWholeGroup(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	clearShellEnvTestNoise(t)
 
-	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7REDACTD")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY")
 	t.Setenv("AWS_SESSION_TOKEN", "FwoGZXIvYXdzEJr//////////wEaDPshell")
 
 	tmp := t.TempDir()
@@ -316,8 +316,8 @@ func TestInit_ShellAWSWithSameNameInVaultDropsWholeGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPshell\n"
 	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)

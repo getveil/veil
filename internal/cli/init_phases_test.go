@@ -708,8 +708,8 @@ func TestProcessEnvFileDryRunNoSideEffects(t *testing.T) {
 func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 	envFile := scanner.ParseBytes([]byte(
 		"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n" +
-			"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-			"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"))
+			"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+			"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n"))
 
 	// Build the secret list the way processEnvFile would, but skip the
 	// correlator so the AWS pair stays out of the `groups` argument; this
@@ -737,7 +737,7 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 
 func TestBuildEnvFileCredentials_URLWithPasswordIsVaulted(t *testing.T) {
 	envFile := scanner.ParseBytes([]byte(
-		"DATABASE_URL=postgres://user:secret@db.example.com/app\n"))
+		"DATABASE_URL=postgres://user:secret@db.prod.internal/app\n"))
 	var secrets []secretLine
 	for i, line := range envFile.Lines {
 		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {

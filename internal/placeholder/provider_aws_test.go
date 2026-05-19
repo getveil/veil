@@ -9,7 +9,7 @@ func TestProviderAWS(t *testing.T) {
 	prov := mustProvider(t, "aws")
 
 	t.Run("match_AKIA", func(t *testing.T) {
-		if !prov.Match("", "AKIAIOSFODNN7EXAMPLE") {
+		if !prov.Match("", "AKIAIOSFODNN7REDACTD") {
 			t.Fatal("should match AKIA prefix")
 		}
 	})
@@ -29,7 +29,7 @@ func TestProviderAWS(t *testing.T) {
 		}
 	})
 	t.Run("generate_AKIA_length", func(t *testing.T) {
-		value := "AKIAIOSFODNN7EXAMPLE" // 20 chars
+		value := "AKIAIOSFODNN7REDACTD" // 20 chars
 		result := prov.Generate("", value)
 		if len(result) != 20 {
 			t.Fatalf("expected length 20, got %d", len(result))
@@ -47,19 +47,19 @@ func TestProviderAWS(t *testing.T) {
 		}
 	})
 	t.Run("generate_secret_key_length", func(t *testing.T) {
-		value := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // 40 chars
+		value := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY" // 40 chars
 		result := prov.Generate("", value)
 		if len(result) != len(value) {
 			t.Fatalf("expected length %d, got %d", len(value), len(result))
 		}
 	})
 	t.Run("match_ASIA", func(t *testing.T) {
-		if !prov.Match("", "ASIAIOSFODNN7EXAMPLE") {
+		if !prov.Match("", "ASIAIOSFODNN7REDACTD") {
 			t.Fatal("should match ASIA prefix")
 		}
 	})
 	t.Run("generate_ASIA_length_and_prefix", func(t *testing.T) {
-		value := "ASIAIOSFODNN7EXAMPLE" // 20 chars
+		value := "ASIAIOSFODNN7REDACTD" // 20 chars
 		result := prov.Generate("", value)
 		if len(result) != 20 {
 			t.Fatalf("expected length 20, got %d", len(result))
@@ -121,7 +121,7 @@ func TestProviderAWS_RoleOverridesValuePrefix(t *testing.T) {
 
 	t.Run("counter_AKIA_value_with_AKID_role", func(t *testing.T) {
 		// Counter-test: AKID role with AKIA value still gets AKID-style.
-		akid := "AKIAIOSFODNN7EXAMPLE"
+		akid := "AKIAIOSFODNN7REDACTD"
 		ph, err := Generate("AWS_ACCESS_KEY_ID", akid, nil)
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
@@ -140,7 +140,7 @@ func TestProviderAWS_RoleOverridesValuePrefix(t *testing.T) {
 	})
 
 	t.Run("counter_ASIA_value_with_AKID_role", func(t *testing.T) {
-		akid := "ASIAIOSFODNN7EXAMPLE"
+		akid := "ASIAIOSFODNN7REDACTD"
 		ph, err := Generate("AWS_ACCESS_KEY_ID", akid, nil)
 		if err != nil {
 			t.Fatalf("Generate: %v", err)

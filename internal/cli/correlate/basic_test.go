@@ -143,8 +143,8 @@ func TestBasicCorrelator_DoesNotConsumeAWSTriple(t *testing.T) {
 	// Regression: AWS vars don't contain USER/PASS substrings, so the basic
 	// correlator must ignore them entirely.
 	cands := []Candidate{
-		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 	}
 	groups, remaining := basicCorrelator{}.Detect(cands)
 	if len(groups) != 0 {

@@ -127,7 +127,7 @@ func TestAddCmd_SchemeAWS_HappyPath(t *testing.T) {
 	cmd.SetArgs([]string{
 		"add", "--path", root, "aws-prod",
 		"--scheme", "aws", "--experimental",
-		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--aws-access-key-id", "AKIAIOSFODNN7REDACTD",
 		"--host", "*.amazonaws.com",
 		"--value-stdin",
 	})
@@ -146,7 +146,7 @@ func TestAddCmd_SchemeAWS_HappyPath(t *testing.T) {
 	if cred.Scheme != "aws" {
 		t.Errorf("Scheme = %q, want aws", cred.Scheme)
 	}
-	if cred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+	if cred.AWSAccessKeyID != "AKIAIOSFODNN7REDACTD" {
 		t.Errorf("AccessKeyID not stored")
 	}
 	if cred.AWSAccessKeyIDPlaceholder == "" || !strings.HasPrefix(cred.AWSAccessKeyIDPlaceholder, "AKIA") {
@@ -185,7 +185,7 @@ func TestAddCmd_SchemeAWS_WithSessionTokenFile(t *testing.T) {
 	cmd.SetArgs([]string{
 		"add", "--path", root, "aws-sts",
 		"--scheme", "aws", "--experimental",
-		"--aws-access-key-id", "ASIAIOSFODNN7EXAMPLE",
+		"--aws-access-key-id", "ASIAIOSFODNN7REDACTD",
 		"--aws-session-token-file", tokPath,
 		"--value-stdin",
 	})
@@ -250,7 +250,7 @@ func TestAddCmd_SchemeAWS_MutuallyExclusiveWithUser(t *testing.T) {
 		"add", "--path", root, "x",
 		"--scheme", "aws", "--experimental",
 		"--user", "bob",
-		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--aws-access-key-id", "AKIAIOSFODNN7REDACTD",
 		"--value-stdin",
 	})
 	if err := cmd.Execute(); err == nil {
@@ -518,8 +518,8 @@ func TestAdd_SchemeAWS_RefusedWithoutExperimental(t *testing.T) {
 	cmd.SetArgs([]string{
 		"add", "--path", root, "AWS_PROD",
 		"--scheme", "aws",
-		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
-		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"--aws-access-key-id", "AKIAIOSFODNN7REDACTD",
+		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 	})
 
 	if err := cmd.Execute(); err == nil {
@@ -542,8 +542,8 @@ func TestAdd_SchemeAWS_AcceptedWithExperimental(t *testing.T) {
 	cmd.SetArgs([]string{
 		"add", "--path", root, "AWS_PROD",
 		"--scheme", "aws", "--experimental",
-		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
-		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"--aws-access-key-id", "AKIAIOSFODNN7REDACTD",
+		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 	})
 
 	if err := cmd.Execute(); err != nil {

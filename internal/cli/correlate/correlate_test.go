@@ -31,8 +31,8 @@ func TestDetectAll_NoCorrelationJustPassesThrough(t *testing.T) {
 
 func TestDetectAll_AWSTripleIsConsumed(t *testing.T) {
 	in := []Candidate{
-		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{Key: "AWS_SESSION_TOKEN", Value: "FwoGZXIvYXdzEJr//////////wEaDP"},
 		{Key: "OPENAI_API_KEY", Value: "sk-proj-1234567890abcdef"},
 	}
@@ -47,8 +47,8 @@ func TestDetectAll_AWSTripleIsConsumed(t *testing.T) {
 
 func TestDetectAll_BasicGroupFromMixedInput(t *testing.T) {
 	cands := []Candidate{
-		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7EXAMPLE"},
-		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
+		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{Key: "GH_USERNAME", Value: "alice"},
 		{Key: "GH_PASSWORD", Value: "ghp_realtoken1234"},
 		{Key: "STRIPE_API_KEY", Value: "sk_test_aBcDeFgHiJkLmNoP"},

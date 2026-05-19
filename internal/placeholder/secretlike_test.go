@@ -199,6 +199,64 @@ func TestIsSecretLike_HighEntropyLong_StillFlagged(t *testing.T) {
 	}
 }
 
+// TestIsSecretLike_StubValueDenylist asserts that values containing common
+// placeholder substrings or structural template markers are never classified
+// secret-like.
+func TestIsSecretLike_StubValueDenylist(t *testing.T) {
+	// Substring matches (case-insensitive). Use API_KEY so the name-gate
+	// would otherwise admit these.
+	substrings := []string{
+		"your_secret_token_value", // your_
+		"YOUR_SECRET_TOKEN_VALUE", // case-insensitive
+		"api_key_here_xxx0000",    // _here  (also xxxx structural, both apply)
+		"replace_me",
+		"REPLACE_ME",
+		"dummy_credential",
+		"fake_token_value",
+		"example_secret_value",
+		"placeholder_token",
+		"TODO_set_real_token",
+		"FIXME_set_real_token",
+	}
+	for _, v := range substrings {
+		if IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected false (stub-value substring)", v)
+		}
+	}
+
+	// Structural patterns (case-insensitive).
+	structural := []string{
+		"<your-token>",
+		"<TOKEN>",
+		"<a>", // minimal angle-bracketed
+		"{{TOKEN}}",
+		"{{api_key}}",
+		"${TOKEN}",
+		"${api_key}",
+		"xxxxxxxxxxxxxxxx", // many x
+		"XXXX",             // exactly 4 X (case-insensitive)
+		"prefixxxxsuffix",  // 4 consecutive x mid-string
+	}
+	for _, v := range structural {
+		if IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected false (stub-value structural)", v)
+		}
+	}
+
+	// Negative: real-looking values still flag.
+	allowed := []string{
+		"abcdef123456",        // passes name-gate
+		"axxbxxc456789012",    // only pairs of x — no 4-in-a-row
+		"<tag-but-trailing>x", // not entirely angle-bracketed
+		"{{token}}suffix",     // not entirely templated
+	}
+	for _, v := range allowed {
+		if !IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected true (no stub match)", v)
+		}
+	}
+}
+
 // TestDistinctBytes verifies the helper's correctness.
 func TestDistinctBytes(t *testing.T) {
 	cases := []struct {

@@ -1293,8 +1293,8 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPexample\n" +
 		"DATABASE_URL=postgres://u:pw@h/db\n"
 	envPath := filepath.Join(tmpDir, ".env")
@@ -1336,8 +1336,8 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 	}
 	envStr := string(envData)
 	for _, real := range []string{
-		"AKIAIOSFODNN7EXAMPLE",
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"AKIAIOSFODNN7REDACTD",
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 		"FwoGZXIvYXdzEJr//////////wEaDPexample",
 	} {
 		if !strings.Contains(envStr, real) {
@@ -1364,9 +1364,9 @@ func TestInit_CorrelatesTwoAWSAccountsInEnvFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "PROD_AWS_ACCESS_KEY_ID=AKIAPRODEXAMPLE00001\n" +
+	envContent := "PROD_AWS_ACCESS_KEY_ID=AKIAPRODREDACTD00001\n" +
 		"PROD_AWS_SECRET_ACCESS_KEY=prod/secret/access/key/example00001\n" +
-		"DEV_AWS_ACCESS_KEY_ID=AKIADEVEXAMPLE000001\n" +
+		"DEV_AWS_ACCESS_KEY_ID=AKIADEVREDACTD000001\n" +
 		"DEV_AWS_SECRET_ACCESS_KEY=dev/secret/access/key/example000001\n"
 	envPath := filepath.Join(tmpDir, ".env")
 	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
@@ -1404,9 +1404,9 @@ func TestInit_CorrelatesTwoAWSAccountsInEnvFile(t *testing.T) {
 	}
 	envStr := string(envData)
 	for _, real := range []string{
-		"AKIAPRODEXAMPLE00001",
+		"AKIAPRODREDACTD00001",
 		"prod/secret/access/key/example00001",
-		"AKIADEVEXAMPLE000001",
+		"AKIADEVREDACTD000001",
 		"dev/secret/access/key/example000001",
 	} {
 		if !strings.Contains(envStr, real) {
@@ -1434,7 +1434,7 @@ func TestInit_PartialAWSFallsThroughToNotManaged(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1475,8 +1475,11 @@ func TestInit_FakeAWSValueNotVaulted(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "AWS_ACCESS_KEY_ID=fake-access-key-test\n" +
-		"AWS_SECRET_ACCESS_KEY=fake-secret-key-for-testing-purposes\n"
+	// Values are AWS-named but not AWS-shaped (no AKIA/ASIA prefix on the
+	// ID; non-base64 secret) — exercises the bearer-fallback path. Avoids
+	// the substring "fake" that would trip the stub-value denylist.
+	envContent := "AWS_ACCESS_KEY_ID=not-aws-shaped-access-id\n" +
+		"AWS_SECRET_ACCESS_KEY=not-aws-shaped-secret-credential-1234567890\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1517,8 +1520,8 @@ func TestInit_DryRunShowsAWSInNotManaged(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n"
 	envPath := filepath.Join(tmpDir, ".env")
 	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
@@ -1617,8 +1620,8 @@ func TestInit_AWSCredentialResignsViaProxy(t *testing.T) {
 		t.Fatalf("CreateVault: %v", err)
 	}
 	const (
-		realAKID        = "AKIAIOSFODNN7EXAMPLE"
-		realSecret      = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		realAKID        = "AKIAIOSFODNN7REDACTD"
+		realSecret      = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"
 		placeholderAKID = "AKIA_VEIL_PLACEHOLDER_EXMPL"
 	)
 	cred := &vault.Credential{
@@ -1802,7 +1805,7 @@ func TestInitRefusesSymlinkedEnv(t *testing.T) {
 	// deliberately picked to keep secrets out of source control.
 	externalDir := t.TempDir()
 	target := filepath.Join(externalDir, "secrets")
-	originalTarget := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	originalTarget := "OPENAI_API_KEY=sk-proj-real-secret-ABCDEF1234567890\n"
 	if err := os.WriteFile(target, []byte(originalTarget), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1953,7 +1956,7 @@ func TestInitVaultsMCPArgsDSN(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalPassword := "s3cret-db-password-xyz"
-	originalDSN := "postgres://app_user:" + originalPassword + "@db.internal.example.com:5432/prod"
+	originalDSN := "postgres://app_user:" + originalPassword + "@db.prod.internal:5432/prod"
 	mcpContent := `{
   "mcpServers": {
     "postgres": {
@@ -1989,7 +1992,7 @@ func TestInitVaultsMCPArgsDSN(t *testing.T) {
 	if !strings.Contains(mcpStr, "postgres://app_user:") {
 		t.Errorf("DSN structure not preserved (username/scheme):\n%s", mcpStr)
 	}
-	if !strings.Contains(mcpStr, "@db.internal.example.com:5432/prod") {
+	if !strings.Contains(mcpStr, "@db.prod.internal:5432/prod") {
 		t.Errorf("DSN structure not preserved (host/path):\n%s", mcpStr)
 	}
 
@@ -2166,7 +2169,7 @@ func TestInitRefusesPrePlantedBackupSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(projectDir, ".env")
-	envContent := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	envContent := "OPENAI_API_KEY=sk-proj-real-secret-ABCDEF1234567890\n"
 	if err := os.WriteFile(envPath, []byte(envContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2287,7 +2290,7 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	// The malicious redirect: <Claude dir> is a symlink to /tmp/attacker/.
 	attackerDir := t.TempDir()
 	exfilSentinel := filepath.Join(attackerDir, "claude_desktop_config.json")
-	if err := os.WriteFile(exfilSentinel, []byte(`{"mcpServers":{"x":{"command":"x","env":{"OPENAI_API_KEY":"sk-real-secret-xxxxxxxx"}}}}`), 0o600); err != nil {
+	if err := os.WriteFile(exfilSentinel, []byte(`{"mcpServers":{"x":{"command":"x","env":{"OPENAI_API_KEY":"sk-real-secret-ABCDEF12"}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	claudeSymlink := filepath.Join(parentDir, subpath[len(subpath)-1])
@@ -2322,7 +2325,7 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 	}
 	// Need a vaultable .env so init actually runs the MCP phase.
 	envPath := filepath.Join(projectDir, ".env")
-	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"), 0o600); err != nil {
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-proj-real-secret-ABCDEF1234567890\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2849,8 +2852,8 @@ func TestProcessMCPConfig_SkipsAWS(t *testing.T) {
 	if err := os.MkdirAll(mcpDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	const awsKeyID = "AKIAIOSFODNN7EXAMPLE"
-	const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	const awsKeyID = "AKIAIOSFODNN7REDACTD"
+	const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"
 	mcpContent := `{
   "mcpServers": {
     "aws-server": {

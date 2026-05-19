@@ -701,7 +701,7 @@ func TestCredential_AWSFieldsRoundTrip(t *testing.T) {
 		Real:                       "real-secret-key",
 		Placeholder:                "VeilAWSSecretVEIL",
 		Scheme:                     "aws",
-		AWSAccessKeyID:             "AKIAIOSFODNN7EXAMPLE",
+		AWSAccessKeyID:             "AKIAIOSFODNN7REDACTD",
 		AWSAccessKeyIDPlaceholder:  "AKIAVEIL3X9Z2Y1W8VQR",
 		AWSSessionToken:            "FwoGZXIv...realtoken",
 		AWSSessionTokenPlaceholder: "VeilAWSSessTok",

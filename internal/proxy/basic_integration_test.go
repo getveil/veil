@@ -198,8 +198,8 @@ func TestBasicLeak_502ContainsHint_TwoSeparateCreds(t *testing.T) {
 // a request signed by the placeholder key, and asserts that the upstream
 // verifies the real signature.
 func TestIntegration_AWSSigV4_EndToEnd(t *testing.T) {
-	realSecret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
-	realAKID := "AKIAIOSFODNN7EXAMPLE"
+	realSecret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY"
+	realAKID := "AKIAIOSFODNN7REDACTD"
 	placeholderAKID := "AKIAPH0000000000EXMP"
 	placeholderSecret := "VeilSecretPlaceholderXXXXXXXXXXXXXXXXXXX"
 
