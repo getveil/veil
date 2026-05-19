@@ -30,8 +30,9 @@ func nameImpliesAWSAccessKeyID(name string) bool {
 
 func init() {
 	register(ProviderPattern{
-		Name:     "aws",
-		Priority: PriorityHandwritten,
+		Name:       "aws",
+		Priority:   PriorityHandwritten,
+		AuthScheme: AuthSigV4,
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "AKIA") || strings.HasPrefix(value, "ASIA") {
 				return true

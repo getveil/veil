@@ -245,3 +245,17 @@ func TestGenerateAWSSessionToken_CollisionRetry(t *testing.T) {
 		seen[ph] = struct{}{}
 	}
 }
+
+func TestProviderAWS_AuthSchemeIsSigV4(t *testing.T) {
+	r := DefaultRegistry()
+	p, ok := r.Get("aws")
+	if !ok {
+		t.Fatal("aws provider not registered")
+	}
+	if p.AuthScheme != AuthSigV4 {
+		t.Fatalf("aws AuthScheme = %v, want AuthSigV4", p.AuthScheme)
+	}
+	if VaultEligible(&p) {
+		t.Fatal("aws must not be VaultEligible")
+	}
+}
