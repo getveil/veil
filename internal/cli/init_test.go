@@ -2825,3 +2825,92 @@ func TestInit_ScanFlagsIndependent(t *testing.T) {
 		t.Errorf("project MCP secret was NOT vaulted with --scan-mcp set")
 	}
 }
+
+// TestProcessMCPConfig_SkipsAWS verifies that AWS credentials discovered in
+// an MCP config env block are gated by VaultEligible — they must NOT be
+// vaulted, the MCP config file must be left unchanged, and the "Not managed"
+// summary section must appear in stdout.
+func TestProcessMCPConfig_SkipsAWS(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
+	t.Setenv("HOME", t.TempDir())
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// .env with a benign line so init has something to do and doesn't short-circuit
+	// before reaching the MCP config phase.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpDir := filepath.Join(tmpDir, "claude-config")
+	if err := os.MkdirAll(mcpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	const awsKeyID = "AKIAIOSFODNN7EXAMPLE"
+	const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	mcpContent := `{
+  "mcpServers": {
+    "aws-server": {
+      "command": "npx",
+      "args": ["-y", "@example/mcp-aws"],
+      "env": {
+        "AWS_ACCESS_KEY_ID": "` + awsKeyID + `",
+        "AWS_SECRET_ACCESS_KEY": "` + awsSecret + `"
+      }
+    }
+  }
+}`
+	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
+
+	out := new(bytes.Buffer)
+	cmd := NewRoot("test")
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-mcp"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// The vault must NOT contain either AWS credential.
+	v, err := openVault(tmpDir)
+	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	if _, ok := v.Get("mcp:aws-server:AWS_ACCESS_KEY_ID"); ok {
+		t.Error("AWS_ACCESS_KEY_ID was vaulted despite VaultEligible gate; MCP path is inconsistent with .env path")
+	}
+	if _, ok := v.Get("mcp:aws-server:AWS_SECRET_ACCESS_KEY"); ok {
+		t.Error("AWS_SECRET_ACCESS_KEY was vaulted despite VaultEligible gate; MCP path is inconsistent with .env path")
+	}
+
+	// The MCP config must be byte-identical: no placeholder rewrite should have occurred.
+	mcpData, err := os.ReadFile(mcpConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mcpData) != mcpContent {
+		t.Errorf("MCP config was mutated despite no vault-eligible secrets:\ngot:  %q\nwant: %q", mcpData, mcpContent)
+	}
+	if _, err := os.Stat(mcpConfigPath + ".veil-backup"); err == nil {
+		t.Error("backup must not be created when no credentials were vaulted")
+	}
+
+	// The "Not managed" summary section must appear in stdout.
+	outStr := out.String()
+	if !strings.Contains(outStr, "Not managed") {
+		t.Errorf("expected 'Not managed' section in output; got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "AWS_ACCESS_KEY_ID") {
+		t.Errorf("expected AWS_ACCESS_KEY_ID named in 'Not managed' section; got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "AWS_SECRET_ACCESS_KEY") {
+		t.Errorf("expected AWS_SECRET_ACCESS_KEY named in 'Not managed' section; got:\n%s", outStr)
+	}
+}

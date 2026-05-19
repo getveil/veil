@@ -306,6 +306,13 @@ func plural(n int, singular, pluralForm string) string {
 	return pluralForm
 }
 
+// skippedMCP records an MCP-discovered secret that veil init did not vault.
+// Reason is the user-facing label shown in the summary.
+type skippedMCP struct {
+	name   string // canonical mcp:server:key form
+	reason string
+}
+
 // processMCPConfig extracts secrets from an MCP config file, vaults them, and
 // rewrites the config with placeholders. Returns the number of secrets vaulted
 // and the number auto-scoped to hosts.
@@ -427,17 +434,36 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 	var count, scoped int
 	configChanged := false
 	seen := make(placeholder.Set)
+	var (
+		notManaged   []skippedMCP
+		unrecognized []string
+	)
 
 	for _, s := range allSecrets {
 		if !selectedIDs[idOf(s)] {
 			continue
 		}
+
+		// Gate on VaultEligible: skip recognized-but-unsupported schemes
+		// and unrecognized formats, mirroring buildEnvFileCredentials.
+		p := placeholder.DefaultRegistry().Match(s.key, s.value)
+		credName := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
+		if p == nil && !placeholder.IsURLWithPassword(s.value) {
+			unrecognized = append(unrecognized, credName)
+			continue
+		}
+		if p != nil && !placeholder.VaultEligible(p) {
+			notManaged = append(notManaged, skippedMCP{
+				name:   credName,
+				reason: placeholder.AuthSchemeReason(p.AuthScheme),
+			})
+			continue
+		}
+
 		ph, err := placeholder.Generate(s.key, s.value, seen)
 		if err != nil {
 			return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", s.server, s.key, err), "")
 		}
-
-		credName := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
 		credHosts := placeholder.HostsForCredential(s.key, s.value)
 		cred := &vault.Credential{
 			ID:           vault.NewID(),
@@ -471,6 +497,19 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 				mcpCfg.SetEnvValue(s.server, s.key, ph)
 			}
 			configChanged = true
+		}
+	}
+
+	if len(notManaged) > 0 {
+		fmt.Fprintf(w, "\nNot managed — MCP secrets Veil v0.1.x doesn't mediate (%d):\n", len(notManaged))
+		for _, s := range notManaged {
+			fmt.Fprintf(w, "    %-42s %s\n", s.name, s.reason)
+		}
+	}
+	if len(unrecognized) > 0 {
+		fmt.Fprintf(w, "\nUnrecognized — MCP secrets left as-is (%d):\n", len(unrecognized))
+		for _, name := range unrecognized {
+			fmt.Fprintf(w, "    %-42s %s\n", name, "no known format")
 		}
 	}
 
