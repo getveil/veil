@@ -773,3 +773,92 @@ func TestTrailingCommentRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestMultilineQuotedWithShortPaddingLine covers the launch-blocker fix where
+// a base64 padding line (e.g. "abcdefghi==") inside a multi-line PEM tripped
+// looksLikeIndependentKV, causing accumulation to bail and leaving the PEM
+// body in plaintext on disk after a vault rewrite.
+func TestMultilineQuotedWithShortPaddingLine(t *testing.T) {
+	const pemBody = "-----BEGIN PRIVATE KEY-----\n" +
+		"MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbtotallySecret11\n" +
+		"abcdefghi==\n" +
+		"-----END PRIVATE KEY-----"
+	input := "RSA_KEY=\"" + pemBody + "\"\nOTHER=plain\n"
+
+	f := ParseBytes([]byte(input))
+	val, ok := f.Lookup("RSA_KEY")
+	if !ok {
+		t.Fatalf("RSA_KEY not found; lines: %+v", f.Lines)
+	}
+	if val != pemBody {
+		t.Errorf("Lookup(RSA_KEY) value mismatch:\n got: %q\nwant: %q", val, pemBody)
+	}
+	if !f.SetValue("RSA_KEY", "VEIL_PH") {
+		t.Fatal("SetValue: RSA_KEY not found")
+	}
+	got := string(f.Bytes())
+	for _, leak := range []string{"MIIEvgIBADAN", "totallySecret11", "abcdefghi==", "-----END PRIVATE KEY-----"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("body fragment %q leaked in output:\n%s", leak, got)
+		}
+	}
+	if !strings.Contains(got, "OTHER=plain") {
+		t.Errorf("surrounding line lost in output:\n%s", got)
+	}
+}
+
+// TestBOMStrippedFromFirstKey covers the fix where a UTF-8 BOM at the start
+// of a .env file was previously glued to the first KV's Key, so the vault
+// stored the credential under an invisible BOM-prefixed name that name-based
+// lookups would miss.
+func TestBOMStrippedFromFirstKey(t *testing.T) {
+	const bom = "\uFEFF"
+	input := bom + "API_KEY=sk-aaaaaaaaaaa\nOTHER=plain\n"
+	f := ParseBytes([]byte(input))
+	val, ok := f.Lookup("API_KEY")
+	if !ok {
+		var keys []string
+		for _, l := range f.Lines {
+			if l.Kind == KVLine {
+				keys = append(keys, l.Key)
+			}
+		}
+		t.Fatalf("API_KEY not found; parsed keys: %q", keys)
+	}
+	if val != "sk-aaaaaaaaaaa" {
+		t.Errorf("Lookup(API_KEY) = %q, want %q", val, "sk-aaaaaaaaaaa")
+	}
+	// Round-trip: BOM must be preserved at the start so we don't silently
+	// change the user's file encoding marker.
+	if got := string(f.Bytes()); got != input {
+		t.Errorf("round-trip mismatch:\n got: %q\nwant: %q", got, input)
+	}
+	// After a dirty rewrite the BOM is still present and the placeholder is
+	// applied to the same key.
+	if !f.SetValue("API_KEY", "VEIL_PH") {
+		t.Fatal("SetValue: API_KEY not found")
+	}
+	got := string(f.Bytes())
+	if !strings.HasPrefix(got, bom) {
+		t.Errorf("BOM lost from output prefix: %q", got)
+	}
+	if !strings.Contains(got, "API_KEY=VEIL_PH") {
+		t.Errorf("placeholder not written; got: %q", got)
+	}
+}
+
+// TestCRLFPreservedOnDirtyRewrite covers the fix where SetValue on a CRLF
+// .env file previously re-emitted the dirty line with just \n, leaving the
+// file with mixed line endings (\r\n for untouched lines, \n for rewritten
+// ones).
+func TestCRLFPreservedOnDirtyRewrite(t *testing.T) {
+	input := "API_KEY=sk-aaaaaaaaaaa\r\nOTHER=plain\r\n"
+	f := ParseBytes([]byte(input))
+	if !f.SetValue("API_KEY", "VEIL_PH") {
+		t.Fatal("SetValue: API_KEY not found")
+	}
+	want := "API_KEY=VEIL_PH\r\nOTHER=plain\r\n"
+	if got := string(f.Bytes()); got != want {
+		t.Errorf("CRLF mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
