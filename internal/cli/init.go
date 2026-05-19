@@ -525,9 +525,11 @@ func appendGitignore(w io.Writer, root string) {
 		}
 		// Create a fresh .gitignore so the .veil-backup sidecars don't leak
 		// via `git add .`. WriteFileNoFollow refuses a pre-planted dangling
-		// symlink at this path.
+		// symlink at this path. The contents (/.veil/, *.veil-backup) are
+		// not sensitive, so use the conventional 0644 — a world-unreadable
+		// .gitignore is surprising and diverges from every other repo.
 		content := "/.veil/\n*.veil-backup\n"
-		if werr := vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600); werr == nil {
+		if werr := vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o644); werr == nil {
 			ui.Step(w, "created .gitignore with /.veil/ and *.veil-backup")
 		}
 		return
@@ -550,9 +552,14 @@ func appendGitignore(w io.Writer, root string) {
 	}
 
 	// Refuse a symlinked .gitignore so a hostile cloned repo can't redirect
-	// our append into ~/.bashrc or similar. Mode 0600 matches the existing
-	// behavior on first creation; pre-existing widened perms are tightened
-	// for free (H9). Errors stay swallowed — appending .gitignore entries
-	// is best-effort.
-	_ = vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600)
+	// our append into ~/.bashrc or similar. Preserve the existing file's
+	// mode so we don't surprise users by narrowing a 0644 .gitignore to
+	// 0600 on every append. If stat fails (race after the read above),
+	// fall back to 0644 — the conventional mode for non-sensitive content.
+	// Errors stay swallowed — appending .gitignore entries is best-effort.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(gitignorePath); err == nil {
+		mode = info.Mode().Perm()
+	}
+	_ = vault.WriteFileNoFollow(gitignorePath, []byte(content), mode)
 }

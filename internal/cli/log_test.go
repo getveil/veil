@@ -11,6 +11,77 @@ import (
 	"github.com/getveil/veil/internal/config"
 )
 
+// TestLogCmd_ZeroState_NeverRun verifies that `veil log` on a freshly
+// init'd project that has never been `veil run` prints the "no veil run
+// executed yet" hint instead of the misleading "proxy was active" message.
+// The audit DB has no injection rows in either case; only the no-rows-ever
+// signal distinguishes a project that was running but quiet from one that
+// has never started the proxy.
+func TestLogCmd_ZeroState_NeverRun(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "No `veil run` has been executed yet") {
+		t.Errorf("expected 'never-run' hint, got:\n%s", s)
+	}
+	if !strings.Contains(s, "veil run") {
+		t.Errorf("expected suggested command, got:\n%s", s)
+	}
+	// The misleading "proxy was active" message must NOT appear.
+	if strings.Contains(s, "proxy was active") {
+		t.Errorf("misleading 'proxy was active' message must not appear when no run has occurred:\n%s", s)
+	}
+}
+
+// TestLogCmd_ZeroState_AfterRun verifies that `veil log` on a project that
+// HAS produced injection rows (just not within the current --since window)
+// keeps the existing zero-state message about an active proxy with no
+// injections during the period.
+func TestLogCmd_ZeroState_AfterRun(t *testing.T) {
+	root := initProject(t)
+
+	// Seed a row from outside the default 24h window so the filter returns
+	// zero but the DB still has prior activity.
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:      time.Now().Add(-72 * time.Hour),
+		RequestID:      "req-old",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "header",
+		CredentialName: "old-cred",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "No credential injections during this period") {
+		t.Errorf("expected period-bounded zero-state, got:\n%s", s)
+	}
+	if strings.Contains(s, "No `veil run` has been executed yet") {
+		t.Errorf("must not show 'never-run' hint when DB has prior rows:\n%s", s)
+	}
+}
+
 // TestLogCmd_SignerFailedFilter verifies that `veil log --signer-failed`
 // returns only rows whose Location == "signer_failed" and renders the
 // SignerError column alongside.

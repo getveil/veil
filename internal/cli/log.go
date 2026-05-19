@@ -2,7 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,20 @@ import (
 	"github.com/getveil/veil/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+// projectHasEverRun reports whether `veil run` has ever been invoked for
+// this project. The runner-started marker file is the primary signal; if
+// it's missing we fall back to "are there any audit rows at all" so a
+// project that ran the proxy before the marker landed still classifies
+// correctly.
+func projectHasEverRun(root string, store *audit.Store) (bool, error) {
+	if _, err := os.Stat(config.RunnerMarkerFile(root)); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return store.HasAnyRows()
+}
 
 func logCmd() *cobra.Command {
 	var (
@@ -108,6 +124,18 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	}
 
 	if len(rows) == 0 {
+		// Distinguish "never run" from "active but quiet" using a marker
+		// file the runner touches at session start. The marker is the
+		// primary signal; an audit-DB row check is the upgrade fallback
+		// for projects that ran `veil run` before the marker existed.
+		ever, err := projectHasEverRun(root, store)
+		if err != nil {
+			return cliError(fmt.Sprintf("querying audit log: %v", err), "")
+		}
+		if !ever {
+			_, _ = fmt.Fprintln(w, "No `veil run` has been executed yet — try `veil run <agent>`.")
+			return nil
+		}
 		_, _ = fmt.Fprintln(w, "No credential injections during this period.")
 		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("The proxy was active but no managed credentials were used in outbound requests"))
 		return nil
