@@ -96,6 +96,15 @@ func TestInitHappyPath(t *testing.T) {
 	if !strings.Contains(outStr, "✓") {
 		t.Errorf("expected checkmark in output, got: %s", outStr)
 	}
+	if !strings.Contains(outStr, "Next:") {
+		t.Errorf("expected Next: hint in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil run claude") {
+		t.Errorf("expected veil run claude hint in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil status") {
+		t.Errorf("expected veil status hint in output, got: %s", outStr)
+	}
 }
 
 func TestInitDryRun(t *testing.T) {
