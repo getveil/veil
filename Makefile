@@ -1,7 +1,7 @@
 VER ?= dev
 LDFLAGS := -s -w -X main.version=$(VER)
 
-.PHONY: build test test-race test-integration lint vet tidy clean release release-snapshot xbuild
+.PHONY: build test test-race test-integration lint vet tidy clean clean-keychain release release-snapshot xbuild
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/veil ./cmd/veil
@@ -41,6 +41,24 @@ tidy:
 
 clean:
 	rm -rf bin dist
+
+# clean-keychain removes accumulated `veil` entries from the developer's OS
+# keychain. These pile up when tests are run via bare `go test` (which omits
+# -tags testkeystore) instead of `make test` — without that tag the
+# test-keystore seam is inactive and tests write to the real keychain.
+# Safe to run: only deletes entries with service="veil".
+clean-keychain:
+	@if [ "$$(uname)" != "Darwin" ]; then \
+	    echo "clean-keychain: only implemented for macOS (Darwin)."; \
+	    echo "On Linux: secret-tool clear service veil"; \
+	    exit 1; \
+	fi
+	@echo "Removing orphan veil keychain entries (may take a while)..."
+	@count=0; while /usr/bin/security delete-generic-password -s veil >/dev/null 2>&1; do \
+	    count=$$((count+1)); \
+	    if [ $$((count % 100)) -eq 0 ]; then printf "  removed %d entries...\n" $$count; fi; \
+	done; \
+	echo "Done. Removed $$count orphan veil keychain entries."
 
 xbuild:
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/veil-darwin-amd64  ./cmd/veil

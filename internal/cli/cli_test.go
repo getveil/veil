@@ -12,6 +12,7 @@ import (
 
 	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/envkeys"
 	"github.com/getveil/veil/internal/skiphost"
 )
 
@@ -27,6 +28,31 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1"); err != nil {
 		panic(err)
 	}
+
+	// Probe the test-keystore seam: tests in this package set
+	// VEIL_TEST_KEYSTORE=mem expecting writes to route to an in-memory
+	// keystore, but the seam is gated behind -tags testkeystore. Without
+	// that tag the env var is silently ignored and tests fall through to
+	// the real OS keychain — polluting it (and producing exit-154 errors
+	// once enough entries accumulate). Fail loud here.
+	prev, hadPrev := os.LookupEnv(envkeys.TestKeystoreToggle)
+	if err := os.Setenv(envkeys.TestKeystoreToggle, "mem"); err != nil {
+		panic(err)
+	}
+	_, seamActive := MaybeTestKeystoreForTest()
+	if hadPrev {
+		_ = os.Setenv(envkeys.TestKeystoreToggle, prev)
+	} else {
+		_ = os.Unsetenv(envkeys.TestKeystoreToggle)
+	}
+	if !seamActive {
+		fmt.Fprintln(os.Stderr,
+			"FATAL: internal/cli tests require -tags testkeystore. "+
+				"Run via `make test`, not bare `go test`, so tests do not "+
+				"write to the real OS keychain.")
+		os.Exit(1)
+	}
+
 	os.Exit(m.Run())
 }
 
