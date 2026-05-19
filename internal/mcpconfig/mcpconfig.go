@@ -68,9 +68,9 @@ func Discover() ([]DiscoveredConfig, error) {
 	return out, nil
 }
 
-// resolveOverride checks the VEIL_MCP_CONFIG_PATH value. Missing files yield
-// (_, false) so the caller drops the override (same semantics as the legacy
-// discoverIn).
+// resolveOverride checks the VEIL_MCP_CONFIG_PATH value. Missing files (or
+// directories) yield (_, false) so the caller drops the override and treats
+// it as absent rather than surfacing an error.
 func resolveOverride(p string) (string, bool) {
 	info, err := os.Stat(p) // #nosec G304 G703 -- override is an opt-in test hook
 	if err != nil || info.IsDir() {

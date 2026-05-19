@@ -136,13 +136,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if len(mcpConfigs) > 0 {
 		ui.Step(w, fmt.Sprintf("Found %d MCP %s:", len(mcpConfigs), plural(len(mcpConfigs), "config", "configs")))
 		for _, c := range mcpConfigs {
-			display := c.Path
-			if home, herr := os.UserHomeDir(); herr == nil && strings.HasPrefix(c.Path, home+string(os.PathSeparator)) {
-				display = "~" + strings.TrimPrefix(c.Path, home)
-			} else if c.Scope == mcpconfig.ProjectScope {
-				display = displayRel(root, c.Path)
-			}
-			ui.Dim(w, fmt.Sprintf("  %s  [%s, %s]", display, c.Client, c.Scope))
+			ui.Dim(w, "  "+mcpDisplayLabel(root, c))
 		}
 	}
 	_, _ = fmt.Fprintln(w)

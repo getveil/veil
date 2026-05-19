@@ -121,6 +121,13 @@ func makeEnv(t *testing.T) []string {
 	if overrideHome {
 		out = append(out, "HOME="+t.TempDir())
 	}
+	// Suppress MCP discovery so the spawned `veil` binary cannot touch the
+	// developer's real ~/.claude.json, ~/.cursor/mcp.json, or Claude Desktop
+	// config (on macOS we deliberately keep the real HOME so go-keyring can
+	// reach /usr/bin/security). Without this, `make test` could silently
+	// vault real MCP env vars and overwrite the originals with placeholders.
+	// None of the integration tests assert anything about MCP discovery.
+	out = append(out, "VEIL_MCP_DISABLE_DISCOVERY=1")
 	return out
 }
 

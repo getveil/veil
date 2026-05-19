@@ -2214,7 +2214,7 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 
 	// Build a fake home where the platform-canonical Claude config dir
 	// is a symlink to an attacker-chosen directory. We need
-	// os.UserHomeDir to return our fake home so mcpconfig.ParentAnchor
+	// os.UserHomeDir to return our fake home so mcpconfig.ParentAnchors
 	// anchors the walk there, NOT at the developer's real home.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -2240,7 +2240,7 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 		t.Skip("no canonical Claude config path on this platform")
 	}
 	if anchor != fakeHome {
-		t.Fatalf("ParentAnchor anchor %q != fakeHome %q (HOME override not picked up)", anchor, fakeHome)
+		t.Fatalf("ParentAnchors anchor %q != fakeHome %q (HOME override not picked up)", anchor, fakeHome)
 	}
 
 	// Materialize all but the last subpath component as real dirs; the
@@ -2322,7 +2322,7 @@ func TestInitRefusesSymlinkedParentDir(t *testing.T) {
 
 func TestFilterInputs_NoOpWhenOnlyOneInput(t *testing.T) {
 	// With exactly one input total, the upfront filter must NOT prompt
-	// (matches today's filterEnvPaths short-circuit).
+	// (matches today's filterInputs short-circuit).
 	in := strings.NewReader("")
 	out := new(bytes.Buffer)
 	envs, mcps := filterInputs(in, out, "/tmp/root",

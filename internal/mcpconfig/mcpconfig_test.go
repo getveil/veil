@@ -134,6 +134,7 @@ func TestParentAnchorsReturnsOnePerUserLocation(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("VEIL_MCP_CONFIG_PATH", "")
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
 
 	got, err := ParentAnchors()
 	if err != nil {
@@ -159,6 +160,7 @@ func TestParentAnchorsSkipsOverriddenClaudeDesktop(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "x.json"))
+	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "")
 
 	got, err := ParentAnchors()
 	if err != nil {
