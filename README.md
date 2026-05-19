@@ -10,6 +10,13 @@
 
 Veil is a local CLI that sits between your AI coding agents and the network via a local HTTPS proxy. It replaces real secrets with format-aware placeholders, then injects the real credentials at the proxy layer — so the agent never sees them. Works with any agent or tool that respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables, including Claude Code, Cursor, curl, and most HTTP clients.
 
+> **What's in scope today.** v0.1.x mediates HTTP Bearer and HTTP Basic
+> credentials for ~19 providers (GitHub PATs, OpenAI, Anthropic, Stripe,
+> Slack, npm/PyPI registry tokens, and more). AWS SigV4, GitHub App
+> JWTs, Google service-accounts, and HMAC webhook signing are on the
+> roadmap — Veil leaves them in place and won't pretend to manage them.
+> See [docs/MVP.md](docs/MVP.md) for the full surface.
+
 ## Demo
 
 ![Veil blocks an AI agent from leaking a GitHub token to the wrong host](.github/demo.gif)
@@ -39,6 +46,9 @@ brew install getveil/tap/veil
 This is the recommended path — installs are auto-deduplicated and the
 binary is placed by a trusted local process, so macOS Gatekeeper does
 not flag it.
+
+<details>
+<summary><strong>Other install methods</strong> (direct download with signature verification, <code>go install</code>)</summary>
 
 ### Direct download
 
@@ -91,6 +101,8 @@ make build
 # binary at bin/veil
 ```
 
+</details>
+
 ## Usage
 
 ```bash
@@ -119,10 +131,13 @@ veil uninstall --dry-run    # preview the plan without changes
 
 ## What it supports
 
-- **Secrets**: AWS, Stripe, GitHub PATs, OpenAI, Slack, Twilio, SendGrid, Supabase, and more — with format-aware placeholders for each
-- **Keychain**: macOS Keychain, Linux Secret Service (with age-encrypted file fallback)
-- **Agents**: anything that respects `HTTP_PROXY` / `HTTPS_PROXY`
-- **MCP configs**: auto-detects and migrates plaintext tokens from MCP configuration files
+| | Status |
+|---|---|
+| **Bearer/Basic providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · Twilio · SendGrid · Resend · Postmark · Supabase · Vercel · Replicate · Hugging Face · Datadog · GitLab · npm · PyPI · Docker Hub · Quay |
+| **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
+| **MCP configs** | Auto-detected and migrated alongside `.env` (Claude Desktop, Cursor, etc.) |
+| **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |
+| **Roadmap** | AWS SigV4 · GitHub App JWT · Google service-accounts · HMAC webhooks · gRPC · Windows |
 
 ## How Veil compares
 
@@ -136,6 +151,17 @@ Veil isn't a replacement for a secrets manager — it sits beside one. Secrets m
 | **Veil** | OS keychain | — | **✓** | ✓ | ✓ |
 
 ## FAQ
+
+<details>
+<summary><strong>What secrets does Veil manage today?</strong></summary>
+
+Anything sent as HTTP Bearer or Basic — GitHub PATs, OpenAI/Anthropic,
+Stripe, Slack, npm/PyPI registry tokens, and the remaining Bearer/Basic
+providers in the support table above. **Not yet:** AWS SigV4 (in
+progress), GitHub App JWTs (in progress), Google service-accounts
+(planned). If Veil can't safely manage a credential, `veil init` leaves
+it in `.env` and tells you — it never half-manages a secret.
+</details>
 
 <details>
 <summary><strong>How is this different from Doppler / Infisical / 1Password CLI?</strong></summary>
