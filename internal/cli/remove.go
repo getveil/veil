@@ -14,7 +14,12 @@ func removeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove <name>",
 		Short: "Remove a credential from the vault",
-		Args:  cobra.ExactArgs(1),
+		Example: `  # Remove a credential (prompts for confirmation)
+  veil remove STRIPE_KEY
+
+  # Non-interactive removal for scripts/CI
+  veil remove STRIPE_KEY --yes`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRemove(cmd, args[0], force || yes)
 		},
