@@ -91,6 +91,7 @@ func Open(root string, ks Keystore) (*Vault, error) {
 	if err := json.Unmarshal(plaintext, &creds); err != nil {
 		return nil, fmt.Errorf("%w: corrupt credential data: %w", ErrCorrupt, err)
 	}
+	creds = skipUnsupportedSchemes(creds)
 
 	return &Vault{
 		root:        root,
@@ -98,6 +99,24 @@ func Open(root string, ks Keystore) (*Vault, error) {
 		credentials: creds,
 		keystore:    ks,
 	}, nil
+}
+
+// skipUnsupportedSchemes drops credentials whose Scheme is no longer
+// supported (aws, github_app — removed in the v1 launch cut). The records
+// are unreachable for the proxy and the CLI; silently filtering them at
+// Open keeps existing vaults loadable without crashing on the unknown
+// scheme. Affected entries are still on disk and will be left alone until
+// the user runs `veil init --force` or `veil remove`.
+func skipUnsupportedSchemes(creds []*Credential) []*Credential {
+	out := creds[:0]
+	for _, c := range creds {
+		switch c.Scheme {
+		case "aws", "github_app":
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // Save encrypts and atomically writes the vault to disk. When the vault was
@@ -337,12 +356,6 @@ func addPlaceholders(_ placeholder.Set, c *Credential, emit func(string)) {
 	}
 	if c.UsernamePlaceholder != "" {
 		emit(c.UsernamePlaceholder)
-	}
-	if c.AWSAccessKeyIDPlaceholder != "" {
-		emit(c.AWSAccessKeyIDPlaceholder)
-	}
-	if c.AWSSessionTokenPlaceholder != "" {
-		emit(c.AWSSessionTokenPlaceholder)
 	}
 }
 

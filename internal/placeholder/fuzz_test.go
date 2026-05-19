@@ -20,8 +20,6 @@ func FuzzPlaceholderReplace(f *testing.F) {
 		{"GITHUB_FINE_PAT", "github_pat_11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXa"},
 		{"STRIPE_SECRET_KEY", "sk_live_abcdef123456abcdef"},
 		{"SLACK_BOT_TOKEN", "xoxb-123-456-abc789def"},
-		{"AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7REDACTD"},
-		{"AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{"SENDGRID_API_KEY", "SG.abcdefghij0123456789._-abcdefghijklmnopqrstuvwxyz0123456789abcd"},
 		{"SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def"},
 		{"TWILIO_AUTH_TOKEN", "abcdef01234567890abcdef0123456789"},

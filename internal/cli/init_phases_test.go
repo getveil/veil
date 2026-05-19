@@ -711,9 +711,7 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 			"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
 			"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n"))
 
-	// Build the secret list the way processEnvFile would, but skip the
-	// correlator so the AWS pair stays out of the `groups` argument; this
-	// test isolates the loose-secret loop.
+	// Build the secret list the way processEnvFile would.
 	var secrets []secretLine
 	for i, line := range envFile.Lines {
 		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
@@ -726,12 +724,13 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
 
-	// Only GITHUB_TOKEN may be vaulted; both AWS_* go to NotManaged.
+	// Only GITHUB_TOKEN may be vaulted; both AWS_* are unrecognized post-cut
+	// (the AWS provider was removed in the v1 launch cut).
 	if len(res.Creds) != 1 || res.Creds[0].Name != "GITHUB_TOKEN" {
 		t.Fatalf("Creds = %+v, want exactly GITHUB_TOKEN", res.Creds)
 	}
-	if len(res.NotManaged) != 2 {
-		t.Fatalf("NotManaged len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.NotManaged))
+	if len(res.Unrecognized) != 2 {
+		t.Fatalf("Unrecognized len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.Unrecognized))
 	}
 }
 

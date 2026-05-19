@@ -23,12 +23,11 @@ var rng io.Reader = rand.Reader
 //
 // Design decisions:
 //   - "VEIL" (4 uppercase ASCII letters) is short enough to fit into even the
-//     most constrained placeholder body (32 hex chars for Twilio/Datadog; 16
-//     upper-alnum for AWS access-key IDs) and long enough that a collision
-//     with random content of a real secret is vanishingly unlikely
-//     (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex bodies where VEIL is
-//     not a valid character at all — the whole string would have to bear the
-//     sentinel, which cannot happen for a hex secret).
+//     most constrained placeholder body (32 hex chars for Twilio/Datadog) and
+//     long enough that a collision with random content of a real secret is
+//     vanishingly unlikely (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex
+//     bodies where VEIL is not a valid character at all — the whole string
+//     would have to bear the sentinel, which cannot happen for a hex secret).
 //   - Placement: immediately after the provider prefix. Tokens like
 //     "sk_live_VEIL_<N random>" remain structurally valid (VEIL is
 //     alphanumeric) and preserve total length; the sentinel sits in the

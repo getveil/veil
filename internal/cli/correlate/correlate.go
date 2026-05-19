@@ -1,8 +1,8 @@
 // Package correlate detects related credential groups among flat lists of
-// secret-like env-var candidates. Init phases call DetectAll to distinguish
-// scheme-requiring groups (e.g., AWS SigV4 triples) from loose bearer-style
-// secrets. This file is the dispatch + types only; per-scheme logic lives
-// in sibling files (aws.go, etc.).
+// secret-like env-var candidates. Init phases call DetectAll to pair off
+// HTTP Basic username/password halves before they reach the loose-bearer
+// path. This file is the dispatch + types only; per-scheme logic lives in
+// sibling files (basic.go, twilio.go, etc.).
 package correlate
 
 // Candidate is one secret-like key/value pair fed into the correlator.
@@ -19,19 +19,7 @@ type Group struct {
 	Scheme  string
 	Name    string
 	Members []Candidate
-	AWS     *AWSGroup
 	Basic   *BasicGroup
-}
-
-// AWSGroup carries the real values and source variable names for an AWS
-// credential group.
-type AWSGroup struct {
-	AccessKeyID     string
-	SecretKey       string
-	SessionToken    string
-	AccessKeyIDVar  string
-	SecretKeyVar    string
-	SessionTokenVar string
 }
 
 // BasicGroup carries the real values and source variable names for an
@@ -52,13 +40,11 @@ type Correlator interface {
 }
 
 // correlators is the fixed dispatch list. Adding a new scheme is one line
-// here plus the sibling file. Order matters: aws runs first so AWS
-// triples are claimed before any scheme that might overlap; twilio runs
-// next so its provider-specific *_ACCOUNT_SID/*_AUTH_TOKEN pair can't be
-// accidentally split by a future generic pass; basic runs last on the
-// remaining candidates.
+// here plus the sibling file. Order matters: twilio runs first so its
+// provider-specific *_ACCOUNT_SID/*_AUTH_TOKEN pair can't be accidentally
+// split by a future generic pass; basic runs last on the remaining
+// candidates.
 var correlators = []Correlator{
-	awsCorrelator{},
 	twilioCorrelator{},
 	basicCorrelator{},
 }

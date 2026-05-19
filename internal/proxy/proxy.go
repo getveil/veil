@@ -172,20 +172,8 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 		requestID := ulid.Make().String()
 		rawURL := req.URL.String()
 
-		newURL, newHeader, newBody, injections := inj.ProcessRequest(
+		newURL, newHeader, newBody, _ := inj.ProcessRequest(
 			requestID, req.Method, rawURL, req.Header, body)
-
-		// Fail-closed signer guard: a signer_failed injection means the
-		// SDK signed against a placeholder or an unknown identity. Block
-		// with 502 + X-Veil-Error; the injector already recorded the audit
-		// row.
-		if sf := firstSignerFailure(injections); sf != nil {
-			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — signer failed (%s)", req.Host, sf.SignerError)
-			resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
-				fmt.Sprintf("veil: signer failed (%s); request blocked (see audit log)", sf.SignerError))
-			resp.Header.Set("X-Veil-Error", sf.SignerError)
-			return req, resp
-		}
 
 		// Fail-closed sentinel guard: any sentinel in the final outbound
 		// bytes means a placeholder wasn't swapped (host-scope mismatch,

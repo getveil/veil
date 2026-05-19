@@ -2,10 +2,9 @@ package placeholder
 
 // AuthScheme describes how a provider's credential reaches an HTTP
 // request. Veil v0.1.x mediates Bearer and Basic schemes literally via
-// the proxy injector. Other schemes (SigV4, JWT-RS256, OAuth exchange,
-// mTLS, HMAC) require signers or exchanges that are not in scope for
-// v0.1.x; secrets matching those schemes are recognized but not
-// vaulted by `veil init` — see spec 2026-05-19-v0.1.x-launch-narrowing.
+// the proxy injector. Other schemes (OAuth exchange, mTLS, HMAC) require
+// signers or exchanges that are not in scope for v0.1.x; secrets matching
+// those schemes are recognized but not vaulted by `veil init`.
 type AuthScheme int
 
 const (
@@ -14,8 +13,6 @@ const (
 	AuthUnknown AuthScheme = iota
 	AuthBearer
 	AuthBasic
-	AuthSigV4
-	AuthJWT_RS256
 	AuthOAuthExchange
 	AuthMTLS
 	AuthHMAC
@@ -41,10 +38,6 @@ func VaultEligible(p *ProviderPattern) bool {
 // `veil init` to label entries in the "Not managed" summary section.
 func AuthSchemeReason(s AuthScheme) string {
 	switch s {
-	case AuthSigV4:
-		return "AWS SigV4 (roadmap)"
-	case AuthJWT_RS256:
-		return "GitHub App JWT (roadmap)"
 	case AuthOAuthExchange:
 		return "OAuth exchange (roadmap)"
 	case AuthMTLS:

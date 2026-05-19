@@ -2,6 +2,7 @@ package correlate
 
 import (
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,16 @@ const (
 	realTwilioSID   = "AC" + "0123456789abcdef0123456789abcdef"
 	realTwilioToken = "fedcba9876543210fedcba9876543210"
 )
+
+// sortCandidates returns a copy sorted by Key for deterministic comparisons.
+func sortCandidates(cs []Candidate) []Candidate {
+	out := make([]Candidate, len(cs))
+	copy(out, cs)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
 
 func TestTwilioCorrelator(t *testing.T) {
 	tests := []struct {

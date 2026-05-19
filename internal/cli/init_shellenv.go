@@ -103,10 +103,7 @@ func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidat
 	for _, g := range selectedGroups {
 		var n, s int
 		var err error
-		switch g.Scheme {
-		case "aws":
-			n, s, err = vaultShellAWSGroup(w, v, seen, g, dryRun)
-		case "basic":
+		if g.Scheme == "basic" {
 			n, s, err = vaultShellBasicGroup(w, v, seen, g, dryRun)
 		}
 		if err != nil {
@@ -153,69 +150,9 @@ func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidat
 	return vaulted, scoped, nil
 }
 
-// vaultShellAWSGroup writes one Scheme:"aws" credential for g. Unlike the
-// .env flow there is no file to rewrite — the user's shell export remains
-// unchanged; init only vaults.
-func vaultShellAWSGroup(
-	w io.Writer, v *vault.Vault, seen placeholder.Set,
-	g correlate.Group, dryRun bool,
-) (vaulted, scoped int, err error) {
-	// Pass SecretKeyVar so the AWS provider's role-aware dispatch always picks
-	// a secret-style placeholder, regardless of the value's leading bytes.
-	secretPh, err := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
-	if err != nil {
-		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), err)
-	}
-	seen[secretPh] = struct{}{}
-
-	akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
-	seen[akIDPh] = struct{}{}
-
-	var sessPh string
-	if g.AWS.SessionToken != "" {
-		sessPh, err = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
-		if err != nil {
-			return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), err)
-		}
-		seen[sessPh] = struct{}{}
-	}
-
-	cred := &vault.Credential{
-		ID:                         vault.NewID(),
-		Name:                       g.Name,
-		Real:                       g.AWS.SecretKey,
-		Placeholder:                secretPh,
-		Source:                     "init",
-		AllowedHosts:               []string{"*.amazonaws.com"},
-		CreatedAt:                  time.Now(),
-		Scheme:                     "aws",
-		AWSAccessKeyID:             g.AWS.AccessKeyID,
-		AWSAccessKeyIDPlaceholder:  akIDPh,
-		AWSSessionToken:            g.AWS.SessionToken,
-		AWSSessionTokenPlaceholder: sessPh,
-	}
-	if err := v.Add(cred); err != nil {
-		if errors.Is(err, vault.ErrDuplicateCredential) {
-			ui.Warnf(w, "duplicate key %q, skipping", g.Name)
-			return 0, 0, nil
-		}
-		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
-	}
-
-	if dryRun {
-		ui.Dimf(w, "  would vault (aws): %s (from shell)", g.Name)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, akIDPh)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, secretPh)
-		if g.AWS.SessionToken != "" {
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, sessPh)
-		}
-	}
-	return 1, 1, nil
-}
-
-// vaultShellBasicGroup writes one basic-scheme credential for g. Mirrors
-// vaultShellAWSGroup: no file to rewrite (the shell exports are read
-// once at init), only a vault entry is created.
+// vaultShellBasicGroup writes one basic-scheme credential for g. No file
+// to rewrite (the shell exports are read once at init), only a vault
+// entry is created.
 func vaultShellBasicGroup(
 	w io.Writer, v *vault.Vault, seen placeholder.Set,
 	g correlate.Group, dryRun bool,
@@ -279,32 +216,19 @@ func selectShellEnvKeys(
 		total += len(g.Members)
 	}
 	header := fmt.Sprintf("\nDetected %d shell-exported %s", total, plural(total, "secret", "secrets"))
-	awsCount, basicCount := 0, 0
+	basicCount := 0
 	for _, g := range groups {
-		switch g.Scheme {
-		case "aws":
-			awsCount++
-		case "basic":
+		if g.Scheme == "basic" {
 			basicCount++
 		}
 	}
 	switch {
-	case awsCount == 0 && basicCount == 0:
+	case basicCount == 0:
 		header += ":"
-	case awsCount > 0 && basicCount == 0:
-		if awsCount == 1 {
-			header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
-		} else {
-			header += fmt.Sprintf(" (%d AWS credentials):", awsCount)
-		}
-	case awsCount == 0 && basicCount > 0:
-		if basicCount == 1 {
-			header += " (1 correlated as HTTP Basic):"
-		} else {
-			header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
-		}
+	case basicCount == 1:
+		header += " (1 correlated as HTTP Basic):"
 	default:
-		header += fmt.Sprintf(" (%d AWS, %d HTTP Basic):", awsCount, basicCount)
+		header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
 	}
 	_, _ = fmt.Fprintln(w, header)
 	ui.Dim(w, "(these are in your current shell environment, not in any .env file)")
@@ -312,10 +236,7 @@ func selectShellEnvKeys(
 	var names []string
 	for _, g := range groups {
 		var tag string
-		switch g.Scheme {
-		case "aws":
-			tag = "[aws]"
-		case "basic":
+		if g.Scheme == "basic" {
 			tag = "[basic]"
 		}
 		label := fmt.Sprintf("%s %s", tag, g.Name)
@@ -346,10 +267,7 @@ func selectShellEnvKeys(
 		}
 		for _, g := range groups {
 			var tag string
-			switch g.Scheme {
-			case "aws":
-				tag = "[aws]"
-			case "basic":
+			if g.Scheme == "basic" {
 				tag = "[basic]"
 			}
 			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {

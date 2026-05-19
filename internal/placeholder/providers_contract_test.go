@@ -25,7 +25,6 @@ var providerSamples = map[string]sample{
 	"anthropic": {"ANTHROPIC_API_KEY", "sk-ant-api03-" + strings.Repeat("a", 95)},
 	"github":    {"GITHUB_TOKEN", "ghp_" + strings.Repeat("a", 36)},
 	"stripe":    {"STRIPE_KEY", "sk_live_" + strings.Repeat("a", 24)},
-	"aws":       {"AWS_ACCESS_KEY_ID", "AKIA" + strings.Repeat("A", 16)},
 	"slack":     {"SLACK_TOKEN", "xoxb-" + strings.Repeat("a", 50)},
 	"twilio":    {"TWILIO_AUTH_TOKEN", "SK" + strings.Repeat("a", 32)},
 	"supabase":  {"SUPABASE_KEY", "sbp_" + strings.Repeat("a", 36)},

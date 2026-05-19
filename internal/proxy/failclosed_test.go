@@ -108,66 +108,6 @@ func TestFailClosedGuard_LeakedHeader(t *testing.T) {
 	}
 }
 
-// TestProxy_FailsClosedOnSignerFailure verifies that when the SigV4 signer
-// reports a signer_failed outcome (e.g. because the SDK signed the request
-// with an AKID Veil doesn't know, but Veil still owns the host), the proxy
-// returns a 502 with the X-Veil-Error header set and does NOT forward the
-// original broken-placeholder request upstream.
-func TestProxy_FailsClosedOnSignerFailure(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	// A credential whose AllowedHosts covers the upstream: this means
-	// Veil "owns" the host for SigV4, so an Authorization with an unknown
-	// AKID must fail-closed (not pass through unmediated).
-	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
-	hostOnly := strings.Split(upstreamHost, ":")[0]
-	cred := &vault.Credential{
-		ID:                        "c1",
-		Name:                      "aws-prod",
-		Scheme:                    "aws",
-		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYREDACTDKEYY",
-		AWSAccessKeyID:            "AKIAREAL000000000000",
-		AWSAccessKeyIDPlaceholder: "AKIAPH00000000000000",
-		AllowedHosts:              []string{hostOnly, upstreamHost},
-	}
-	srv, _, _ := testSetup(t, cred)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
-	req.Header.Set("X-Amz-Date", "20150830T123600Z")
-	// Authorization bears an AKID that is NOT in the vault. Because Veil
-	// owns the host, the signer must fail-closed.
-	req.Header.Set("Authorization",
-		"AWS4-HMAC-SHA256 Credential=AKIAUNKNOWNXXXXXXXX/20150830/us-east-1/service/aws4_request, "+
-			"SignedHeaders=host;x-amz-date, Signature=xx")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0 when signer fails", got)
-	}
-	if got := resp.Header.Get("X-Veil-Error"); got != SignerErrUnknownAccessKeyID {
-		t.Errorf("X-Veil-Error = %q, want %q", got, SignerErrUnknownAccessKeyID)
-	}
-}
-
 // TestFailClosedGuard_LeakedBasicAuth verifies that a placeholder embedded
 // inside the base64-encoded payload of an Authorization: Basic header is
 // caught by the fail-closed guard. Without base64-decoding the credential,

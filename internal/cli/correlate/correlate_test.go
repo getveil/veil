@@ -29,26 +29,8 @@ func TestDetectAll_NoCorrelationJustPassesThrough(t *testing.T) {
 	}
 }
 
-func TestDetectAll_AWSTripleIsConsumed(t *testing.T) {
-	in := []Candidate{
-		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
-		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
-		{Key: "AWS_SESSION_TOKEN", Value: "FwoGZXIvYXdzEJr//////////wEaDP"},
-		{Key: "OPENAI_API_KEY", Value: "sk-proj-1234567890abcdef"},
-	}
-	groups, remaining := DetectAll(in)
-	if len(groups) != 1 || groups[0].Scheme != "aws" {
-		t.Fatalf("expected 1 aws group, got %v", groups)
-	}
-	if len(remaining) != 1 || remaining[0].Key != "OPENAI_API_KEY" {
-		t.Errorf("remaining = %v, want only OPENAI_API_KEY", remaining)
-	}
-}
-
 func TestDetectAll_BasicGroupFromMixedInput(t *testing.T) {
 	cands := []Candidate{
-		{Key: "AWS_ACCESS_KEY_ID", Value: "AKIAIOSFODNN7REDACTD"},
-		{Key: "AWS_SECRET_ACCESS_KEY", Value: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{Key: "GH_USERNAME", Value: "alice"},
 		{Key: "GH_PASSWORD", Value: "ghp_realtoken1234"},
 		{Key: "STRIPE_API_KEY", Value: "sk_test_aBcDeFgHiJkLmNoP"},
@@ -66,9 +48,6 @@ func TestDetectAll_BasicGroupFromMixedInput(t *testing.T) {
 			}
 		}
 		return false
-	}
-	if !wantHas("aws") {
-		t.Errorf("missing aws group; got schemes=%v", gotSchemes)
 	}
 	if !wantHas("basic") {
 		t.Errorf("missing basic group; got schemes=%v", gotSchemes)

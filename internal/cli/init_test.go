@@ -3,18 +3,14 @@ package cli
 import (
 	"bytes"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/mcpconfig"
-	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/skiphost"
-	"github.com/getveil/veil/internal/vault"
 )
 
 func TestInitHappyPath(t *testing.T) {
@@ -1362,7 +1358,11 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 // v0.1.x. The .env values must be left unchanged, the vault must not
 // contain any AWS credential, and DATABASE_URL (a non-AWS secret) is
 // still vaulted normally.
-func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
+// TestInit_LeavesAWSValuesAlone verifies that AWS credentials in a .env
+// file are not vaulted and their cleartext values remain unchanged on
+// disk. AWS SigV4 was cut in the v1 launch; AWS_* names get classified as
+// unrecognized and skipped.
+func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	clearShellEnvTestNoise(t)
 
@@ -1395,14 +1395,14 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 		t.Fatalf("openVault: %v", err)
 	}
 
-	// AWS creds must NOT be vaulted (SigV4 not in scope for v0.1.x).
+	// AWS creds must NOT be vaulted — the AWS provider/correlator were removed.
 	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
 		if _, found := v.Get(name); found {
-			t.Errorf("unexpected credential %q in vault: AWS SigV4 must not be vaulted by v0.1.x init", name)
+			t.Errorf("unexpected credential %q in vault: AWS is not vaulted post-launch-cut", name)
 		}
 	}
 
-	// DATABASE_URL (postgres Basic-scheme) must still be vaulted.
+	// DATABASE_URL (postgres) must still be vaulted.
 	if _, ok := v.Get("DATABASE_URL"); !ok {
 		t.Error("vault missing DATABASE_URL")
 	}
@@ -1421,213 +1421,6 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 		if !strings.Contains(envStr, real) {
 			t.Errorf(".env should still contain original AWS value %q (not vaulted):\n%s", real, envStr)
 		}
-	}
-
-	// Summary output must include "Not managed" section mentioning AWS.
-	outStr := out.String()
-	if !strings.Contains(outStr, "Not managed") {
-		t.Errorf("expected 'Not managed' section in output, got:\n%s", outStr)
-	}
-}
-
-// TestInit_CorrelatesTwoAWSAccountsInEnvFile verifies that two AWS account
-// pairs in a .env file are correctly identified as correlated groups but
-// NOT vaulted — AWS SigV4 is out of scope for v0.1.x. All four AWS values
-// must remain unchanged in the .env file.
-func TestInit_CorrelatesTwoAWSAccountsInEnvFile(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "PROD_AWS_ACCESS_KEY_ID=AKIAPRODREDACTD00001\n" +
-		"PROD_AWS_SECRET_ACCESS_KEY=prod/secret/access/key/example00001\n" +
-		"DEV_AWS_ACCESS_KEY_ID=AKIADEVREDACTD000001\n" +
-		"DEV_AWS_SECRET_ACCESS_KEY=dev/secret/access/key/example000001\n"
-	envPath := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-
-	// No AWS credentials must appear in the vault.
-	for _, name := range []string{
-		"PROD_AWS_ACCESS_KEY_ID", "PROD_AWS_SECRET_ACCESS_KEY",
-		"DEV_AWS_ACCESS_KEY_ID", "DEV_AWS_SECRET_ACCESS_KEY",
-	} {
-		if _, ok := v.Get(name); ok {
-			t.Errorf("unexpected credential %q in vault: AWS SigV4 must not be vaulted by v0.1.x init", name)
-		}
-	}
-
-	// All AWS values must be unchanged in the .env.
-	envData, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	envStr := string(envData)
-	for _, real := range []string{
-		"AKIAPRODREDACTD00001",
-		"prod/secret/access/key/example00001",
-		"AKIADEVREDACTD000001",
-		"dev/secret/access/key/example000001",
-	} {
-		if !strings.Contains(envStr, real) {
-			t.Errorf(".env should still contain original AWS value %q (not vaulted):\n%s", real, envStr)
-		}
-	}
-
-	// Summary output must include "Not managed" section mentioning AWS.
-	outStr := out.String()
-	if !strings.Contains(outStr, "Not managed") {
-		t.Errorf("expected 'Not managed' section in output, got:\n%s", outStr)
-	}
-}
-
-// TestInit_PartialAWSFallsThroughToNotManaged verifies that a lone
-// AWS_ACCESS_KEY_ID (no matching secret access key — incomplete pair) is
-// recognized as an AWS credential via key-name matching but NOT vaulted.
-// AWS SigV4 is out of scope for v0.1.x; even partial matches go to the
-// "Not managed" summary section.
-func TestInit_PartialAWSFallsThroughToNotManaged(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	// Partial AWS key must NOT appear in the vault.
-	if _, ok := v.Get("AWS_ACCESS_KEY_ID"); ok {
-		t.Error("AWS_ACCESS_KEY_ID must not be vaulted: AWS SigV4 is not in scope for v0.1.x")
-	}
-	// Output must mention "Not managed".
-	if !strings.Contains(out.String(), "Not managed") {
-		t.Errorf("expected 'Not managed' section in output, got:\n%s", out.String())
-	}
-}
-
-// TestInit_FakeAWSValueNotVaulted verifies that AWS_ACCESS_KEY_ID and
-// AWS_SECRET_ACCESS_KEY with non-AKIA values (fake/test credentials that
-// don't form a real SigV4 pair) are matched via key-name hints and placed
-// in the "Not managed" bucket rather than vaulted. AWS SigV4 is out of scope
-// for v0.1.x regardless of whether the value looks real.
-func TestInit_FakeAWSValueNotVaulted(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	// Values are AWS-named but not AWS-shaped (no AKIA/ASIA prefix on the
-	// ID; non-base64 secret) — exercises the bearer-fallback path. Avoids
-	// the substring "fake" that would trip the stub-value denylist.
-	envContent := "AWS_ACCESS_KEY_ID=not-aws-shaped-access-id\n" +
-		"AWS_SECRET_ACCESS_KEY=not-aws-shaped-secret-credential-1234567890\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	// Fake AWS values must NOT appear in the vault.
-	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
-		if _, ok := v.Get(name); ok {
-			t.Errorf("credential %q must not be vaulted: AWS SigV4 is not in scope for v0.1.x", name)
-		}
-	}
-	// Output must mention "Not managed".
-	if !strings.Contains(out.String(), "Not managed") {
-		t.Errorf("expected 'Not managed' section in output, got:\n%s", out.String())
-	}
-}
-
-// TestInit_DryRunShowsAWSInNotManaged verifies that --dry-run for an .env
-// containing a complete AWS pair shows the "Not managed" summary section
-// (not "would vault (aws)"), and leaves the .env unchanged.
-func TestInit_DryRunShowsAWSInNotManaged(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n"
-	envPath := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	outStr := out.String()
-	if !strings.Contains(outStr, "Not managed") {
-		t.Errorf("dry-run output missing 'Not managed' section:\n%s", outStr)
-	}
-	if strings.Contains(outStr, "would vault (aws)") {
-		t.Errorf("dry-run output must not show 'would vault (aws)' — AWS is not vault-eligible:\n%s", outStr)
-	}
-
-	gotBytes, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(gotBytes) != envContent {
-		t.Errorf(".env changed in dry-run:\n got = %q\nwant = %q", string(gotBytes), envContent)
 	}
 }
 
@@ -1673,100 +1466,6 @@ func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
 
 	if strings.Contains(out.String(), "Non-interactive mode") {
 		t.Errorf("non-interactive notice printed before precondition failure:\n%s", out.String())
-	}
-}
-
-// TestInit_AWSCredentialResignsViaProxy verifies that an AWS credential
-// manually inserted into the vault (e.g. via `veil add --aws`) is correctly
-// re-signed by the proxy injector. Since `veil init` no longer vaults AWS
-// credentials (SigV4 is out of scope for v0.1.x), this test builds the vault
-// state directly rather than going through init, isolating the proxy-layer
-// behaviour from the init-layer gating.
-func TestInit_AWSCredentialResignsViaProxy(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Build the vault state directly — init no longer vaults AWS.
-	ks := vault.NewMemKeystore()
-	v, err := vault.CreateVault(tmpDir, "proj-aws-proxy", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	const (
-		realAKID        = "AKIAIOSFODNN7REDACTD"
-		realSecret      = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"
-		placeholderAKID = "AKIA_VEIL_PLACEHOLDER_EXMPL"
-	)
-	cred := &vault.Credential{
-		ID:                        vault.NewID(),
-		Name:                      "AWS_ACCESS_KEY_ID",
-		Real:                      realSecret,
-		Placeholder:               "VEIL_AWS_SECRET_PLACEHOLDER",
-		Source:                    "test",
-		AllowedHosts:              []string{"*.amazonaws.com"},
-		CreatedAt:                 time.Now(),
-		Scheme:                    "aws",
-		AWSAccessKeyID:            realAKID,
-		AWSAccessKeyIDPlaceholder: placeholderAKID,
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("v.Add: %v", err)
-	}
-
-	// Build an injector keyed by the placeholder AKID — this mirrors what
-	// the proxy does when an agent emits a SigV4 request signed with the
-	// placeholder credentials.
-	injector := proxy.NewInjector(
-		map[string]*vault.Credential{cred.AWSAccessKeyIDPlaceholder: cred},
-		nil, 0, "test",
-	)
-
-	// Construct a plausible SigV4 request using the placeholder AKID. The
-	// Signature value is intentionally "ignored" — the proxy signer discards
-	// and recomputes it. This is the same fixture shape used by
-	// TestSignAWSSigV4_GetVanilla in internal/proxy/sigv4_signer_test.go.
-	header := http.Header{}
-	header.Set("Host", "example.amazonaws.com")
-	header.Set("X-Amz-Date", "20150830T123600Z")
-	header.Set("Authorization",
-		"AWS4-HMAC-SHA256 "+
-			"Credential="+cred.AWSAccessKeyIDPlaceholder+"/20150830/us-east-1/service/aws4_request, "+
-			"SignedHeaders=host;x-amz-date, "+
-			"Signature=ignored")
-
-	_, newHeader, _, injections := injector.ProcessRequest(
-		"req-spotcheck",
-		"GET",
-		"https://example.amazonaws.com/",
-		header,
-		nil,
-	)
-
-	var resigned bool
-	for _, inj := range injections {
-		if inj.Location == proxy.LocationAWSSigV4Resigned {
-			resigned = true
-			break
-		}
-	}
-	if !resigned {
-		t.Fatalf("expected aws_sigv4_resigned injection, got: %+v", injections)
-	}
-
-	newAuth := newHeader.Get("Authorization")
-	if !strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyID+"/") {
-		t.Errorf("Authorization should contain real AKID after re-sign, got: %s", newAuth)
-	}
-	if strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyIDPlaceholder+"/") {
-		t.Errorf("Authorization still contains placeholder AKID, got: %s", newAuth)
-	}
-	if strings.Contains(newAuth, "Signature=ignored") {
-		t.Errorf("Authorization signature was not recomputed, got: %s", newAuth)
 	}
 }
 
@@ -2908,9 +2607,9 @@ func TestInit_ScanFlagsIndependent(t *testing.T) {
 }
 
 // TestProcessMCPConfig_SkipsAWS verifies that AWS credentials discovered in
-// an MCP config env block are gated by VaultEligible — they must NOT be
-// vaulted, the MCP config file must be left unchanged, and the "Not managed"
-// summary section must appear in stdout.
+// an MCP config env block are not vaulted (no AWS provider after the v1
+// launch cut), the MCP config file is left unchanged, and AWS keys appear
+// in the "Unrecognized" summary section.
 func TestProcessMCPConfig_SkipsAWS(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") // opt back in: this test exercises the discovery path
@@ -2983,15 +2682,16 @@ func TestProcessMCPConfig_SkipsAWS(t *testing.T) {
 		t.Error("backup must not be created when no credentials were vaulted")
 	}
 
-	// The "Not managed" summary section must appear in stdout.
+	// The "Unrecognized" summary section must appear in stdout (no provider
+	// matches AWS_* names after the launch cut).
 	outStr := out.String()
-	if !strings.Contains(outStr, "Not managed") {
-		t.Errorf("expected 'Not managed' section in output; got:\n%s", outStr)
+	if !strings.Contains(outStr, "Unrecognized") {
+		t.Errorf("expected 'Unrecognized' section in output; got:\n%s", outStr)
 	}
 	if !strings.Contains(outStr, "AWS_ACCESS_KEY_ID") {
-		t.Errorf("expected AWS_ACCESS_KEY_ID named in 'Not managed' section; got:\n%s", outStr)
+		t.Errorf("expected AWS_ACCESS_KEY_ID named in 'Unrecognized' section; got:\n%s", outStr)
 	}
 	if !strings.Contains(outStr, "AWS_SECRET_ACCESS_KEY") {
-		t.Errorf("expected AWS_SECRET_ACCESS_KEY named in 'Not managed' section; got:\n%s", outStr)
+		t.Errorf("expected AWS_SECRET_ACCESS_KEY named in 'Unrecognized' section; got:\n%s", outStr)
 	}
 }

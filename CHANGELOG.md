@@ -8,6 +8,21 @@ expect breaking changes in any 0.x release; we will call them out under
 
 ## [Unreleased]
 
+### Removed
+
+- **AWS SigV4 and GitHub App JWT signers** — both schemes are out of scope
+  for v1. The `--scheme aws` / `--scheme github_app` flags on `veil add`,
+  the hidden `--experimental` gate, and all AWS / GitHub-App specific
+  flags (`--aws-access-key-id`, `--aws-session-token-file`,
+  `--aws-session-token-stdin`, `--github-app-id`,
+  `--github-installation-id`) are gone. Existing vault entries with
+  `Scheme: "aws"` or `Scheme: "github_app"` are silently skipped at load
+  time so old vaults remain openable; the underlying records remain on
+  disk and can be removed with `veil init --force` or `veil remove`.
+- The hidden `veil log --signer-failed` flag is removed; the audit
+  column it queried (`signer_error`) is retained for now and will be
+  cleaned up in a later schema pass.
+
 ## [0.1.1] — 2026-05-14
 
 Security hardening release following the v0.1.0 launch. No breaking changes;

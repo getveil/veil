@@ -90,34 +90,19 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		}
 	}
 
-	// Build display rows. Non-AWS credentials produce one row each. AWS
-	// credentials in --reveal/--placeholder modes expand to one row per
-	// logical secret (AKID, secret, optional session token), each labeled
-	// with the canonical AWS env-var name and paired with the matching
-	// value. Sub-rows after the first leave name/hosts/source/last blank
-	// to visually group them under the credential.
+	// Build display rows. Each credential produces one row.
 	//
 	// nameStyled mirrors name but may carry ANSI styling (e.g., the "(basic)"
 	// tag is dimmed). Width math uses the plain name to keep alignment correct.
 	type row struct {
-		name, nameStyled, hosts, varName, value, placeholder, source, last string
+		name, nameStyled, hosts, value, placeholder, source, last string
 	}
-	expandAWS := reveal || showPlaceholder
 	var rows []row
 	for _, c := range creds {
 		base := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
-		var tag string
-		switch {
-		case isAWSCred(c):
-			tag = "(aws)"
-		case c.Scheme == "github_app" || c.GitHubAppID != 0:
-			tag = "(github app)"
-		case c.Username != "":
-			tag = "(basic)"
-		}
-		if tag != "" {
-			base.name = c.Name + " " + tag
-			base.nameStyled = c.Name + " " + ui.Muted.Sprint(tag)
+		if c.Username != "" {
+			base.name = c.Name + " (basic)"
+			base.nameStyled = c.Name + " " + ui.Muted.Sprint("(basic)")
 		}
 		if t, ok := lastInjected[c.Name]; ok {
 			base.last = ui.RelativeTime(t)
@@ -126,40 +111,6 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 			base.hosts = formatHosts(c.AllowedHosts, 1)
 		} else {
 			base.hosts = "(none)"
-		}
-
-		if expandAWS && isAWSCred(c) {
-			// Row 1: AKID (anchors the credential's name/hosts/source/last).
-			r1 := base
-			r1.varName = "AWS_ACCESS_KEY_ID"
-			if reveal {
-				r1.value = c.AWSAccessKeyID
-			}
-			if showPlaceholder {
-				r1.placeholder = c.AWSAccessKeyIDPlaceholder
-			}
-			rows = append(rows, r1)
-			// Row 2: secret access key (Real/Placeholder hold the secret).
-			r2 := row{varName: "AWS_SECRET_ACCESS_KEY"}
-			if reveal {
-				r2.value = c.Real
-			}
-			if showPlaceholder {
-				r2.placeholder = c.Placeholder
-			}
-			rows = append(rows, r2)
-			// Row 3: optional session token.
-			if c.AWSSessionToken != "" || c.AWSSessionTokenPlaceholder != "" {
-				r3 := row{varName: "AWS_SESSION_TOKEN"}
-				if reveal {
-					r3.value = c.AWSSessionToken
-				}
-				if showPlaceholder {
-					r3.placeholder = c.AWSSessionTokenPlaceholder
-				}
-				rows = append(rows, r3)
-			}
-			continue
 		}
 
 		if reveal {
@@ -173,16 +124,12 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 
 	// Compute column widths from data and headers.
 	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
-	varW := len("VAR")
 	valueW := len("VALUE")
 	phW := len("PLACEHOLDER")
 	for _, r := range rows {
 		nameW = maxInt(nameW, len(r.name))
 		hostsW = maxInt(hostsW, len(r.hosts))
 		sourceW = maxInt(sourceW, len(r.source))
-		if expandAWS {
-			varW = maxInt(varW, len(r.varName))
-		}
 		if reveal {
 			valueW = maxInt(valueW, len(r.value))
 		}
@@ -203,51 +150,33 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		return r.nameStyled + strings.Repeat(" ", pad)
 	}
 	if reveal {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("VAR", varW)), gap,
 			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
-			// Sub-rows (AWS expansion) intentionally render no hosts string;
-			// only the anchor row carries the hosts column.
-			var hosts string
-			if r.hosts != "" {
-				hosts = styleHosts(r.hosts, hostsW)
-			} else {
-				hosts = padRight("", hostsW)
-			}
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
+			hosts := styleHosts(r.hosts, hostsW)
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 				emitName(r), gap,
 				hosts, gap,
-				padRight(r.varName, varW), gap,
 				padRight(r.value, valueW), gap,
 				padRight(r.source, sourceW), gap,
 				r.last)
 		}
 	} else if showPlaceholder {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
+		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
 			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("VAR", varW)), gap,
 			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
 			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
 			ui.Muted.Sprint("LAST INJECTED"))
 		for _, r := range rows {
-			// Sub-rows (AWS expansion) intentionally render no hosts string;
-			// only the anchor row carries the hosts column.
-			var hosts string
-			if r.hosts != "" {
-				hosts = styleHosts(r.hosts, hostsW)
-			} else {
-				hosts = padRight("", hostsW)
-			}
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
+			hosts := styleHosts(r.hosts, hostsW)
+			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
 				emitName(r), gap,
 				hosts, gap,
-				padRight(r.varName, varW), gap,
 				padRight(r.placeholder, phW), gap,
 				padRight(r.source, sourceW), gap,
 				r.last)
@@ -315,9 +244,3 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// isAWSCred reports whether c should be treated as an AWS credential for
-// display purposes. Centralizing the predicate keeps tag selection and
-// row expansion in lockstep.
-func isAWSCred(c *vault.Credential) bool {
-	return c.Scheme == "aws" || c.AWSAccessKeyID != ""
-}

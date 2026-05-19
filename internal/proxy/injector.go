@@ -16,6 +16,11 @@ import (
 	"github.com/getveil/veil/internal/vault"
 )
 
+// Note: the AWS SigV4 and GitHub App JWT signers were removed in the v1
+// launch cut. The proxy now only performs literal placeholder substitution
+// and Basic-auth pre-pass swaps; outbound traffic whose authentication
+// requires re-signing is out of scope.
+
 // defaultBodyCap is the maximum body size the injector will scan (10 MiB).
 const defaultBodyCap = 10 * 1024 * 1024
 
@@ -136,49 +141,6 @@ func (inj *Injector) ProcessRequest(
 		s.AgentCmd = inj.agentCmd
 		injections = append(injections, s)
 	}
-
-	// --- AWS SigV4 signer ---
-	// Run the SigV4 re-signer between the Basic pre-pass and the literal
-	// header scan. This ensures the SDK-supplied placeholder AKID is
-	// rewritten and the Authorization signature is recomputed before the
-	// Aho-Corasick header pass would otherwise blindly substitute the
-	// placeholder bytes (producing a malformed Authorization header).
-	shim := &http.Request{
-		Method: method,
-		Header: newHeader,
-	}
-	if u, err := url.Parse(newURL); err == nil {
-		shim.URL = u
-	} else {
-		shim.URL = &url.URL{}
-	}
-	awsInjs, _ := signAWSSigV4(shim, body, creds, host)
-	for _, s := range awsInjs {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
-
-	// --- GitHub App JWT signer ---
-	// Runs on the same shim so that an Authorization: Bearer <JWT> already
-	// rewritten by the AWS block (rare — the two schemes target different
-	// hosts) is carried forward. The literal header scan below sees the
-	// final, re-signed JWT.
-	ghInjs, _ := signGitHubAppJWT(shim, creds, host)
-	for _, s := range ghInjs {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
-
-	// signAWSSigV4 / signGitHubAppJWT may have mutated shim.Header; persist.
-	newHeader = shim.Header
 
 	if matcher != nil {
 		for name, values := range newHeader {
@@ -419,11 +381,11 @@ func parseRequestURL(rawURL string) (host, path, rawQuery string) {
 // ClassifyBasicLeak inspects Authorization / Proxy-Authorization headers
 // in hdr. When a Basic value's two halves are both placeholders
 // belonging to *different* vault credentials, returns a targeted "how
-// to fix" hint pointing the user at `veil add --scheme basic` or
-// `veil init --force`. Returns "" when no Basic header is present,
-// when the halves cannot be decoded, when at least one half is not a
-// known placeholder, or when both halves point to the same credential
-// (in which case the leak is from a different cause, e.g. host scope).
+// to fix" hint pointing the user at `veil add --user` or `veil init
+// --force`. Returns "" when no Basic header is present, when the halves
+// cannot be decoded, when at least one half is not a known placeholder,
+// or when both halves point to the same credential (in which case the
+// leak is from a different cause, e.g. host scope).
 //
 // Intended to be called by the leak handler in proxy.go right after
 // detectLeak fires, to enrich the 502 body.

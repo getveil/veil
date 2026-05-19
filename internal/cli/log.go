@@ -31,21 +31,20 @@ func projectHasEverRun(root string, store *audit.Store) (bool, error) {
 
 func logCmd() *cobra.Command {
 	var (
-		since        string
-		host         string
-		credential   string
-		limit        int
-		jsonOutput   bool
-		blocked      bool
-		suspect      bool
-		signerFailed bool
+		since      string
+		host       string
+		credential string
+		limit      int
+		jsonOutput bool
+		blocked    bool
+		suspect    bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show audit log of secret injections",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked, suspect, signerFailed)
+			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked, suspect)
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "24h", "show entries since duration (e.g. 24h, 7d) or RFC3339 timestamp")
@@ -55,14 +54,12 @@ func logCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON Lines")
 	cmd.Flags().BoolVar(&blocked, "blocked", false, "include blocked credential events")
 	cmd.Flags().BoolVar(&suspect, "suspect", false, "show only transform-mismatch suspect rows")
-	cmd.Flags().BoolVar(&signerFailed, "signer-failed", false, "show only rows where a signer (AWS SigV4 / GitHub App JWT) failed closed")
 	_ = cmd.Flags().MarkHidden("blocked")
 	_ = cmd.Flags().MarkHidden("suspect")
-	_ = cmd.Flags().MarkHidden("signer-failed")
 	return cmd
 }
 
-func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked, suspect, signerFailed bool) error {
+func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked, suspect bool) error {
 	root, err := requireInitializedProject(cmd)
 	if err != nil {
 		return err
@@ -91,19 +88,6 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	})
 	if err != nil {
 		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
-	}
-
-	// --signer-failed is a client-side post-filter: it mirrors the shape of
-	// the existing flag-driven include/exclude options without having to
-	// teach the audit Filter a fourth orthogonal mode.
-	if signerFailed {
-		filtered := rows[:0]
-		for _, r := range rows {
-			if r.Location == "signer_failed" {
-				filtered = append(filtered, r)
-			}
-		}
-		rows = filtered
 	}
 
 	w := cmd.OutOrStdout()

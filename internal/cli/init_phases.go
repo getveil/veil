@@ -511,10 +511,10 @@ type vaultBuildResult struct {
 }
 
 // buildEnvFileCredentials constructs the credentials for one .env file from
-// the user's selection, resolving AWS groups inline. envFile is mutated in
-// place so each selected key now holds its placeholder; callers can take
-// envFile.Bytes() once buildEnvFileCredentials returns. The seen set is
-// updated with every placeholder generated, in caller-visible order.
+// the user's selection. envFile is mutated in place so each selected key
+// now holds its placeholder; callers can take envFile.Bytes() once
+// buildEnvFileCredentials returns. The seen set is updated with every
+// placeholder generated, in caller-visible order.
 func buildEnvFileCredentials(
 	envFile *scanner.EnvFile,
 	groups []correlate.Group,
@@ -524,27 +524,6 @@ func buildEnvFileCredentials(
 	var res vaultBuildResult
 	for _, g := range groups {
 		switch g.Scheme {
-		case "aws":
-			res.NotManaged = append(res.NotManaged,
-				skippedEntry{
-					key:    g.AWS.AccessKeyIDVar,
-					value:  g.AWS.AccessKeyID,
-					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
-				},
-				skippedEntry{
-					key:    g.AWS.SecretKeyVar,
-					value:  g.AWS.SecretKey,
-					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
-				})
-			if g.AWS.SessionTokenVar != "" {
-				res.NotManaged = append(res.NotManaged, skippedEntry{
-					key:    g.AWS.SessionTokenVar,
-					value:  g.AWS.SessionToken,
-					reason: placeholder.AuthSchemeReason(placeholder.AuthSigV4),
-				})
-			}
-			continue
-
 		case "basic":
 			userPh, gErr := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
 			if gErr != nil {
@@ -630,26 +609,13 @@ func buildEnvFileCredentials(
 // buildEnvFileCredentials and just calls envFile.Bytes() there.
 func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) []byte {
 	for _, c := range creds {
-		switch c.Scheme {
-		case "aws":
-			// AWS creds rewrite up to three vars. Name (= AccessKeyIDVar)
-			// is the only var name on the credential; for the other two
-			// (secret access key, optional session token), value-match the
-			// remaining KV lines since their original var names aren't stored.
-			envFile.SetValue(c.Name, c.AWSAccessKeyIDPlaceholder)
-			replaceValueIfMatches(envFile, c.Real, c.Placeholder)
-			if c.AWSSessionToken != "" {
-				replaceValueIfMatches(envFile, c.AWSSessionToken, c.AWSSessionTokenPlaceholder)
-			}
-		default:
-			// For basic credentials, also rewrite the username var using a
-			// value-match since the original username var name isn't stored
-			// separately (only Username and UsernamePlaceholder are).
-			if c.UsernamePlaceholder != "" && c.Username != "" {
-				replaceValueIfMatches(envFile, c.Username, c.UsernamePlaceholder)
-			}
-			envFile.SetValue(c.Name, c.Placeholder)
+		// For basic credentials, also rewrite the username var using a
+		// value-match since the original username var name isn't stored
+		// separately (only Username and UsernamePlaceholder are).
+		if c.UsernamePlaceholder != "" && c.Username != "" {
+			replaceValueIfMatches(envFile, c.Username, c.UsernamePlaceholder)
 		}
+		envFile.SetValue(c.Name, c.Placeholder)
 	}
 	return envFile.Bytes()
 }
@@ -668,14 +634,9 @@ func replaceValueIfMatches(envFile *scanner.EnvFile, oldVal, newVal string) {
 // printDryRunVaultLines emits the same "would vault" lines the legacy code
 // path produced, derived from the prepared credentials. Group lines list
 // each member var. Both groups and creds[] share appearance order.
-// AWS groups are skipped here because they are no longer vault-eligible
-// and appear instead in the "Not managed" section via printVaultSummary.
 func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secretLine, creds []*vault.Credential) {
 	ci := 0
 	for _, g := range groups {
-		if g.Scheme == "aws" {
-			continue // AWS is not vault-eligible; shown in Not-managed summary
-		}
 		if ci >= len(creds) {
 			break
 		}
@@ -787,12 +748,6 @@ func needsEnvRewrite(envPath string, creds []*vault.Credential) (bool, error) {
 		if c.UsernamePlaceholder != "" && bytes.Contains(data, []byte(c.UsernamePlaceholder)) {
 			return false, nil
 		}
-		if c.AWSAccessKeyIDPlaceholder != "" && bytes.Contains(data, []byte(c.AWSAccessKeyIDPlaceholder)) {
-			return false, nil
-		}
-		if c.AWSSessionTokenPlaceholder != "" && bytes.Contains(data, []byte(c.AWSSessionTokenPlaceholder)) {
-			return false, nil
-		}
 	}
 	return true, nil
 }
@@ -855,15 +810,6 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	for _, c := range owned {
 		val, ok := ownedValues[c.Name]
 		if !ok {
-			continue
-		}
-		if c.Scheme == "aws" {
-			// AWS credentials store the access key id on Name (compared
-			// here) and the secret separately. The stored Real holds the
-			// secret value, not the access key id, so direct Name->Real
-			// comparison would always diverge. Skip the divergence check
-			// for aws-scheme entries — they take the existing recovery
-			// path unchanged.
 			continue
 		}
 		if val != c.Real {
@@ -946,42 +892,26 @@ func selectEnvKeys(
 		total += len(g.Members)
 	}
 	header := fmt.Sprintf("\nDetected %d %s in %s", total, plural(total, "secret", "secrets"), rel)
-	awsCount, basicCount := 0, 0
+	basicCount := 0
 	for _, g := range groups {
-		switch g.Scheme {
-		case "aws":
-			awsCount++
-		case "basic":
+		if g.Scheme == "basic" {
 			basicCount++
 		}
 	}
 	switch {
-	case awsCount == 0 && basicCount == 0:
+	case basicCount == 0:
 		header += ":"
-	case awsCount > 0 && basicCount == 0:
-		if awsCount == 1 {
-			header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
-		} else {
-			header += fmt.Sprintf(" (%d AWS credentials):", awsCount)
-		}
-	case awsCount == 0 && basicCount > 0:
-		if basicCount == 1 {
-			header += " (1 correlated as HTTP Basic):"
-		} else {
-			header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
-		}
+	case basicCount == 1:
+		header += " (1 correlated as HTTP Basic):"
 	default:
-		header += fmt.Sprintf(" (%d AWS, %d HTTP Basic):", awsCount, basicCount)
+		header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
 	}
 	_, _ = fmt.Fprintln(w, header)
 
 	var names []string
 	for _, g := range groups {
 		var tag string
-		switch g.Scheme {
-		case "aws":
-			tag = "[aws]"
-		case "basic":
+		if g.Scheme == "basic" {
 			tag = "[basic]"
 		}
 		label := fmt.Sprintf("%s %s", tag, g.Name)
@@ -1012,10 +942,7 @@ func selectEnvKeys(
 		}
 		for _, g := range groups {
 			var tag string
-			switch g.Scheme {
-			case "aws":
-				tag = "[aws]"
-			case "basic":
+			if g.Scheme == "basic" {
 				tag = "[basic]"
 			}
 			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {
