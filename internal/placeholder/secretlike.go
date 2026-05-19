@@ -9,6 +9,32 @@ import (
 // secretNamePattern matches common secret-related key names.
 var secretNamePattern = regexp.MustCompile(`(?i)(key|secret|token|password|passwd|pwd|auth|credential|dsn)`)
 
+// publicEnvPrefixes are env-var name prefixes (case-insensitive) used by
+// front-end build systems to mark values that ship to the client bundle.
+// Anything carrying such a prefix is intentionally public and must not be
+// vaulted, even if the value looks high-entropy.
+var publicEnvPrefixes = []string{
+	"NEXT_PUBLIC_",
+	"VITE_",
+	"REACT_APP_",
+	"EXPO_PUBLIC_",
+	"PUBLIC_",
+}
+
+// hasPublicEnvPrefix reports whether name starts (case-insensitively) with
+// any well-known front-end build-system public-bundle prefix. Such names
+// are intentionally exposed to the client and must not be classified as
+// secrets regardless of value shape.
+func hasPublicEnvPrefix(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range publicEnvPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // stubValueSubstrings are case-insensitive substrings whose presence in a
 // value marks it as a developer placeholder rather than a real secret.
 var stubValueSubstrings = []string{
@@ -82,6 +108,13 @@ const (
 //   - The value is long, has high Shannon entropy, AND has enough distinct
 //     bytes to rule out repetitive strings and typical file paths.
 func IsSecretLike(name, value string) bool {
+	// Pre-gate: env-var names with front-end build-system public-bundle
+	// prefixes (NEXT_PUBLIC_, VITE_, REACT_APP_, etc.) are intentionally
+	// shipped to clients and must not be vaulted.
+	if hasPublicEnvPrefix(name) {
+		return false
+	}
+
 	// Pre-gate: developer stub values (your_token_here, <TOKEN>, {{key}},
 	// ${KEY}, xxxx+) must never be classified as real secrets, regardless
 	// of name or downstream gates.

@@ -199,6 +199,46 @@ func TestIsSecretLike_HighEntropyLong_StillFlagged(t *testing.T) {
 	}
 }
 
+// TestIsSecretLike_PublicPrefixDenylist asserts that env-var names with
+// well-known public-bundle prefixes are never classified secret-like, even
+// when the value would otherwise pass every downstream gate.
+func TestIsSecretLike_PublicPrefixDenylist(t *testing.T) {
+	// High-entropy value that would otherwise flag via gate 4.
+	hi := "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"
+
+	denied := []string{
+		"NEXT_PUBLIC_API_KEY",
+		"next_public_api_key", // case-insensitive
+		"Next_Public_Token",
+		"VITE_API_KEY",
+		"vite_supabase_anon_key",
+		"REACT_APP_API_KEY",
+		"react_app_token",
+		"EXPO_PUBLIC_API_KEY",
+		"expo_public_token",
+		"PUBLIC_API_KEY",
+		"public_token",
+	}
+	for _, name := range denied {
+		if IsSecretLike(name, hi) {
+			t.Errorf("%s=<hi-entropy>: expected false (public-prefix denylist)", name)
+		}
+	}
+
+	// Negative: names that contain the prefix string but don't START with it
+	// (or lack the trailing underscore) must still flag.
+	allowed := []string{
+		"PUBLICATION_TOKEN",       // PUBLIC followed by ATION, not "_"
+		"MY_PUBLIC_TOKEN",         // PUBLIC_ not at start
+		"PRIVATE_NEXT_PUBLIC_KEY", // NEXT_PUBLIC_ not at start
+	}
+	for _, name := range allowed {
+		if !IsSecretLike(name, hi) {
+			t.Errorf("%s=<hi-entropy>: expected true (no public-prefix match)", name)
+		}
+	}
+}
+
 // TestIsSecretLike_StubValueDenylist asserts that values containing common
 // placeholder substrings or structural template markers are never classified
 // secret-like.
