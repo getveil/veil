@@ -289,3 +289,39 @@ func TestFormatProviders(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderFormats_AuthSchemes(t *testing.T) {
+	want := map[string]AuthScheme{
+		"openai":      AuthBearer,
+		"anthropic":   AuthBearer,
+		"stripe":      AuthBearer,
+		"slack":       AuthBearer,
+		"google":      AuthBearer,
+		"replicate":   AuthBearer,
+		"huggingface": AuthBearer,
+		"vercel":      AuthBearer,
+		"gitlab":      AuthBearer,
+		"npm":         AuthBasic,
+		"resend":      AuthBearer,
+		"postmark":    AuthBearer,
+		"datadog":     AuthBearer,
+		"pypi":        AuthBasic,
+		"docker_hub":  AuthBasic,
+		"quay":        AuthBearer,
+		"gcr":         AuthBearer,
+	}
+	r := DefaultRegistry()
+	for name, expected := range want {
+		p, ok := r.Get(name)
+		if !ok {
+			t.Errorf("provider %q not registered", name)
+			continue
+		}
+		if p.AuthScheme != expected {
+			t.Errorf("%s AuthScheme = %v, want %v", name, p.AuthScheme, expected)
+		}
+		if !VaultEligible(&p) {
+			t.Errorf("%s must be VaultEligible (Bearer/Basic with hosts)", name)
+		}
+	}
+}
