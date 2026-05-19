@@ -943,7 +943,7 @@ func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", root, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -1012,7 +1012,7 @@ func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", root, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -1111,7 +1111,7 @@ func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", root, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("first init failed: %v", err)
 	}
@@ -1132,7 +1132,7 @@ func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	stderr := new(bytes.Buffer)
 	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", root, "--yes", "--scan-mcp"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("second init failed: %v", err)
 	}

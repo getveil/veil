@@ -130,7 +130,7 @@ func TestInit_CapturesShellEnvSecrets(t *testing.T) {
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
 	// --yes = non-interactive; all detected secrets are vaulted by default.
-	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes", "--scan-shell-env"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v\n%s", err, out.String())
@@ -174,7 +174,7 @@ func TestInit_ShellOnlyProject(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes", "--scan-shell-env"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v\n%s", err, out.String())
@@ -214,7 +214,7 @@ func TestInit_CorrelatesAWSTripleFromShellEnv(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes", "--scan-shell-env"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v\n%s", err, out.String())
@@ -326,7 +326,7 @@ func TestInit_ShellAWSWithSameNameInVaultDropsWholeGroup(t *testing.T) {
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmp, "--yes"})
+	cmd.SetArgs([]string{"init", "--path", tmp, "--yes", "--scan-shell-env"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
