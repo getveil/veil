@@ -57,7 +57,7 @@ the same proxy.
 | 14 | `curl -H "Authorization: Bearer $GITHUB_TOKEN"` — header swap. | Supported |
 | 15 | `npm publish` / `twine upload` — registry host covered. | Supported |
 | 16 | `psql` / `mysql` / `mongosh` — works when conn URL carries the credential and traffic is HTTPS; unix-socket transports bypass. | Partial |
-| 17 | `docker push` — Docker Hub / GHCR / Quay / GCR / Artifact Registry / ECR hosts covered. | Supported |
+| 17 | `docker push` / `docker login` — Docker Hub / GHCR / Quay / GCR / Artifact Registry / ECR hosts covered when the Docker daemon is configured to use Veil's proxy. On macOS Docker Desktop the daemon runs in a Linux VM that does **not** inherit your shell's `HTTPS_PROXY` — see [docs/DOCKER.md](DOCKER.md) for setup. | Partial (macOS Docker Desktop needs explicit configuration) |
 | 18 | `pytest` / `npm test` — test processes inherit proxy + CA. | Supported |
 | 19 | `./deploy.sh` calling cloud APIs — descendant processes inherit. | Supported |
 | 20 | Agent spawns MCP server subprocess — inherits proxy env, outbound calls intercepted. | Supported |
@@ -107,6 +107,12 @@ not covered by the MVP. Users hitting x509 errors from these can add the
 affected host to the skip list via `veil skip <host>`, accepting that the
 traffic bypasses the proxy entirely.
 
+- **Docker Desktop / Colima / any Docker runtime on macOS.** The Docker
+  daemon runs in a Linux VM whose network stack does not inherit the
+  calling shell's `HTTPS_PROXY`. From inside `veil run`, `docker push`
+  and `docker login` reach the registry directly and Veil records
+  nothing. Fix: configure the daemon's proxy and install Veil's CA
+  inside the VM (see [docs/DOCKER.md](DOCKER.md)).
 - **`.NET` tools on macOS / Windows.** Use the native cert store; no env-var
   escape hatch. Covered by post-MVP kernel-level enforcement.
 - **Rust binaries using `rustls-native-certs`** (e.g., `sccache`). Read

@@ -24,6 +24,8 @@ Mapped to the four outcomes Veil targets.
 
 **Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`, `npm`, `pip`, `twine`, `docker push`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
 
+> **Note:** `docker push` on macOS Docker Desktop (and other Linux-VM Docker runtimes — Colima, Lima, Rancher Desktop) requires daemon-side proxy configuration; the daemon's network stack does not inherit the calling shell's `HTTPS_PROXY`. See [docs/DOCKER.md](DOCKER.md).
+
 ---
 
 ## 3. CLI surface
