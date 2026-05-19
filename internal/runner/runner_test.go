@@ -375,6 +375,40 @@ func TestFormatExitSummary(t *testing.T) {
 	}
 }
 
+// TestExitCodeFromWait_SignalKill is F11: a child terminated by signal must
+// report 128+signo (the convention every Unix shell uses: 130 = SIGINT,
+// 143 = SIGTERM) instead of the raw -1 that (*exec.ExitError).ExitCode()
+// returns for signaled processes. The previous run-summary printed
+// "exit -1", which is meaningless to users grepping logs for "exit 130".
+func TestExitCodeFromWait_SignalKill(t *testing.T) {
+	// `kill -INT $$` signals the shell itself; sh has no SIGINT handler so it
+	// dies via signal, producing a WaitStatus with Signaled()==true and
+	// Signal()==SIGINT. This is the most portable reproducer across shells.
+	err := exec.Command("sh", "-c", "kill -INT $$").Run()
+	if err == nil {
+		t.Fatal("expected error for signal-killed child")
+	}
+	if got := exitCodeFromWait(err); got != 130 {
+		t.Fatalf("exitCodeFromWait = %d, want 130 (128 + SIGINT)", got)
+	}
+}
+
+func TestExitCodeFromWait_NormalExit(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 42").Run()
+	if err == nil {
+		t.Fatal("expected non-zero exit error")
+	}
+	if got := exitCodeFromWait(err); got != 42 {
+		t.Fatalf("exitCodeFromWait = %d, want 42", got)
+	}
+}
+
+func TestExitCodeFromWait_Success(t *testing.T) {
+	if got := exitCodeFromWait(nil); got != 0 {
+		t.Fatalf("exitCodeFromWait(nil) = %d, want 0", got)
+	}
+}
+
 func TestBuildChildEnv(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin",

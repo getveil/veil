@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/getveil/veil/internal/audit"
@@ -198,10 +199,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// Reclaim foreground process group so veil can write to the terminal.
 	reclaimForeground(ttyFd)
 
-	exitCode := 0
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
-		exitCode = exitErr.ExitCode()
-	}
+	exitCode := exitCodeFromWait(waitErr)
 
 	printSessionFooter(os.Stderr, auditStore, sessionStart, time.Since(sessionStart), exitCode)
 
@@ -387,6 +385,27 @@ func formatExitSummary(exitCode int) string {
 		return "session complete"
 	}
 	return fmt.Sprintf("session ended (exit %d)", exitCode)
+}
+
+// exitCodeFromWait derives a shell-conventional exit code from a Wait() error.
+// A signal-terminated child becomes 128+signo (matching every Unix shell:
+// 130 for SIGINT, 143 for SIGTERM) rather than the raw -1 that
+// (*exec.ExitError).ExitCode() returns for signaled processes — "exit -1" in
+// the session footer was meaningless to users grepping logs for "exit 130".
+// nil err → 0. Non-ExitError wait failures (e.g. forking errors that surface
+// at Wait time on some platforms) collapse to ExitGeneric (1).
+func exitCodeFromWait(waitErr error) int {
+	if waitErr == nil {
+		return 0
+	}
+	exitErr, ok := waitErr.(*exec.ExitError)
+	if !ok {
+		return 1
+	}
+	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exitErr.ExitCode()
 }
 
 // auditFooterSource is the audit-store surface the session footer needs:
