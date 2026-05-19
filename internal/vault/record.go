@@ -15,7 +15,7 @@ import (
 // aws_access_key_id, github_app_id). Go's encoding/json silently ignores
 // unknown fields on a struct, so those records still load — they will be
 // rendered with whatever subset of the surviving fields they happen to
-// have. See `Vault.SkipUnsupportedSchemes` for the runtime filter that
+// have. See `Vault.skipUnsupportedSchemes` for the runtime filter that
 // removes them before the proxy can act on them.
 type Credential struct {
 	ID                  string   `json:"id"`

@@ -163,8 +163,3 @@ func TestList_RevealLogsAudit(t *testing.T) {
 		t.Errorf("expected 1 reveal row, found %d", found)
 	}
 }
-
-// TestList_AWSCredentialMultiRow verifies that an AWS-scheme credential
-// renders as separate rows for AKID, secret, and (optional) session token,
-// each labeled with the canonical AWS env-var name and paired with the
-// corresponding value (or placeholder). Regression for F-5.

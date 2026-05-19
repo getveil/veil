@@ -331,7 +331,7 @@ func (v *Vault) Credentials() []*Credential {
 func (v *Vault) PlaceholderSet() placeholder.Set {
 	out := make(placeholder.Set, len(v.credentials)*4)
 	for _, c := range v.credentials {
-		addPlaceholders(out, c, func(s string) { out[s] = struct{}{} })
+		addPlaceholders(c, func(s string) { out[s] = struct{}{} })
 	}
 	return out
 }
@@ -343,14 +343,13 @@ func (v *Vault) PlaceholderMap() map[string]*Credential {
 	m := make(map[string]*Credential, len(v.credentials)*4)
 	for _, c := range v.credentials {
 		c := c
-		addPlaceholders(nil, c, func(s string) { m[s] = c })
+		addPlaceholders(c, func(s string) { m[s] = c })
 	}
 	return m
 }
 
 // addPlaceholders calls emit for each non-empty placeholder string on c.
-// The set argument is unused (retained for symmetry); callers pass nil.
-func addPlaceholders(_ placeholder.Set, c *Credential, emit func(string)) {
+func addPlaceholders(c *Credential, emit func(string)) {
 	if c.Placeholder != "" {
 		emit(c.Placeholder)
 	}

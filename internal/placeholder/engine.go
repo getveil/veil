@@ -1,7 +1,7 @@
 // Package placeholder generates structurally-valid fake values for secrets.
 //
 // It supports provider-specific patterns (OpenAI, Anthropic, GitHub, Stripe,
-// AWS, Slack), URL-aware password replacement, and a character-class fallback
+// Slack), URL-aware password replacement, and a character-class fallback
 // that preserves the structural shape of any secret value.
 package placeholder
 

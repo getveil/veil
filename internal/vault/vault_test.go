@@ -667,6 +667,75 @@ func TestSkipUnsupportedSchemes_FiltersAWSAndGitHubApp(t *testing.T) {
 	}
 }
 
+// TestOpen_TolerantOfStaleAWSAndGitHubAppRecords verifies the risk-register
+// promise from launch Phase 1: a vault written by v0.1.x with aws / github_app
+// scheme records (including their now-removed extra fields like
+// aws_access_key_id) must still open cleanly, with the stale entries
+// silently filtered out.
+func TestOpen_TolerantOfStaleAWSAndGitHubAppRecords(t *testing.T) {
+	root := tempRoot(t)
+	ks := NewMemKeystore()
+	if _, err := CreateVault(root, "proj", ks); err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+
+	// Marshal a credential set that mixes supported schemes with stale aws /
+	// github_app records carrying extra fields the current struct no longer
+	// has. json.Unmarshal must silently drop the unknown fields, and Open
+	// must filter out the stale-scheme records.
+	rawRecords := []map[string]any{
+		{
+			"id": NewID(), "name": "OPENAI_API_KEY", "real": "sk-real",
+			"placeholder": "sk-ph", "source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "AWS", "scheme": "aws",
+			"aws_access_key_id":             "AKIAIOSFODNN7EXAMPLE",
+			"aws_access_key_id_placeholder": "AKIAEXAMPLE_PH",
+			"aws_session_token":             "tok",
+			"aws_session_token_placeholder": "tok-ph",
+			"real":                          "secret", "placeholder": "ph-aws",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "GH_APP", "scheme": "github_app",
+			"github_app_id": "123", "github_installation_id": "456",
+			"github_app_private_key_pem": "-----BEGIN-----",
+			"real":                       "pem", "placeholder": "ph-gh",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
+	}
+	data, err := json.Marshal(rawRecords)
+	if err != nil {
+		t.Fatalf("marshal raw records: %v", err)
+	}
+
+	// Seal with the project's key and overwrite vault.bin.
+	key, err := ks.Get("proj")
+	if err != nil {
+		t.Fatalf("keystore Get: %v", err)
+	}
+	blob, err := Seal(key, data)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := os.WriteFile(config.VaultFile(root), blob, 0o600); err != nil {
+		t.Fatalf("write vault.bin: %v", err)
+	}
+
+	v, err := Open(root, ks)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got := v.List()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 surviving credential, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "OPENAI_API_KEY" {
+		t.Errorf("surviving credential = %q, want OPENAI_API_KEY", got[0].Name)
+	}
+}
+
 func TestCredentialJSONBackwardCompat(t *testing.T) {
 	// Old on-disk format had no Username / UsernamePlaceholder fields.
 	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`
