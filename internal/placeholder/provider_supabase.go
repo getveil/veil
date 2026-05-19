@@ -32,7 +32,13 @@ func init() {
 // custom apps), producing false positives that caused us to inject Supabase
 // placeholders for unrelated credentials.
 func isJWTWithAlg(name, value string) bool {
-	if strings.Contains(strings.ToUpper(name), "SUPABASE") {
+	// Name-only fallback: catches custom/unprefixed tokens stored under a
+	// SUPABASE_* name. Require a credential-shaped value length so we don't
+	// classify config metadata like SUPABASE_REGION=us-east-1 or
+	// SUPABASE_PROJECT_REF=abcd1234 as secrets. Mirrors the floor applied in
+	// provider_github.go.
+	if len(value) >= secretMinLength &&
+		strings.Contains(strings.ToUpper(name), "SUPABASE") {
 		return true
 	}
 	parts := strings.Split(value, ".")
@@ -59,8 +65,13 @@ func generateSupabaseJWT(role string) string {
 	iat := now.Add(-24 * time.Hour).Unix()
 	exp := now.Add(365 * 24 * time.Hour).Unix()
 
+	// Use the canonical Supabase JWT iss format so the placeholder is
+	// re-detectable by isJWTWithAlg via the iss-containing-"supabase.co"
+	// path. Without "supabase.co" in iss, a vaulted JWT stored under a
+	// non-SUPABASE_* key name falls through to no-match on a subsequent
+	// `veil init` pass.
 	payload := fmt.Sprintf(
-		`{"iss":"supabase","ref":"%s","role":"%s","iat":%d,"exp":%d}`,
+		`{"iss":"https://placeholder.supabase.co/auth/v1","ref":"%s","role":"%s","iat":%d,"exp":%d}`,
 		ref, role, iat, exp,
 	)
 	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))

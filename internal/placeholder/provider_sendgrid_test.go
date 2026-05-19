@@ -15,8 +15,11 @@ func TestProviderSendGrid(t *testing.T) {
 	})
 
 	t.Run("match_name", func(t *testing.T) {
-		if !prov.Match("SENDGRID_API_KEY", "anything") {
-			t.Fatal("should match SENDGRID in name")
+		// Name-only fallback requires a credential-shaped value length so
+		// SENDGRID_FROM_EMAIL=foo@bar.com and similar config vars aren't
+		// misclassified.
+		if !prov.Match("SENDGRID_API_KEY", strings.Repeat("a", 40)) {
+			t.Fatal("should match SENDGRID in name for credential-shaped value")
 		}
 	})
 
@@ -66,6 +69,24 @@ func TestProviderSendGrid(t *testing.T) {
 			t.Fatalf("unexpected hosts: %v", prov.Hosts)
 		}
 	})
+}
+
+// TestSendgridNameMatchRequiresValueShape ensures the name-only fallback in
+// the SendGrid Match function won't flag config metadata vars whose name
+// happens to contain "SENDGRID" but whose value is clearly not a credential.
+// Mirrors the secretMinLength floor used by the GitHub provider.
+func TestSendgridNameMatchRequiresValueShape(t *testing.T) {
+	prov := mustProvider(t, "sendgrid")
+
+	cases := []struct{ name, value string }{
+		{"SENDGRID_FROM_EMAIL", "foo@bar.com"},
+		{"SENDGRID_REGION", "us"},
+	}
+	for _, c := range cases {
+		if prov.Match(c.name, c.value) {
+			t.Errorf("should not match SendGrid metadata %s=%q (value below secretMinLength)", c.name, c.value)
+		}
+	}
 }
 
 func TestProviderSendgrid_AuthSchemeIsBearer(t *testing.T) {
