@@ -118,26 +118,6 @@ func init() {
 	})
 
 	registerFormat(Format{
-		Name:       "postmark",
-		Prefixes:   nil,
-		KeyHints:   []string{"POSTMARK"},
-		Length:     36,
-		Charset:    "hex",
-		Hosts:      []string{"api.postmarkapp.com"},
-		AuthScheme: AuthBearer,
-	})
-
-	registerFormat(Format{
-		Name:       "datadog",
-		Prefixes:   nil,
-		KeyHints:   []string{"DATADOG", "DD_API"},
-		Length:     32,
-		Charset:    "hex",
-		Hosts:      []string{"api.datadoghq.com", "*.datadoghq.com"},
-		AuthScheme: AuthBearer,
-	})
-
-	registerFormat(Format{
 		Name:       "pypi",
 		Prefixes:   []string{"pypi-"},
 		KeyHints:   []string{"PYPI", "TWINE_PASSWORD"},
@@ -159,25 +139,5 @@ func init() {
 		Charset:    "alphanumeric",
 		Hosts:      []string{"docker.io", "registry-1.docker.io", "index.docker.io", "auth.docker.io"},
 		AuthScheme: AuthBasic,
-	})
-
-	registerFormat(Format{
-		Name:       "quay",
-		Prefixes:   nil,
-		KeyHints:   []string{"QUAY"},
-		Length:     0,
-		Charset:    "alphanumeric",
-		Hosts:      []string{"quay.io"},
-		AuthScheme: AuthBearer,
-	})
-
-	registerFormat(Format{
-		Name:       "gcr",
-		Prefixes:   nil,
-		KeyHints:   []string{"GCR_", "GOOGLE_REGISTRY", "ARTIFACT_REGISTRY"},
-		Length:     0,
-		Charset:    "alphanumeric",
-		Hosts:      []string{"gcr.io", "*.gcr.io", "*-docker.pkg.dev"},
-		AuthScheme: AuthBearer,
 	})
 }

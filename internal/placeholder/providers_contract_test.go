@@ -38,12 +38,8 @@ var providerSamples = map[string]sample{
 	"gitlab":      {"GITLAB_TOKEN", "glpat-" + strings.Repeat("a", 20)},
 	"npm":         {"NPM_TOKEN", "npm_" + strings.Repeat("a", 32)},
 	"resend":      {"RESEND_API_KEY", "re_" + strings.Repeat("a", 20)},
-	"postmark":    {"POSTMARK_SERVER_TOKEN", strings.Repeat("a", 36)},
-	"datadog":     {"DD_API_KEY", strings.Repeat("a", 32)},
 	"pypi":        {"TWINE_PASSWORD", "pypi-" + strings.Repeat("a", 40)},
 	"docker_hub":  {"DOCKER_HUB_TOKEN", "dckr_pat_" + strings.Repeat("a", 36)},
-	"quay":        {"QUAY_TOKEN", strings.Repeat("a", 32)},
-	"gcr":         {"GCR_JSON_KEY", strings.Repeat("a", 32)},
 }
 
 // providerRegexes validates the structural shape of Generate output. Add
@@ -76,6 +72,19 @@ func TestProviderContract(t *testing.T) {
 				t.Fatalf("output %q for %q does not match regex %v", out, name, re)
 			}
 		})
+	}
+}
+
+// TestRemovedLowSignalProviders asserts that the four key-name-only
+// providers (no value-shape check, just a substring on the env key) have
+// been removed. These were a noise source — DD_API_KEY in particular
+// matched any env var containing "DD_API", including unrelated ones.
+func TestRemovedLowSignalProviders(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	for _, name := range []string{"postmark", "datadog", "quay", "gcr"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("provider %q must not be registered (low-signal: matches on key name only)", name)
+		}
 	}
 }
 

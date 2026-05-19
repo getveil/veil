@@ -40,8 +40,6 @@ func TestGenerateAlwaysContainsSentinel(t *testing.T) {
 		{"gitlab_prefix", "SOME_KEY", "glpat-" + strings.Repeat("a", 20)},
 		{"npm_prefix", "SOME_KEY", "npm_" + strings.Repeat("a", 32)},
 		{"resend_prefix", "SOME_KEY", "re_" + strings.Repeat("a", 20)},
-		{"postmark_by_name", "POSTMARK_SERVER_TOKEN", strings.Repeat("a", 36)},
-		{"datadog_by_name", "DD_API_KEY", strings.Repeat("a", 32)},
 		{"pypi_prefix", "SOME_KEY", "pypi-" + strings.Repeat("a", 40)},
 		{"docker_hub_prefix", "SOME_KEY", "dckr_pat_" + strings.Repeat("a", 36)},
 		{"url_postgres", "DATABASE_URL", "postgres://user:longerpassword@host:5432/db"},
