@@ -333,3 +333,34 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 		}
 	}
 }
+
+// TestLogCmd_AdvancedFlagsHidden verifies that --suspect, --blocked, and
+// --signer-failed flags are marked as hidden from --help output.
+func TestLogCmd_AdvancedFlagsHidden(t *testing.T) {
+	cmd := logCmd()
+	for _, name := range []string{"suspect", "blocked", "signer-failed"} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			t.Errorf("flag --%s missing entirely", name)
+			continue
+		}
+		if !f.Hidden {
+			t.Errorf("flag --%s must be hidden from --help", name)
+		}
+	}
+}
+
+// TestLogCmd_PublicFlagsVisible verifies that --since, --host, and
+// --credential flags remain visible in --help output.
+func TestLogCmd_PublicFlagsVisible(t *testing.T) {
+	cmd := logCmd()
+	for _, name := range []string{"since", "host", "credential"} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			t.Fatalf("flag --%s missing", name)
+		}
+		if f.Hidden {
+			t.Errorf("flag --%s must remain visible in --help", name)
+		}
+	}
+}

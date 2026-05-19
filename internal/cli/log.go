@@ -56,6 +56,9 @@ func logCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&blocked, "blocked", false, "include blocked credential events")
 	cmd.Flags().BoolVar(&suspect, "suspect", false, "show only transform-mismatch suspect rows")
 	cmd.Flags().BoolVar(&signerFailed, "signer-failed", false, "show only rows where a signer (AWS SigV4 / GitHub App JWT) failed closed")
+	_ = cmd.Flags().MarkHidden("blocked")
+	_ = cmd.Flags().MarkHidden("suspect")
+	_ = cmd.Flags().MarkHidden("signer-failed")
 	return cmd
 }
 
