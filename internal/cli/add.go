@@ -50,6 +50,7 @@ type addOpts struct {
 	awsSessionTokenStdin bool
 	githubAppID          int64
 	githubInstallationID int64
+	experimental         bool
 }
 
 func addCmd() *cobra.Command {
@@ -88,6 +89,8 @@ func addCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.awsSessionTokenStdin, "aws-session-token-stdin", false, "read AWS session token from stdin (mutually exclusive with --value-stdin)")
 	cmd.Flags().Int64Var(&opts.githubAppID, "github-app-id", 0, "GitHub App ID (required for --scheme github_app)")
 	cmd.Flags().Int64Var(&opts.githubInstallationID, "github-installation-id", 0, "GitHub App installation ID (optional)")
+	cmd.Flags().BoolVar(&opts.experimental, "experimental", false, "allow experimental schemes (aws, github_app) — unsupported in v0.1.x")
+	_ = cmd.Flags().MarkHidden("experimental")
 	cmd.MarkFlagsMutuallyExclusive("value", "value-stdin")
 	cmd.MarkFlagsMutuallyExclusive("aws-session-token-file", "aws-session-token-stdin")
 	cmd.MarkFlagsMutuallyExclusive("value-stdin", "aws-session-token-stdin")
@@ -114,8 +117,18 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 	case "":
 		// default: bearer (or basic when --user is set)
 	case "aws":
+		if !opts.experimental {
+			return formatCLIError(cmd.ErrOrStderr(),
+				"veil add --scheme aws is not supported in v0.1.x — AWS SigV4 re-signing is on the roadmap. See docs/MVP.md §5.",
+				"If you understand the risk and want to try the signer anyway, pass --experimental.")
+		}
 		return runAddAWS(cmd, root, v, name, opts)
 	case "github_app":
+		if !opts.experimental {
+			return formatCLIError(cmd.ErrOrStderr(),
+				"veil add --scheme github_app is not supported in v0.1.x — GitHub App JWT signing is on the roadmap. See docs/MVP.md §5.",
+				"If you understand the risk and want to try the signer anyway, pass --experimental.")
+		}
 		return runAddGitHubApp(cmd, root, v, name, opts)
 	default:
 		return cliError(fmt.Sprintf("unknown --scheme %q", opts.scheme), "valid values: aws, github_app (omit for bearer/basic)")

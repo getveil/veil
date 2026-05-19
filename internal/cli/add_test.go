@@ -126,7 +126,7 @@ func TestAddCmd_SchemeAWS_HappyPath(t *testing.T) {
 	cmd.SetIn(strings.NewReader("real-secret-access-key\n"))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "aws-prod",
-		"--scheme", "aws",
+		"--scheme", "aws", "--experimental",
 		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
 		"--host", "*.amazonaws.com",
 		"--value-stdin",
@@ -162,7 +162,7 @@ func TestAddCmd_SchemeAWS_RejectsBadAccessKeyID(t *testing.T) {
 	cmd.SetIn(strings.NewReader("secret\n"))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "aws-prod",
-		"--scheme", "aws",
+		"--scheme", "aws", "--experimental",
 		"--aws-access-key-id", "WRONGFORMAT",
 		"--value-stdin",
 	})
@@ -184,7 +184,7 @@ func TestAddCmd_SchemeAWS_WithSessionTokenFile(t *testing.T) {
 	cmd.SetIn(strings.NewReader("secret-access-key\n"))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "aws-sts",
-		"--scheme", "aws",
+		"--scheme", "aws", "--experimental",
 		"--aws-access-key-id", "ASIAIOSFODNN7EXAMPLE",
 		"--aws-session-token-file", tokPath,
 		"--value-stdin",
@@ -248,7 +248,7 @@ func TestAddCmd_SchemeAWS_MutuallyExclusiveWithUser(t *testing.T) {
 	cmd.SetIn(strings.NewReader("secret\n"))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "x",
-		"--scheme", "aws",
+		"--scheme", "aws", "--experimental",
 		"--user", "bob",
 		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
 		"--value-stdin",
@@ -284,7 +284,7 @@ func TestAddCmd_SchemeGitHubApp_HappyPath(t *testing.T) {
 	cmd.SetIn(strings.NewReader(realPEM))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "gh-app",
-		"--scheme", "github_app",
+		"--scheme", "github_app", "--experimental",
 		"--github-app-id", "123456",
 		"--host", "api.github.com",
 		"--value-stdin",
@@ -334,7 +334,7 @@ func TestAddCmd_SchemeGitHubApp_MultiLinePEMEnvRoundTrip(t *testing.T) {
 	cmd.SetIn(strings.NewReader(realPEM))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "GITHUB_APP_PRIVATE_KEY",
-		"--scheme", "github_app",
+		"--scheme", "github_app", "--experimental",
 		"--github-app-id", "123456",
 		"--host", "api.github.com",
 		"--value-stdin",
@@ -392,7 +392,7 @@ func TestAddCmd_SchemeGitHubApp_ForceEnvRoundTrip(t *testing.T) {
 		cmd.SetIn(strings.NewReader(pemA))
 		cmd.SetArgs([]string{
 			"add", "--path", root, "GITHUB_APP_PRIVATE_KEY",
-			"--scheme", "github_app",
+			"--scheme", "github_app", "--experimental",
 			"--github-app-id", "123456",
 			"--host", "api.github.com",
 			"--value-stdin",
@@ -450,7 +450,7 @@ func TestAddCmd_SchemeGitHubApp_ForceEnvRoundTrip(t *testing.T) {
 		cmd.SetIn(strings.NewReader(pemB))
 		cmd.SetArgs([]string{
 			"add", "--path", root, "GITHUB_APP_PRIVATE_KEY",
-			"--scheme", "github_app",
+			"--scheme", "github_app", "--experimental",
 			"--github-app-id", "123456",
 			"--host", "api.github.com",
 			"--value-stdin",
@@ -499,11 +499,107 @@ func TestAddCmd_SchemeGitHubApp_RejectsNonPEM(t *testing.T) {
 	cmd.SetIn(strings.NewReader("not a pem"))
 	cmd.SetArgs([]string{
 		"add", "--path", root, "gh-app",
-		"--scheme", "github_app",
+		"--scheme", "github_app", "--experimental",
 		"--github-app-id", "123",
 		"--value-stdin",
 	})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error on non-PEM input")
+	}
+}
+
+func TestAdd_SchemeAWS_RefusedWithoutExperimental(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{
+		"add", "--path", root, "AWS_PROD",
+		"--scheme", "aws",
+		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error from --scheme aws without --experimental")
+	}
+	if !strings.Contains(stderr.String(), "not supported in v0.1.x") {
+		t.Errorf("stderr missing 'not supported in v0.1.x': %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--experimental") {
+		t.Errorf("stderr should mention --experimental: %q", stderr.String())
+	}
+}
+
+func TestAdd_SchemeAWS_AcceptedWithExperimental(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"add", "--path", root, "AWS_PROD",
+		"--scheme", "aws", "--experimental",
+		"--aws-access-key-id", "AKIAIOSFODNN7EXAMPLE",
+		"--value", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v.Get("AWS_PROD"); !ok {
+		t.Fatal("AWS_PROD not stored after --experimental")
+	}
+}
+
+func TestAdd_SchemeGitHubApp_RefusedWithoutExperimental(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{
+		"add", "--path", root, "GH_APP",
+		"--scheme", "github_app",
+		"--github-app-id", "123",
+		"--value", "not-a-real-pem",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error from --scheme github_app without --experimental")
+	}
+	if !strings.Contains(stderr.String(), "not supported in v0.1.x") {
+		t.Errorf("stderr missing 'not supported in v0.1.x': %q", stderr.String())
+	}
+}
+
+func TestAdd_BearerScheme_NotAffectedByGate(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"add", "--path", root, "STRIPE_KEY",
+		"--value", "sk_live_abcdefghijklmnopqrstuvwxyz0123456789",
+		"--host", "api.stripe.com",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error on bearer add: %v", err)
+	}
+	v, err := openVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v.Get("STRIPE_KEY"); !ok {
+		t.Fatal("bearer credential not stored")
 	}
 }
