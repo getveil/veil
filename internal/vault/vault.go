@@ -338,7 +338,7 @@ func (v *Vault) PlaceholderSet() placeholder.Set {
 
 // PlaceholderMap returns a map from placeholder value to credential, used by
 // the injector to swap placeholders back to real secrets. For multi-field
-// credentials (basic, aws) every placeholder maps back to the same record.
+// credentials (basic) every placeholder maps back to the same record.
 func (v *Vault) PlaceholderMap() map[string]*Credential {
 	m := make(map[string]*Credential, len(v.credentials)*4)
 	for _, c := range v.credentials {
