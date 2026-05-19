@@ -12,8 +12,9 @@ var githubPrefixes = []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "gh
 
 func init() {
 	register(ProviderPattern{
-		Name:     "github",
-		Priority: PriorityHandwritten,
+		Name:       "github",
+		Priority:   PriorityHandwritten,
+		AuthScheme: AuthBearer,
 		Match: func(name, value string) bool {
 			for _, p := range githubPrefixes {
 				if strings.HasPrefix(value, p) {

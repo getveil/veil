@@ -125,3 +125,17 @@ func TestGenerateGitHubAppPrivateKey_FreshEachCall(t *testing.T) {
 		t.Error("two calls returned the same PEM (keygen deterministic?)")
 	}
 }
+
+func TestProviderGitHub_AuthSchemeIsBearer(t *testing.T) {
+	r := DefaultRegistry()
+	p, ok := r.Get("github")
+	if !ok {
+		t.Fatal("github provider not registered")
+	}
+	if p.AuthScheme != AuthBearer {
+		t.Fatalf("github AuthScheme = %v, want AuthBearer", p.AuthScheme)
+	}
+	if !VaultEligible(&p) {
+		t.Fatal("github (PAT) must be VaultEligible")
+	}
+}
