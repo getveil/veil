@@ -57,7 +57,22 @@ func addCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a secret to the vault",
-		Args:  cobra.ExactArgs(1),
+		// #nosec G101 -- AKIAIOSFODNN7EXAMPLE is AWS's documented placeholder access key, shown only in help text
+		Example: `  # Add a bearer token (prompts for value, no echo)
+  veil add STRIPE_KEY --host api.stripe.com
+
+  # Add HTTP Basic credentials
+  veil add ARTIFACTORY --user alice --host artifactory.example.com
+
+  # Add AWS credentials with a session token (prompts for secret access key)
+  veil add AWS_PROD --scheme aws \
+    --aws-access-key-id AKIAIOSFODNN7EXAMPLE \
+    --aws-session-token-file ./token.txt
+
+  # Add a GitHub App private key (RSA PEM on stdin)
+  veil add GH_APP --scheme github_app --github-app-id 123456 \
+    --value-stdin < app.pem`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAdd(cmd, args[0], opts)
 		},
