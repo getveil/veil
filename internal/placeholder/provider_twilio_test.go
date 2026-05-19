@@ -98,3 +98,27 @@ func TestProviderTwilio_AuthSchemeIsBasic(t *testing.T) {
 		t.Fatalf("twilio AuthScheme = %v, want AuthBasic", p.AuthScheme)
 	}
 }
+
+// TestTwilioNameMatchRequiresValueShape verifies that name-only matches
+// (key contains "TWILIO") demand a credential-shaped value length. Without
+// this floor, CI/SDK metadata values like TWILIO_FROM_NUMBER=+15555551234
+// or TWILIO_REGION=us1 would be classified as Twilio credentials and
+// vaulted, then leak through Generate's empty-prefix branch as a
+// deterministic sentinel-only output. Mirrors provider_github.go:30-31.
+func TestTwilioNameMatchRequiresValueShape(t *testing.T) {
+	prov := mustProvider(t, "twilio")
+
+	cases := []struct {
+		name, value string
+	}{
+		{"TWILIO_FROM_NUMBER", "+15555551234"},
+		{"TWILIO_REGION", "us1"},
+		{"TWILIO_API_VERSION", "2010-04-01"},
+		{"TWILIO_ENV", "prod"},
+	}
+	for _, c := range cases {
+		if prov.Match(c.name, c.value) {
+			t.Errorf("should not match Twilio metadata %s=%q (value below secretMinLength)", c.name, c.value)
+		}
+	}
+}

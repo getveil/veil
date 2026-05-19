@@ -53,10 +53,13 @@ type Correlator interface {
 
 // correlators is the fixed dispatch list. Adding a new scheme is one line
 // here plus the sibling file. Order matters: aws runs first so AWS
-// triples are claimed before any scheme that might overlap; basic runs
-// after, on the remaining candidates.
+// triples are claimed before any scheme that might overlap; twilio runs
+// next so its provider-specific *_ACCOUNT_SID/*_AUTH_TOKEN pair can't be
+// accidentally split by a future generic pass; basic runs last on the
+// remaining candidates.
 var correlators = []Correlator{
 	awsCorrelator{},
+	twilioCorrelator{},
 	basicCorrelator{},
 }
 
