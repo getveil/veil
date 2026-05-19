@@ -26,7 +26,6 @@ var providerSamples = map[string]sample{
 	"github":    {"GITHUB_TOKEN", "ghp_" + strings.Repeat("a", 36)},
 	"stripe":    {"STRIPE_KEY", "sk_live_" + strings.Repeat("a", 24)},
 	"slack":     {"SLACK_TOKEN", "xoxb-" + strings.Repeat("a", 50)},
-	"twilio":    {"TWILIO_AUTH_TOKEN", "SK" + strings.Repeat("a", 32)},
 	"supabase":  {"SUPABASE_KEY", "sbp_" + strings.Repeat("a", 36)},
 	"sendgrid":  {"SENDGRID_API_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},
 	// Format providers (declarative — registered in provider_formats.go).
@@ -35,10 +34,7 @@ var providerSamples = map[string]sample{
 	"huggingface": {"HF_TOKEN", "hf_" + strings.Repeat("a", 34)},
 	"vercel":      {"VERCEL_TOKEN", "vercel_" + strings.Repeat("a", 20)},
 	"gitlab":      {"GITLAB_TOKEN", "glpat-" + strings.Repeat("a", 20)},
-	"npm":         {"NPM_TOKEN", "npm_" + strings.Repeat("a", 32)},
 	"resend":      {"RESEND_API_KEY", "re_" + strings.Repeat("a", 20)},
-	"pypi":        {"TWINE_PASSWORD", "pypi-" + strings.Repeat("a", 40)},
-	"docker_hub":  {"DOCKER_HUB_TOKEN", "dckr_pat_" + strings.Repeat("a", 36)},
 }
 
 // providerRegexes validates the structural shape of Generate output. Add

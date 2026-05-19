@@ -172,35 +172,3 @@ func TestScanEnviron_SkipsMalformedEntries(t *testing.T) {
 	}
 }
 
-func TestScanEnvironForPairs_KeepsUsernameLikeNames(t *testing.T) {
-	environ := []string{
-		"PATH=/usr/bin",                   // POSIX — must be filtered
-		"DB_USERNAME=alice",               // non-secret-shaped, must keep
-		"DB_PASSWORD=longsecret1234",      // secret-shaped, must keep
-		"OTEL_TRACES_SAMPLER=parentbased", // prefix-denylisted, must filter
-	}
-	got := ScanEnvironForPairs(environ)
-	want := map[string]string{
-		"DB_USERNAME": "alice",
-		"DB_PASSWORD": "longsecret1234",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(want), got)
-	}
-	for _, c := range got {
-		if w, ok := want[c.Name]; !ok || w != c.Value {
-			t.Errorf("unexpected candidate %s=%q", c.Name, c.Value)
-		}
-	}
-}
-
-func TestScanEnvironForPairs_DropsEmptyKeys(t *testing.T) {
-	environ := []string{
-		"=lonelyvalue", // no key — drop
-		"DB_USER=alice",
-	}
-	got := ScanEnvironForPairs(environ)
-	if len(got) != 1 || got[0].Name != "DB_USER" {
-		t.Fatalf("got %+v, want only DB_USER", got)
-	}
-}

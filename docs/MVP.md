@@ -16,15 +16,13 @@ The MVP free tier is this binary. Everything below is what that binary does toda
 
 Mapped to the four outcomes Veil targets.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files (and, with `--scan-mcp`, MCP configs) into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files (and, with `--scan-mcp`, MCP configs) into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer is mediated end-to-end (Authorization headers, `git push` over HTTPS with a Bearer token). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — and HTTP Basic credentials are not silently dropped; the transform-mismatch detector flags them (see §5).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 **Every action is on the record.** Every credential swap, blocked event, and mismatch-detector flag is written to a local SQLite database. The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md#audit-plane).
 
-**Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`, `npm`, `pip`, `twine`, `docker push`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
-
-> **Note:** `docker push` on macOS Docker Desktop (and other Linux-VM Docker runtimes — Colima, Lima, Rancher Desktop) requires daemon-side proxy configuration; the daemon's network stack does not inherit the calling shell's `HTTPS_PROXY`. See [docs/DOCKER.md](DOCKER.md).
+**Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
 
 ---
 
@@ -37,8 +35,8 @@ The public contract. Names and flags below are stable for the MVP series.
 | `veil init` | Scan the project for `.env` files (and, with `--scan-mcp`, MCP configs), vault any secrets found, write placeholders back, install the local CA. |
 | `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
-| `veil add <name>` | Add a credential to the vault. Default scheme is Bearer; `--user` switches to HTTP Basic. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
-| `veil list` | List managed credentials by name. Basic credentials tagged `(basic)`. Values are never printed unless `--reveal` is passed. |
+| `veil add <name>` | Add a Bearer credential to the vault. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
+| `veil list` | List managed credentials by name. Values are never printed unless `--reveal` is passed. |
 | `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`. |
 | `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. `--list` shows the current list; `--remove <host>` deletes an entry. |
 | `veil remove <name>` | Delete a credential from the vault. |

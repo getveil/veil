@@ -117,17 +117,6 @@ func TestFormatProviders(t *testing.T) {
 			wantHosts:  []string{"gitlab.com"},
 		},
 		{
-			name:       "npm",
-			matchKey:   "NPM_TOKEN",
-			matchValue: "npm_abcdefghijklmnopqrstuvwxyz123456",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "npm_abcdefghijklmnopqrstuvwxyz123456",
-			wantPrefix: "npm_",
-			wantLen:    36,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"registry.npmjs.org"},
-		},
-		{
 			name:       "resend",
 			matchKey:   "RESEND_API_KEY",
 			matchValue: "re_abcdefghijklmnopqrst",
@@ -137,28 +126,6 @@ func TestFormatProviders(t *testing.T) {
 			wantLen:    0,
 			charset:    "alphanumeric",
 			wantHosts:  []string{"api.resend.com"},
-		},
-		{
-			name:       "pypi",
-			matchKey:   "TWINE_PASSWORD",
-			matchValue: "pypi-AgEIcHlwaS5vcmcabcdefghijklmnopqrstuvwxyz",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "pypi-AgEIcHlwaS5vcmcabcdefghijklmnopqrstuvwxyz",
-			wantPrefix: "pypi-",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"pypi.org", "upload.pypi.org", "test.pypi.org", "upload.test.pypi.org"},
-		},
-		{
-			name:       "docker_hub",
-			matchKey:   "DOCKER_HUB_TOKEN",
-			matchValue: "dckr_pat_abcdefghijklmnopqrstuvwxyz12",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "dckr_pat_abcdefghijklmnopqrstuvwxyz12",
-			wantPrefix: "dckr_pat_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"docker.io", "registry-1.docker.io", "index.docker.io", "auth.docker.io"},
 		},
 	}
 
@@ -257,10 +224,7 @@ func TestProviderFormats_AuthSchemes(t *testing.T) {
 		"huggingface": AuthBearer,
 		"vercel":      AuthBearer,
 		"gitlab":      AuthBearer,
-		"npm":         AuthBasic,
 		"resend":      AuthBearer,
-		"pypi":        AuthBasic,
-		"docker_hub":  AuthBasic,
 	}
 	r := DefaultRegistry()
 	for name, expected := range want {
@@ -273,7 +237,7 @@ func TestProviderFormats_AuthSchemes(t *testing.T) {
 			t.Errorf("%s AuthScheme = %v, want %v", name, p.AuthScheme, expected)
 		}
 		if !VaultEligible(&p) {
-			t.Errorf("%s must be VaultEligible (Bearer/Basic with hosts)", name)
+			t.Errorf("%s must be VaultEligible (Bearer with hosts)", name)
 		}
 	}
 }

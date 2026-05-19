@@ -1,8 +1,8 @@
 package placeholder
 
 // AuthScheme describes how a provider's credential reaches an HTTP
-// request. Veil v0.1.x mediates Bearer and Basic schemes literally via
-// the proxy injector. Other schemes (OAuth exchange, mTLS, HMAC) require
+// request. Veil v0.1.x mediates only the Bearer scheme literally via the
+// proxy injector. Other schemes (OAuth exchange, mTLS, HMAC) require
 // signers or exchanges that are not in scope for v0.1.x; secrets matching
 // those schemes are recognized but not vaulted by `veil init`.
 type AuthScheme int
@@ -12,7 +12,6 @@ const (
 	// provider that forgets to declare its scheme fails closed.
 	AuthUnknown AuthScheme = iota
 	AuthBearer
-	AuthBasic
 	AuthOAuthExchange
 	AuthMTLS
 	AuthHMAC
@@ -20,9 +19,9 @@ const (
 
 // VaultEligible reports whether `veil init` may move a credential
 // matched by p out of .env and into the vault. True iff the scheme is
-// Bearer or Basic AND the provider has a non-empty AllowedHosts set
-// (so the injector knows where to fire). A nil p (charclass fallback)
-// is never eligible.
+// Bearer AND the provider has a non-empty AllowedHosts set (so the
+// injector knows where to fire). A nil p (charclass fallback) is never
+// eligible.
 func VaultEligible(p *ProviderPattern) bool {
 	if p == nil {
 		return false
@@ -30,7 +29,7 @@ func VaultEligible(p *ProviderPattern) bool {
 	if len(p.Hosts) == 0 {
 		return false
 	}
-	return p.AuthScheme == AuthBearer || p.AuthScheme == AuthBasic
+	return p.AuthScheme == AuthBearer
 }
 
 // AuthSchemeReason returns a one-line, user-facing label explaining
@@ -44,7 +43,7 @@ func AuthSchemeReason(s AuthScheme) string {
 		return "mTLS (architectural — out of scope)"
 	case AuthHMAC:
 		return "HMAC signing (roadmap)"
-	case AuthBearer, AuthBasic:
+	case AuthBearer:
 		return "" // eligible; reason not used
 	default:
 		return "unknown scheme"

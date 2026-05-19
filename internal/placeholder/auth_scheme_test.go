@@ -9,13 +9,6 @@ func TestVaultEligible_Bearer(t *testing.T) {
 	}
 }
 
-func TestVaultEligible_Basic(t *testing.T) {
-	p := &ProviderPattern{Name: "test", AuthScheme: AuthBasic, Hosts: []string{"registry.example.com"}}
-	if !VaultEligible(p) {
-		t.Fatalf("Basic + hosts must be vault-eligible")
-	}
-}
-
 func TestVaultEligible_OAuthExchange_Refused(t *testing.T) {
 	p := &ProviderPattern{Name: "gcp_sa", AuthScheme: AuthOAuthExchange, Hosts: []string{"*.googleapis.com"}}
 	if VaultEligible(p) {

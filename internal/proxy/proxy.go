@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -198,15 +197,7 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 			}
 			ui.Warnf(os.Stderr, "veil: refusing to forward request to %s — placeholder leak detected in %s", req.Host, leakLocation)
 			body := fmt.Sprintf("veil: placeholder leak detected in %s; request blocked (see audit log)", leakLocation)
-			var veilErr string
-			if hint := inj.ClassifyBasicLeak(newHeader); hint != "" {
-				body += "\n" + hint
-				veilErr = "basic_unpaired"
-			}
 			resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway, body)
-			if veilErr != "" {
-				resp.Header.Set("X-Veil-Error", veilErr)
-			}
 			return req, resp
 		}
 
@@ -312,10 +303,7 @@ func stripHostPort(hostport string) string {
 }
 
 // detectLeak scans URL, header values, and body for the placeholder
-// sentinel. The returned location is "url", "header:<name>",
-// "header:<name>(basic)", or "body". Basic-auth headers are base64-decoded
-// before scanning so a placeholder embedded in the user or password half is
-// not missed.
+// sentinel. The returned location is "url", "header:<name>", or "body".
 func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location string, leaked bool) {
 	if strings.Contains(newURL, placeholder.Sentinel) {
 		return "url", true
@@ -325,42 +313,10 @@ func detectLeak(newURL string, newHeader http.Header, newBody []byte) (location 
 			if strings.Contains(v, placeholder.Sentinel) {
 				return "header:" + name, true
 			}
-			if isBasicAuthHeader(name) && basicAuthLeaked(v) {
-				return "header:" + name + "(basic)", true
-			}
 		}
 	}
 	if len(newBody) > 0 && bytes.Contains(newBody, sentinelBytes) {
 		return "body", true
 	}
 	return "", false
-}
-
-// isBasicAuthHeader reports whether name carries HTTP Basic credentials.
-// http.Header keys are canonicalized so a direct equality check is sufficient.
-func isBasicAuthHeader(name string) bool {
-	return name == "Authorization" || name == "Proxy-Authorization"
-}
-
-// basicAuthLeaked reports whether value is "Basic <base64>" whose decoded
-// payload contains the placeholder sentinel. Malformed base64 is treated as
-// a leak — forwarding junk credentials risks exposing whatever the caller
-// actually meant to send.
-func basicAuthLeaked(value string) bool {
-	const schemeLen = len("Basic ")
-	if len(value) <= schemeLen {
-		return false
-	}
-	if !strings.EqualFold(value[:schemeLen], "Basic ") {
-		return false
-	}
-	encoded := strings.TrimSpace(value[schemeLen:])
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		raw, err = base64.URLEncoding.DecodeString(encoded)
-		if err != nil {
-			return strings.Contains(encoded, placeholder.Sentinel)
-		}
-	}
-	return bytes.Contains(raw, sentinelBytes)
 }

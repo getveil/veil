@@ -411,16 +411,12 @@ func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, 
 }
 
 // resolverFromVault returns a placeholderResolver mapping each credential's
-// placeholder → real value. If a credential has a Basic-auth username
-// placeholder, that mapping is included too.
+// placeholder → real value.
 func resolverFromVault(v *vault.Vault) placeholderResolver {
 	resolver := make(placeholderResolver)
 	for _, cred := range v.List() {
 		if cred.Placeholder != "" {
 			resolver[cred.Placeholder] = cred.Real
-		}
-		if cred.UsernamePlaceholder != "" {
-			resolver[cred.UsernamePlaceholder] = cred.Username
 		}
 	}
 	return resolver

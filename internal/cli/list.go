@@ -92,18 +92,14 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 
 	// Build display rows. Each credential produces one row.
 	//
-	// nameStyled mirrors name but may carry ANSI styling (e.g., the "(basic)"
-	// tag is dimmed). Width math uses the plain name to keep alignment correct.
+	// nameStyled mirrors name but may carry ANSI styling. Width math uses
+	// the plain name to keep alignment correct.
 	type row struct {
 		name, nameStyled, hosts, value, placeholder, source, last string
 	}
 	var rows []row
 	for _, c := range creds {
 		base := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
-		if c.Username != "" {
-			base.name = c.Name + " (basic)"
-			base.nameStyled = c.Name + " " + ui.Muted.Sprint("(basic)")
-		}
 		if t, ok := lastInjected[c.Name]; ok {
 			base.last = ui.RelativeTime(t)
 		}

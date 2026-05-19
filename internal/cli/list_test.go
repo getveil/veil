@@ -4,58 +4,10 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/vault"
 )
-
-// TestListCmd_TagsBasic verifies that `veil list` renders the "(basic)"
-// tag next to credentials with a Username set.
-func TestListCmd_TagsBasic(t *testing.T) {
-	root := initProject(t)
-
-	v, err := openVault(root)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	if err := v.Add(&vault.Credential{
-		ID: vault.NewID(), Name: "bearer-cred", Real: "r-bearer-1234567890",
-		Placeholder:  "p-bearer",
-		AllowedHosts: []string{"api.openai.com"},
-		CreatedAt:    time.Now(),
-	}); err != nil {
-		t.Fatalf("add bearer: %v", err)
-	}
-	if err := v.Add(&vault.Credential{
-		ID: vault.NewID(), Name: "basic-cred",
-		Real:                "ghp_realtoken",
-		Placeholder:         "p-basic",
-		Username:            "alice",
-		UsernamePlaceholder: "u-basic",
-		AllowedHosts:        []string{"artifactory.example.com"},
-		CreatedAt:           time.Now(),
-	}); err != nil {
-		t.Fatalf("add basic: %v", err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"list", "--path", root})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	s := out.String()
-	if !strings.Contains(s, "bearer-cred") {
-		t.Errorf("missing bearer-cred in:\n%s", s)
-	}
-	if !strings.Contains(s, "(basic)") {
-		t.Errorf("missing (basic) tag in:\n%s", s)
-	}
-}
 
 // TestList_RevealRefusesWhenStdoutNotTTY guards against accidental pipes
 // and redirects that would write real secrets to a file.

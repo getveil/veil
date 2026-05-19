@@ -416,73 +416,6 @@ func TestRecoverPendingEnvRewriteHappyPath(t *testing.T) {
 	}
 }
 
-// TestRecoverPendingEnvRewriteDetectsBasicUsernameEdit simulates the
-// crash-window recovery state for a basic-scheme credential where the user
-// edited the *username* half of the .env between the crash and the re-run.
-// Without the UsernameVar tracking, recovery silently rewrites the username
-// line over the user's edit because the divergence check only matches by
-// vault credential Name (= password var). The recovery path must detect the
-// edit and refuse, just like it does for bearer-scheme password edits.
-func TestRecoverPendingEnvRewriteDetectsBasicUsernameEdit(t *testing.T) {
-	originalPassword := "ghp_realtoken1234567890abcdef"
-	originalUsername := "alice"
-	userEditedUsername := "bob"
-	// Crash-window state: .env back to cleartext with the user's edit on
-	// the username half. Password half still matches the vault.
-	envBody := "GH_USERNAME=" + userEditedUsername + "\n" +
-		"GH_PASSWORD=" + originalPassword + "\n"
-	root, envPath := initEnvFixture(t, envBody)
-
-	ks := vault.NewMemKeystore()
-	v, err := vault.CreateVault(root, "proj-basic-user-edit", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-
-	backupBody := "GH_USERNAME=" + originalUsername + "\n" +
-		"GH_PASSWORD=" + originalPassword + "\n"
-	if err := os.WriteFile(envPath+".veil-backup", []byte(backupBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.AddVaultedFile(root, envPath, vault.KindEnv); err != nil {
-		t.Fatalf("AddVaultedFile: %v", err)
-	}
-	if err := v.Add(&vault.Credential{
-		ID:                  vault.NewID(),
-		Name:                "GH_PASSWORD",
-		Real:                originalPassword,
-		Placeholder:         "VEIL_PENDING_PH_GH_PASSWORD",
-		Username:            originalUsername,
-		UsernamePlaceholder: "VEIL_PENDING_PH_GH_USERNAME",
-		UsernameVar:         "GH_USERNAME",
-		Source:              "init",
-		CreatedAt:           time.Now(),
-	}); err != nil {
-		t.Fatalf("v.Add: %v", err)
-	}
-
-	out := &bytes.Buffer{}
-	errBuf := &bytes.Buffer{}
-	cmd := newPhasesTestCmd(out, errBuf, strings.NewReader(""))
-
-	seen := make(placeholder.Set)
-	_, _, err = processEnvFile(cmd, strings.NewReader(""), v, seen, root, envPath, false, false, false)
-	if err == nil {
-		t.Fatal("expected processEnvFile to error when user edited the GH_USERNAME half between crash and re-run")
-	}
-	if !strings.Contains(err.Error(), "GH_USERNAME") {
-		t.Errorf("error message should mention the diverging username var GH_USERNAME, got: %v", err)
-	}
-
-	gotEnv, rerr := os.ReadFile(envPath)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if string(gotEnv) != envBody {
-		t.Errorf(".env should be unchanged when username-half edit is detected\n got: %q\nwant: %q", gotEnv, envBody)
-	}
-}
-
 // TestProcessEnvFileDuplicateIsHardErrorWithoutForce asserts that a duplicate
 // credential at AddBatch time is a fatal error for the file when --force is
 // not set. The .env must not be rewritten and no backup must be written.
@@ -592,73 +525,6 @@ func TestProcessEnvFileForceRemovesAndReplaces(t *testing.T) {
 	}
 }
 
-// TestInit_BasicPairAutoVaultedFromEnvFile verifies the init flow
-// detects a USER+PASSWORD pair in a .env file and writes one
-// basic-scheme credential whose Username field carries the user half.
-func TestInit_BasicPairAutoVaultedFromEnvFile(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	envPath := filepath.Join(root, ".env")
-	envBody := "GH_USERNAME=alice\n" +
-		"GH_PASSWORD=ghp_realtoken1234\n" +
-		"STRIPE_API_KEY=sk_test_aBcDeFgHiJkLmN\n"
-	if err := os.WriteFile(envPath, []byte(envBody), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init --yes failed: %v", err)
-	}
-
-	v, err := openVault(root)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-
-	// Basic cred: name = password var; Username field = user value.
-	bc, ok := v.Get("GH_PASSWORD")
-	if !ok {
-		t.Fatal("expected GH_PASSWORD credential present")
-	}
-	if bc.Username != "alice" {
-		t.Errorf("Username = %q, want alice", bc.Username)
-	}
-	if bc.UsernamePlaceholder == "" {
-		t.Error("UsernamePlaceholder unset")
-	}
-	if bc.Real != "ghp_realtoken1234" {
-		t.Errorf("Real = %q", bc.Real)
-	}
-
-	// GH_USERNAME must NOT be a separate credential.
-	if _, ok := v.Get("GH_USERNAME"); ok {
-		t.Error("GH_USERNAME should be folded into GH_PASSWORD basic cred, not vaulted separately")
-	}
-
-	// Bearer cred for STRIPE_API_KEY.
-	if _, ok := v.Get("STRIPE_API_KEY"); !ok {
-		t.Error("expected STRIPE_API_KEY bearer credential present")
-	}
-
-	// .env file must have both halves replaced with their placeholders.
-	rewritten, _ := os.ReadFile(envPath)
-	if !bytes.Contains(rewritten, []byte("GH_USERNAME="+bc.UsernamePlaceholder)) {
-		t.Errorf(".env not rewritten with user placeholder: %s", rewritten)
-	}
-	if !bytes.Contains(rewritten, []byte("GH_PASSWORD="+bc.Placeholder)) {
-		t.Errorf(".env not rewritten with password placeholder: %s", rewritten)
-	}
-}
-
 // TestProcessEnvFileDryRunNoSideEffects asserts that --dry-run performs no
 // disk I/O: .env unchanged, no backup, no meta entry, no vault changes.
 func TestProcessEnvFileDryRunNoSideEffects(t *testing.T) {
@@ -719,7 +585,7 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 		}
 	}
 
-	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
@@ -744,7 +610,7 @@ func TestBuildEnvFileCredentials_URLWithPasswordIsVaulted(t *testing.T) {
 		}
 	}
 
-	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
@@ -770,7 +636,7 @@ func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 		}
 	}
 
-	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
@@ -797,7 +663,7 @@ func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
 		}
 	}
 
-	res, err := buildEnvFileCredentials(envFile, nil, secrets, placeholder.Set{})
+	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}

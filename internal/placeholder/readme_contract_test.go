@@ -23,7 +23,6 @@ var readmeDisplayToKey = map[string]string{
 	"anthropic":    "anthropic",
 	"stripe":       "stripe",
 	"slack":        "slack",
-	"twilio":       "twilio",
 	"sendgrid":     "sendgrid",
 	"resend":       "resend",
 	"supabase":     "supabase",
@@ -32,9 +31,6 @@ var readmeDisplayToKey = map[string]string{
 	"hugging face": "huggingface",
 	"google":       "google",
 	"gitlab":       "gitlab",
-	"npm":          "npm",
-	"pypi":         "pypi",
-	"docker hub":   "docker_hub",
 }
 
 // TestREADMEProviderTableMatchesRegistry parses the "Bearer/Basic

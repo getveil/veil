@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
-	"github.com/getveil/veil/internal/cli/correlate"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/ui"
@@ -30,43 +28,22 @@ func nonEmptyShellCandidates(candidates []scanner.EnvironCandidate) []scanner.En
 	return out
 }
 
-// processShellEnv scans os.Environ() for secret-like exports plus
-// correlator-relevant pair candidates, then vaults the selected
-// entries. Kept as a thin wrapper around processShellEnvWithPool so
-// init.go callers can stay terse.
+// processShellEnv scans os.Environ() for secret-like exports and vaults
+// the selected entries. Kept as a thin wrapper around processShellEnvWithPool
+// so init.go callers can stay terse.
 func processShellEnv(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
-	pairCandidates := scanner.ScanEnvironForPairs(os.Environ())
-	return processShellEnvWithPool(w, in, v, candidates, pairCandidates, dryRun, interactive)
+	return processShellEnvWithPool(w, in, v, candidates, dryRun, interactive)
 }
 
-// processShellEnvWithPool is the testable form: callers supply both the
-// IsSecretLike-filtered candidates (for the loose-bearer path) AND the
-// broader pair pool (for the correlator). Production code uses the
-// processShellEnv wrapper.
-func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, pairCandidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
-	// Build the correlator pool from the BROADER set; non-secret-shaped
-	// USER halves must be visible to basicCorrelator.
-	allCands := make([]correlate.Candidate, 0, len(pairCandidates))
-	for _, c := range pairCandidates {
-		if c.Value == "" {
-			continue
-		}
-		allCands = append(allCands, correlate.Candidate{Key: c.Name, Value: c.Value})
+// processShellEnvWithPool is the testable form: callers supply the
+// IsSecretLike-filtered candidates (the loose-bearer path). Production code
+// uses the processShellEnv wrapper.
+func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidates []scanner.EnvironCandidate, dryRun, interactive bool) (int, int, error) {
+	type bearerCandidate struct {
+		Key   string
+		Value string
 	}
-
-	groups, remaining := correlate.DetectAll(allCands)
-
-	// Filter loose-bearer candidates: must be in the IsSecretLike-filtered
-	// set AND not consumed by a correlator AND not already vault-named.
-	consumedByCorrelator := make(map[string]struct{}, len(allCands)-len(remaining))
-	for _, c := range allCands {
-		consumedByCorrelator[c.Key] = struct{}{}
-	}
-	for _, c := range remaining {
-		delete(consumedByCorrelator, c.Key)
-	}
-
-	filteredRemaining := make([]correlate.Candidate, 0, len(candidates))
+	filtered := make([]bearerCandidate, 0, len(candidates))
 	for _, c := range candidates {
 		if c.Value == "" {
 			continue
@@ -74,46 +51,50 @@ func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidat
 		if _, vaulted := v.Get(c.Name); vaulted {
 			continue
 		}
-		if _, claimed := consumedByCorrelator[c.Name]; claimed {
-			continue
-		}
-		filteredRemaining = append(filteredRemaining, correlate.Candidate{Key: c.Name, Value: c.Value})
+		filtered = append(filtered, bearerCandidate{Key: c.Name, Value: c.Value})
 	}
-
-	// Drop groups whose canonical name is already in the vault.
-	filteredGroups := make([]correlate.Group, 0, len(groups))
-	for _, g := range groups {
-		if _, exists := v.Get(g.Name); exists {
-			continue
-		}
-		filteredGroups = append(filteredGroups, g)
-	}
-	if len(filteredGroups) == 0 && len(filteredRemaining) == 0 {
+	if len(filtered) == 0 {
 		return 0, 0, nil
 	}
 
-	selectedGroups, selectedRemaining := selectShellEnvKeys(in, w, filteredGroups, filteredRemaining, interactive)
-	if len(selectedGroups) == 0 && len(selectedRemaining) == 0 {
+	if interactive {
+		header := fmt.Sprintf("\nDetected %d shell-exported %s:", len(filtered), plural(len(filtered), "secret", "secrets"))
+		_, _ = fmt.Fprintln(w, header)
+		ui.Dim(w, "(these are in your current shell environment, not in any .env file)")
+		names := make([]string, 0, len(filtered))
+		for _, c := range filtered {
+			_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", c.Key, ui.Muted.Sprint(redactValue(c.Value)))
+			names = append(names, c.Key)
+		}
+		_, _ = fmt.Fprintln(w)
+
+		switch promptYNS(in, w, "Vault all?") {
+		case choiceYes:
+			// keep filtered as-is
+		case choiceNo:
+			return 0, 0, nil
+		case choiceSelect:
+			picked := make(map[string]bool)
+			for _, n := range promptMultiSelect(in, w, names) {
+				picked[n] = true
+			}
+			selected := filtered[:0:0]
+			for _, c := range filtered {
+				if picked[c.Key] {
+					selected = append(selected, c)
+				}
+			}
+			filtered = selected
+		}
+	}
+	if len(filtered) == 0 {
 		return 0, 0, nil
 	}
 
 	seen := v.PlaceholderSet()
 	var vaulted, scoped int
 
-	for _, g := range selectedGroups {
-		var n, s int
-		var err error
-		if g.Scheme == "basic" {
-			n, s, err = vaultShellBasicGroup(w, v, seen, g, dryRun)
-		}
-		if err != nil {
-			return vaulted, scoped, err
-		}
-		vaulted += n
-		scoped += s
-	}
-
-	for _, c := range selectedRemaining {
+	for _, c := range filtered {
 		ph, err := placeholder.Generate(c.Key, c.Value, seen)
 		if err != nil {
 			return vaulted, scoped, wrapErr(fmt.Sprintf("generating placeholder for %s", c.Key), err)
@@ -148,138 +129,4 @@ func processShellEnvWithPool(w io.Writer, in io.Reader, v *vault.Vault, candidat
 		}
 	}
 	return vaulted, scoped, nil
-}
-
-// vaultShellBasicGroup writes one basic-scheme credential for g. No file
-// to rewrite (the shell exports are read once at init), only a vault
-// entry is created.
-func vaultShellBasicGroup(
-	w io.Writer, v *vault.Vault, seen placeholder.Set,
-	g correlate.Group, dryRun bool,
-) (vaulted, scoped int, err error) {
-	userPh, err := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
-	if err != nil {
-		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), err)
-	}
-	seen[userPh] = struct{}{}
-	passPh, err := placeholder.Generate(g.Basic.PasswordVar, g.Basic.Password, seen)
-	if err != nil {
-		return 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), err)
-	}
-	seen[passPh] = struct{}{}
-
-	credHosts := placeholder.HostsForCredential(g.Basic.PasswordVar, g.Basic.Password)
-	cred := &vault.Credential{
-		ID:                  vault.NewID(),
-		Name:                g.Name,
-		Real:                g.Basic.Password,
-		Placeholder:         passPh,
-		Source:              "init",
-		AllowedHosts:        credHosts,
-		CreatedAt:           time.Now(),
-		Username:            g.Basic.Username,
-		UsernamePlaceholder: userPh,
-		UsernameVar:         g.Basic.UsernameVar,
-	}
-	if err := v.Add(cred); err != nil {
-		if errors.Is(err, vault.ErrDuplicateCredential) {
-			ui.Warnf(w, "duplicate key %q, skipping", g.Name)
-			return 0, 0, nil
-		}
-		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", g.Name), err)
-	}
-
-	if dryRun {
-		ui.Dimf(w, "  would vault (basic): %s (from shell)", g.Name)
-		ui.Dimf(w, "    %-24s -> %s", g.Basic.UsernameVar, userPh)
-		ui.Dimf(w, "    %-24s -> %s", g.Basic.PasswordVar, passPh)
-	}
-	scoped = 0
-	if len(credHosts) > 0 {
-		scoped = 1
-	}
-	return 1, scoped, nil
-}
-
-// selectShellEnvKeys returns the groups and bearer candidates the user chose
-// to vault. In non-interactive mode everything is selected.
-func selectShellEnvKeys(
-	in io.Reader, w io.Writer,
-	groups []correlate.Group, remaining []correlate.Candidate, interactive bool,
-) (selectedGroups []correlate.Group, selectedRemaining []correlate.Candidate) {
-	if !interactive {
-		return groups, remaining
-	}
-
-	total := len(remaining)
-	for _, g := range groups {
-		total += len(g.Members)
-	}
-	header := fmt.Sprintf("\nDetected %d shell-exported %s", total, plural(total, "secret", "secrets"))
-	basicCount := 0
-	for _, g := range groups {
-		if g.Scheme == "basic" {
-			basicCount++
-		}
-	}
-	switch {
-	case basicCount == 0:
-		header += ":"
-	case basicCount == 1:
-		header += " (1 correlated as HTTP Basic):"
-	default:
-		header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
-	}
-	_, _ = fmt.Fprintln(w, header)
-	ui.Dim(w, "(these are in your current shell environment, not in any .env file)")
-
-	var names []string
-	for _, g := range groups {
-		var tag string
-		if g.Scheme == "basic" {
-			tag = "[basic]"
-		}
-		label := fmt.Sprintf("%s %s", tag, g.Name)
-		for i, m := range g.Members {
-			if i == 0 {
-				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", tag, m.Key, ui.Muted.Sprint(redactValue(m.Value)))
-			} else {
-				_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
-			}
-		}
-		names = append(names, label)
-	}
-	for _, c := range remaining {
-		_, _ = fmt.Fprintf(w, "  %-7s %-32s %s\n", "", c.Key, ui.Muted.Sprint(redactValue(c.Value)))
-		names = append(names, c.Key)
-	}
-	_, _ = fmt.Fprintln(w)
-
-	switch promptYNS(in, w, "Vault all?") {
-	case choiceYes:
-		return groups, remaining
-	case choiceNo:
-		return nil, nil
-	case choiceSelect:
-		picked := make(map[string]bool)
-		for _, n := range promptMultiSelect(in, w, names) {
-			picked[n] = true
-		}
-		for _, g := range groups {
-			var tag string
-			if g.Scheme == "basic" {
-				tag = "[basic]"
-			}
-			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {
-				selectedGroups = append(selectedGroups, g)
-			}
-		}
-		for _, c := range remaining {
-			if picked[c.Key] {
-				selectedRemaining = append(selectedRemaining, c)
-			}
-		}
-		return selectedGroups, selectedRemaining
-	}
-	return nil, nil
 }

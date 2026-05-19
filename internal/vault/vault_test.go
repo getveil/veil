@@ -513,143 +513,7 @@ func TestAddPersistsOnReopen(t *testing.T) {
 	}
 }
 
-func TestCredentialBasicFields(t *testing.T) {
-	c := &Credential{
-		ID:                  "abc",
-		Name:                "github-pat",
-		Real:                "ghp_realvalue",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-
-	c.Zero()
-
-	if c.Username != "" {
-		t.Errorf("Zero() did not clear Username: %q", c.Username)
-	}
-	if c.UsernamePlaceholder != "" {
-		t.Errorf("Zero() did not clear UsernamePlaceholder: %q", c.UsernamePlaceholder)
-	}
-	if c.Real != "" || c.Placeholder != "" {
-		t.Error("Zero() should still clear Real and Placeholder")
-	}
-}
-
-func TestCredentialJSONRoundTripBasic(t *testing.T) {
-	original := &Credential{
-		ID:                  "id1",
-		Name:                "github-pat",
-		Real:                "ghp_realvalue",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-		CreatedAt:           time.Unix(1712000000, 0).UTC(),
-	}
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got Credential
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Username != "johndoe" || got.UsernamePlaceholder != "VEIL_PH_USER" {
-		t.Errorf("round-trip lost basic fields: %+v", got)
-	}
-}
-
-func TestAddRejectsUsernamePlaceholderCollision(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-
-	first := &Credential{
-		ID: "a", Name: "first",
-		Real: "r1", Placeholder: "VEIL_PH_SECRET_AAAA",
-		Username: "alice", UsernamePlaceholder: "VEIL_PH_USER_SHARED",
-	}
-	if err := v.Add(first); err != nil {
-		t.Fatalf("Add first: %v", err)
-	}
-
-	// Second credential whose Placeholder collides with first's UsernamePlaceholder.
-	second := &Credential{
-		ID: "b", Name: "second",
-		Real: "r2", Placeholder: "VEIL_PH_USER_SHARED",
-	}
-	if err := v.Add(second); err == nil {
-		t.Fatal("Add should have rejected placeholder colliding with existing UsernamePlaceholder")
-	}
-
-	// Third credential whose UsernamePlaceholder collides with first's Placeholder.
-	third := &Credential{
-		ID: "c", Name: "third",
-		Real: "r3", Placeholder: "VEIL_PH_SECRET_BBBB",
-		Username: "carol", UsernamePlaceholder: "VEIL_PH_SECRET_AAAA",
-	}
-	if err := v.Add(third); err == nil {
-		t.Fatal("Add should have rejected UsernamePlaceholder colliding with existing Placeholder")
-	}
-}
-
-func TestPlaceholderMapIncludesUsernamePlaceholder(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	cred := &Credential{
-		ID: "a", Name: "github-pat",
-		Real:                "ghp_real",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	m := v.PlaceholderMap()
-	if got := m["VEIL_PH_SECRET"]; got == nil || got.Name != "github-pat" {
-		t.Errorf("PlaceholderMap missing secret placeholder entry")
-	}
-	if got := m["VEIL_PH_USER"]; got == nil || got.Name != "github-pat" {
-		t.Errorf("PlaceholderMap missing username placeholder entry")
-	}
-}
-
-func TestPlaceholderSetIncludesUsernamePlaceholder(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	cred := &Credential{
-		ID: "a", Name: "gh",
-		Real:                "r",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "u",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	s := v.PlaceholderSet()
-	if _, ok := s["VEIL_PH_SECRET"]; !ok {
-		t.Error("set missing secret placeholder")
-	}
-	if _, ok := s["VEIL_PH_USER"]; !ok {
-		t.Error("set missing username placeholder")
-	}
-}
-
-func TestSkipUnsupportedSchemes_FiltersAWSAndGitHubApp(t *testing.T) {
+func TestSkipUnsupportedSchemes_FiltersAWSGitHubAppAndBasic(t *testing.T) {
 	creds := []*Credential{
 		{ID: NewID(), Name: "bearer-1", Placeholder: "ph1"},
 		{ID: NewID(), Name: "aws-prod", Scheme: "aws", Placeholder: "ph2"},
@@ -657,22 +521,20 @@ func TestSkipUnsupportedSchemes_FiltersAWSAndGitHubApp(t *testing.T) {
 		{ID: NewID(), Name: "basic-1", Scheme: "basic", Placeholder: "ph4"},
 	}
 	got := skipUnsupportedSchemes(creds)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 survivors after filtering aws/github_app, got %d (%v)", len(got), got)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 survivor after filtering aws/github_app/basic, got %d (%v)", len(got), got)
 	}
-	names := []string{got[0].Name, got[1].Name}
-	want := []string{"bearer-1", "basic-1"}
-	if names[0] != want[0] || names[1] != want[1] {
-		t.Errorf("survivors = %v, want %v", names, want)
+	if got[0].Name != "bearer-1" {
+		t.Errorf("survivor = %q, want bearer-1", got[0].Name)
 	}
 }
 
-// TestOpen_TolerantOfStaleAWSAndGitHubAppRecords verifies the risk-register
-// promise from launch Phase 1: a vault written by v0.1.x with aws / github_app
-// scheme records (including their now-removed extra fields like
-// aws_access_key_id) must still open cleanly, with the stale entries
-// silently filtered out.
-func TestOpen_TolerantOfStaleAWSAndGitHubAppRecords(t *testing.T) {
+// TestOpen_TolerantOfStaleAWSGitHubAppAndBasicRecords verifies the
+// risk-register promise from the launch cuts: a vault written by v0.1.x
+// with aws / github_app / basic scheme records (including their now-removed
+// extra fields like aws_access_key_id, username) must still open cleanly,
+// with the stale entries silently filtered out.
+func TestOpen_TolerantOfStaleAWSGitHubAppAndBasicRecords(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
 	if _, err := CreateVault(root, "proj", ks); err != nil {
@@ -680,9 +542,9 @@ func TestOpen_TolerantOfStaleAWSAndGitHubAppRecords(t *testing.T) {
 	}
 
 	// Marshal a credential set that mixes supported schemes with stale aws /
-	// github_app records carrying extra fields the current struct no longer
-	// has. json.Unmarshal must silently drop the unknown fields, and Open
-	// must filter out the stale-scheme records.
+	// github_app / basic records carrying extra fields the current struct no
+	// longer has. json.Unmarshal must silently drop the unknown fields, and
+	// Open must filter out the stale-scheme records.
 	rawRecords := []map[string]any{
 		{
 			"id": NewID(), "name": "OPENAI_API_KEY", "real": "sk-real",
@@ -702,6 +564,14 @@ func TestOpen_TolerantOfStaleAWSAndGitHubAppRecords(t *testing.T) {
 			"github_app_id": "123", "github_installation_id": "456",
 			"github_app_private_key_pem": "-----BEGIN-----",
 			"real":                       "pem", "placeholder": "ph-gh",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "ARTIFACTORY", "scheme": "basic",
+			"username":             "alice",
+			"username_placeholder": "VEIL_USER_PH",
+			"username_var":         "ARTIFACTORY_USER",
+			"real":                 "secret", "placeholder": "ph-basic",
 			"source": "env", "created_at": time.Now().UTC(),
 		},
 	}
@@ -737,13 +607,14 @@ func TestOpen_TolerantOfStaleAWSAndGitHubAppRecords(t *testing.T) {
 }
 
 func TestCredentialJSONBackwardCompat(t *testing.T) {
-	// Old on-disk format had no Username / UsernamePlaceholder fields.
-	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`
+	// Old on-disk format predates fields that have since been removed.
+	// Unmarshal must succeed with json silently dropping unknown fields.
+	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z","username":"u","username_placeholder":"up"}`
 	var got Credential
 	if err := json.Unmarshal([]byte(oldJSON), &got); err != nil {
 		t.Fatalf("unmarshal old format: %v", err)
 	}
-	if got.Username != "" || got.UsernamePlaceholder != "" {
-		t.Errorf("expected empty basic fields on old record, got %+v", got)
+	if got.Name != "n" || got.Real != "r" || got.Placeholder != "p" {
+		t.Errorf("required fields missing after round-trip: %+v", got)
 	}
 }

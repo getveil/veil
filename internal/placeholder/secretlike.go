@@ -89,14 +89,10 @@ const (
 	// name-pattern-only match to count as a secret. Values shorter than
 	// this floor are treated as non-secrets (e.g., LOG_LEVEL_AUTH=info,
 	// DB_PASSWORD_PROMPT=true) even when their name matches the regex.
-	// Floor mirrors the basicPasswordMinLength in
-	// internal/cli/correlate/basic.go.
 	nameMatchMinLength = 12
 
 	// nameMatchMinDistinct rules out repetitive values such as
 	// "xxxxxxxxxxxx" that would otherwise clear the length floor.
-	// Mirrors basicPasswordMinDistinct in
-	// internal/cli/correlate/basic.go.
 	nameMatchMinDistinct = 6
 )
 

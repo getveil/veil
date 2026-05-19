@@ -98,16 +98,6 @@ func init() {
 	})
 
 	registerFormat(Format{
-		Name:       "npm",
-		Prefixes:   []string{"npm_"},
-		KeyHints:   []string{"NPM_TOKEN"},
-		Length:     36,
-		Charset:    "alphanumeric",
-		Hosts:      []string{"registry.npmjs.org"},
-		AuthScheme: AuthBasic,
-	})
-
-	registerFormat(Format{
 		Name:       "resend",
 		Prefixes:   []string{"re_"},
 		KeyHints:   []string{"RESEND"},
@@ -115,29 +105,5 @@ func init() {
 		Charset:    "alphanumeric",
 		Hosts:      []string{"api.resend.com"},
 		AuthScheme: AuthBearer,
-	})
-
-	registerFormat(Format{
-		Name:       "pypi",
-		Prefixes:   []string{"pypi-"},
-		KeyHints:   []string{"PYPI", "TWINE_PASSWORD"},
-		Length:     0,
-		Charset:    "alphanumeric",
-		Hosts:      []string{"pypi.org", "upload.pypi.org", "test.pypi.org", "upload.test.pypi.org"},
-		AuthScheme: AuthBasic,
-	})
-
-	// Container registries. Token formats vary widely, so most are matched by
-	// key-hint only; users who scope credentials via `veil add --host` get
-	// correct injection via the AllowedHosts check regardless of format.
-
-	registerFormat(Format{
-		Name:       "docker_hub",
-		Prefixes:   []string{"dckr_pat_"},
-		KeyHints:   []string{"DOCKER_HUB", "DOCKERHUB", "DOCKER_TOKEN", "DOCKER_PAT"},
-		Length:     0,
-		Charset:    "alphanumeric",
-		Hosts:      []string{"docker.io", "registry-1.docker.io", "index.docker.io", "auth.docker.io"},
-		AuthScheme: AuthBasic,
 	})
 }

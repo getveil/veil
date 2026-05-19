@@ -108,106 +108,12 @@ func TestFailClosedGuard_LeakedHeader(t *testing.T) {
 	}
 }
 
-// TestFailClosedGuard_LeakedBasicAuth verifies that a placeholder embedded
-// inside the base64-encoded payload of an Authorization: Basic header is
-// caught by the fail-closed guard. Without base64-decoding the credential,
-// the raw header bytes do not contain the sentinel and the request would
-// otherwise leak the placeholder to the upstream host.
-func TestFailClosedGuard_LeakedBasicAuth(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	srv, _, store := testSetup(t)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/test", nil)
-	encoded := base64.StdEncoding.EncodeToString([]byte("user:sk-proj-VEILleakedBasic"))
-	req.Header.Set("Authorization", "Basic "+encoded)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0 when basic-auth leak detected", got)
-	}
-
-	// Allow the background flusher (100ms ticker) to persist the audit row.
-	time.Sleep(250 * time.Millisecond)
-
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	var leakRow *audit.Row
-	for i := range rows {
-		if rows[i].Location == "leaked" {
-			leakRow = &rows[i]
-			break
-		}
-	}
-	if leakRow == nil {
-		t.Fatalf("no 'leaked' audit row found; got %d rows", len(rows))
-	}
-	if leakRow.Method != http.MethodGet {
-		t.Errorf("leak row Method = %q, want GET", leakRow.Method)
-	}
-}
-
-// TestFailClosedGuard_LeakedBasicAuth_UserHalf verifies that the fail-closed
-// guard catches the placeholder when it is in the user half of user:pass,
-// not the password half.
-func TestFailClosedGuard_LeakedBasicAuth_UserHalf(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	srv, _, _ := testSetup(t)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/test", nil)
-	encoded := base64.StdEncoding.EncodeToString([]byte("VEIL_USER_LEAK:somepass"))
-	req.Header.Set("Authorization", "Basic "+encoded)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0", got)
-	}
-}
-
 // TestFailClosedGuard_BasicAuthNoLeakPasses verifies that a normal Basic
 // auth request without any placeholder sentinel is forwarded successfully
 // (the fail-closed guard does not regress on benign Basic credentials).
+// Veil v1 no longer mediates Basic auth, so the header is passed through
+// untouched — this test guards against a future regression that would
+// trip the body/header scan on benign base64 payloads.
 func TestFailClosedGuard_BasicAuthNoLeakPasses(t *testing.T) {
 	var upstreamHits int32
 	var seenAuth string

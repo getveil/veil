@@ -245,41 +245,6 @@ func TestAddBatchSaveFailure(t *testing.T) {
 	}
 }
 
-func TestAddBatchUsernamePlaceholderCollisionWithinBatch(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-
-	// First credential has UsernamePlaceholder = "U_SHARED".
-	// Second credential's Placeholder also = "U_SHARED" -> must collide.
-	creds := []*Credential{
-		{
-			ID: NewID(), Name: "first",
-			Real: "r1", Placeholder: "PH_FIRST",
-			Username: "alice", UsernamePlaceholder: "U_SHARED",
-			Source: "manual", CreatedAt: time.Now().UTC(),
-		},
-		{
-			ID: NewID(), Name: "second",
-			Real: "r2", Placeholder: "U_SHARED",
-			Source: "manual", CreatedAt: time.Now().UTC(),
-		},
-	}
-	err = v.AddBatch(creds)
-	if err == nil {
-		t.Fatal("expected username placeholder collision within batch")
-	}
-	if !errors.Is(err, ErrPlaceholderCollision) {
-		t.Fatalf("want ErrPlaceholderCollision, got: %v", err)
-	}
-	if got := len(v.List()); got != 0 {
-		t.Fatalf("vault mutated: len=%d, want 0", got)
-	}
-}
-
 func TestAddBatchDryRunRespectsDryRun(t *testing.T) {
 	v := NewInMemoryVault(t.TempDir(), "proj")
 	creds := []*Credential{

@@ -102,16 +102,16 @@ func Open(root string, ks Keystore) (*Vault, error) {
 }
 
 // skipUnsupportedSchemes drops credentials whose Scheme is no longer
-// supported (aws, github_app — removed in the v1 launch cut). The records
-// are unreachable for the proxy and the CLI; silently filtering them at
-// Open keeps existing vaults loadable without crashing on the unknown
-// scheme. Affected entries are still on disk and will be left alone until
-// the user runs `veil init --force` or `veil remove`.
+// supported (aws, github_app, basic — removed in the v1 launch cut). The
+// records are unreachable for the proxy and the CLI; silently filtering
+// them at Open keeps existing vaults loadable without crashing on the
+// unknown scheme. Affected entries are still on disk and will be left
+// alone until the user runs `veil init --force` or `veil remove`.
 func skipUnsupportedSchemes(creds []*Credential) []*Credential {
 	out := creds[:0]
 	for _, c := range creds {
 		switch c.Scheme {
-		case "aws", "github_app":
+		case "aws", "github_app", "basic":
 			continue
 		}
 		out = append(out, c)
@@ -194,9 +194,6 @@ func (v *Vault) Add(cred *Credential) error {
 		if collidesWithAny(cred.Placeholder, c) {
 			return fmt.Errorf("%w: generated placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, c.Name)
 		}
-		if cred.UsernamePlaceholder != "" && collidesWithAny(cred.UsernamePlaceholder, c) {
-			return fmt.Errorf("%w: generated username placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, c.Name)
-		}
 	}
 	v.credentials = append(v.credentials, cred)
 	return v.Save()
@@ -211,20 +208,17 @@ func (v *Vault) AddBatch(creds []*Credential) error {
 
 	// Existing-name and existing-placeholder sets, built from current vault.
 	existingNames := make(map[string]struct{}, len(v.credentials))
-	existingPHs := make(map[string]string, len(v.credentials)*2) // ph -> owner name
+	existingPHs := make(map[string]string, len(v.credentials)) // ph -> owner name
 	for _, c := range v.credentials {
 		existingNames[c.Name] = struct{}{}
 		if c.Placeholder != "" {
 			existingPHs[c.Placeholder] = c.Name
 		}
-		if c.UsernamePlaceholder != "" {
-			existingPHs[c.UsernamePlaceholder] = c.Name
-		}
 	}
 
 	// Within-batch sets so duplicates inside creds[] are caught too.
 	batchNames := make(map[string]struct{}, len(creds))
-	batchPHs := make(map[string]string, len(creds)*2)
+	batchPHs := make(map[string]string, len(creds))
 
 	for _, cred := range creds {
 		if _, ok := existingNames[cred.Name]; ok {
@@ -233,23 +227,17 @@ func (v *Vault) AddBatch(creds []*Credential) error {
 		if _, ok := batchNames[cred.Name]; ok {
 			return fmt.Errorf("%w: %q (duplicate within batch)", ErrDuplicateCredential, cred.Name)
 		}
-		for _, ph := range []string{cred.Placeholder, cred.UsernamePlaceholder} {
-			if ph == "" {
-				continue
-			}
-			if owner, ok := existingPHs[ph]; ok {
+		if cred.Placeholder != "" {
+			if owner, ok := existingPHs[cred.Placeholder]; ok {
 				return fmt.Errorf("%w: generated placeholder for %q matches credential %q. Remove the conflicting credential with veil remove", ErrPlaceholderCollision, cred.Name, owner)
 			}
-			if owner, ok := batchPHs[ph]; ok {
+			if owner, ok := batchPHs[cred.Placeholder]; ok {
 				return fmt.Errorf("%w: generated placeholder for %q matches credential %q within batch", ErrPlaceholderCollision, cred.Name, owner)
 			}
 		}
 		batchNames[cred.Name] = struct{}{}
 		if cred.Placeholder != "" {
 			batchPHs[cred.Placeholder] = cred.Name
-		}
-		if cred.UsernamePlaceholder != "" {
-			batchPHs[cred.UsernamePlaceholder] = cred.Name
 		}
 	}
 
@@ -268,13 +256,12 @@ func (v *Vault) HasCredential(name string) bool {
 	return ok
 }
 
-// collidesWithAny reports whether candidate matches either the secret
-// placeholder or the username placeholder of c.
+// collidesWithAny reports whether candidate matches the secret placeholder of c.
 func collidesWithAny(candidate string, c *Credential) bool {
 	if candidate == "" {
 		return false
 	}
-	return candidate == c.Placeholder || (c.UsernamePlaceholder != "" && candidate == c.UsernamePlaceholder)
+	return candidate == c.Placeholder
 }
 
 // Get finds a credential by name.
@@ -325,37 +312,29 @@ func (v *Vault) Credentials() []*Credential {
 	return v.List()
 }
 
-// PlaceholderSet returns the set of currently-used placeholder strings
-// across all schemes, suitable for passing to placeholder.Generate to
-// prevent collisions.
+// PlaceholderSet returns the set of currently-used placeholder strings,
+// suitable for passing to placeholder.Generate to prevent collisions.
 func (v *Vault) PlaceholderSet() placeholder.Set {
-	out := make(placeholder.Set, len(v.credentials)*4)
+	out := make(placeholder.Set, len(v.credentials))
 	for _, c := range v.credentials {
-		addPlaceholders(c, func(s string) { out[s] = struct{}{} })
+		if c.Placeholder != "" {
+			out[c.Placeholder] = struct{}{}
+		}
 	}
 	return out
 }
 
 // PlaceholderMap returns a map from placeholder value to credential, used by
-// the injector to swap placeholders back to real secrets. For multi-field
-// credentials (basic) every placeholder maps back to the same record.
+// the injector to swap placeholders back to real secrets.
 func (v *Vault) PlaceholderMap() map[string]*Credential {
-	m := make(map[string]*Credential, len(v.credentials)*4)
+	m := make(map[string]*Credential, len(v.credentials))
 	for _, c := range v.credentials {
 		c := c
-		addPlaceholders(c, func(s string) { m[s] = c })
+		if c.Placeholder != "" {
+			m[c.Placeholder] = c
+		}
 	}
 	return m
-}
-
-// addPlaceholders calls emit for each non-empty placeholder string on c.
-func addPlaceholders(c *Credential, emit func(string)) {
-	if c.Placeholder != "" {
-		emit(c.Placeholder)
-	}
-	if c.UsernamePlaceholder != "" {
-		emit(c.UsernamePlaceholder)
-	}
 }
 
 // ProjectID returns the vault's project identifier.

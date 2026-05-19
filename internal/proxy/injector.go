@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,10 +15,10 @@ import (
 	"github.com/getveil/veil/internal/vault"
 )
 
-// Note: the AWS SigV4 and GitHub App JWT signers were removed in the v1
-// launch cut. The proxy now only performs literal placeholder substitution
-// and Basic-auth pre-pass swaps; outbound traffic whose authentication
-// requires re-signing is out of scope.
+// Note: the AWS SigV4, GitHub App JWT, and HTTP Basic decode-and-swap
+// paths were removed in the v1 launch cut. The proxy now only performs
+// literal placeholder substitution; outbound traffic whose authentication
+// requires re-signing or username/password pairing is out of scope.
 
 // defaultBodyCap is the maximum body size the injector will scan (10 MiB).
 const defaultBodyCap = 10 * 1024 * 1024
@@ -126,21 +125,6 @@ func (inj *Injector) ProcessRequest(
 
 	// --- Header scanning ---
 	newHeader = header.Clone()
-
-	// --- Basic auth pre-pass ---
-	// Decode Authorization / Proxy-Authorization Basic headers and rewrite them
-	// with real user:secret pairs before the literal Aho-Corasick scan sees the
-	// (already-rewritten) bytes. Swaps produced here participate in the same
-	// audit-injection stream as literal matches.
-	basicSwaps := decodeAndSwapBasic(newHeader, creds, host)
-	for _, s := range basicSwaps {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
 
 	if matcher != nil {
 		for name, values := range newHeader {
@@ -351,9 +335,10 @@ func anyNonBlocked(injections []audit.Injection) bool {
 	return false
 }
 
-// dedupCredentials collapses the placeholder map into a unique slice. Basic
-// credentials appear twice in the map (under secret and username placeholders);
-// this collapses them to one entry per credential pointer.
+// dedupCredentials collapses the placeholder map into a unique slice.
+// Previously basic credentials appeared twice (under secret and username
+// placeholders); after the v1 launch cut every entry is a 1:1 placeholder
+// to credential, but the dedup is kept as a defensive O(n) pass.
 func dedupCredentials(pmap map[string]*vault.Credential) []*vault.Credential {
 	seen := make(map[*vault.Credential]struct{}, len(pmap))
 	out := make([]*vault.Credential, 0, len(pmap))
@@ -376,47 +361,4 @@ func parseRequestURL(rawURL string) (host, path, rawQuery string) {
 		return "", "", ""
 	}
 	return u.Host, u.Path, u.RawQuery
-}
-
-// ClassifyBasicLeak inspects Authorization / Proxy-Authorization headers
-// in hdr. When a Basic value's two halves are both placeholders
-// belonging to *different* vault credentials, returns a targeted "how
-// to fix" hint pointing the user at `veil add --user` or `veil init
-// --force`. Returns "" when no Basic header is present, when the halves
-// cannot be decoded, when at least one half is not a known placeholder,
-// or when both halves point to the same credential (in which case the
-// leak is from a different cause, e.g. host scope).
-//
-// Intended to be called by the leak handler in proxy.go right after
-// detectLeak fires, to enrich the 502 body.
-func (inj *Injector) ClassifyBasicLeak(hdr http.Header) string {
-	inj.mu.RLock()
-	creds := inj.creds
-	inj.mu.RUnlock()
-	if creds == nil {
-		return ""
-	}
-	for _, name := range basicSchemes {
-		for _, v := range hdr[name] {
-			user, secret, ok := parseBasicHeader(v)
-			if !ok {
-				continue
-			}
-			userCred, userOK := creds[user]
-			passCred, passOK := creds[secret]
-			if !userOK || !passOK {
-				continue
-			}
-			if userCred == passCred {
-				continue
-			}
-			return fmt.Sprintf(
-				"Both halves of the Authorization header point to separate vault credentials (%q and %q). "+
-					"Rerun `veil init --force` so the basic-pair correlator can detect them as one credential, "+
-					"or vault them manually with `veil add %s --user <username> --value-stdin`.",
-				userCred.Name, passCred.Name, passCred.Name,
-			)
-		}
-	}
-	return ""
 }

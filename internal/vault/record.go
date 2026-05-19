@@ -11,32 +11,24 @@ import (
 // Credential holds a single secret and its proxy placeholder.
 //
 // Note: tolerant JSON unmarshaling. Older vaults written by v0.1.x may
-// contain Scheme="aws"/"github_app" records with extra fields (e.g.
-// aws_access_key_id, github_app_id). Go's encoding/json silently ignores
-// unknown fields on a struct, so those records still load — they will be
-// rendered with whatever subset of the surviving fields they happen to
-// have. See `Vault.skipUnsupportedSchemes` for the runtime filter that
-// removes them before the proxy can act on them.
+// contain Scheme="aws"/"github_app"/"basic" records with extra fields
+// (e.g. aws_access_key_id, github_app_id, username). Go's encoding/json
+// silently ignores unknown fields on a struct, so those records still
+// load — they will be rendered with whatever subset of the surviving
+// fields they happen to have. See `Vault.skipUnsupportedSchemes` for the
+// runtime filter that removes them before the proxy can act on them.
 type Credential struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Real                string   `json:"real"`
-	Placeholder         string   `json:"placeholder"`
-	Source              string   `json:"source"`
-	AllowedHosts        []string `json:"allowed_hosts,omitempty"`
-	Username            string   `json:"username,omitempty"`
-	UsernamePlaceholder string   `json:"username_placeholder,omitempty"`
-	// UsernameVar is the source env-var name for the Username half of a
-	// basic credential (set by init when correlating *_USER(NAME) + *_PASS
-	// pairs). Persisted so the crash-window recovery path can detect
-	// user edits to the username line; empty for manually-added basic
-	// creds and for non-basic schemes.
-	UsernameVar string    `json:"username_var,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Real         string    `json:"real"`
+	Placeholder  string    `json:"placeholder"`
+	Source       string    `json:"source"`
+	AllowedHosts []string  `json:"allowed_hosts,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 
-	// Scheme is a discriminator: "" (bearer) or "basic". Older vaults may
-	// have "aws"/"github_app" records which are filtered out at Open time
-	// (see Vault.skipUnsupportedSchemes).
+	// Scheme is a discriminator: "" (bearer). Older vaults may have
+	// "aws"/"github_app"/"basic" records which are filtered out at Open
+	// time (see Vault.skipUnsupportedSchemes).
 	Scheme string `json:"scheme,omitempty"`
 }
 
@@ -50,8 +42,6 @@ func (c *Credential) String() string {
 func (c *Credential) Zero() {
 	c.Real = ""
 	c.Placeholder = ""
-	c.Username = ""
-	c.UsernamePlaceholder = ""
 	c.Scheme = ""
 }
 

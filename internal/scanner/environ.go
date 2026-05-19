@@ -170,35 +170,3 @@ func ScanEnviron(environ []string) []EnvironCandidate {
 	return out
 }
 
-// ScanEnvironForPairs returns every shell-exported env var that is not
-// on the obviously-non-secret denylist, *without* the IsSecretLike
-// value-shape filter. Used by correlate.basicCorrelator to discover
-// USER/USERNAME candidates whose values would not pass IsSecretLike on
-// their own. If the same name appears more than once in environ, only
-// the last occurrence is returned (matching ScanEnviron semantics).
-//
-// Callers must NOT use this for the loose-bearer path — that would
-// regress and start vaulting non-secret-shaped values. Use ScanEnviron
-// for that and pair the two outputs through the correlator.
-func ScanEnvironForPairs(environ []string) []EnvironCandidate {
-	byName := make(map[string]string, len(environ))
-	order := make([]string, 0, len(environ))
-	for _, kv := range environ {
-		key, value, ok := strings.Cut(kv, "=")
-		if !ok || key == "" {
-			continue
-		}
-		if IsObviouslyNotSecret(key) {
-			continue
-		}
-		if _, seen := byName[key]; !seen {
-			order = append(order, key)
-		}
-		byName[key] = value
-	}
-	out := make([]EnvironCandidate, 0, len(order))
-	for _, name := range order {
-		out = append(out, EnvironCandidate{Name: name, Value: byName[name]})
-	}
-	return out
-}

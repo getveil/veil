@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getveil/veil/internal/cli/correlate"
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/placeholder"
@@ -406,16 +405,11 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	}
 
 	var secrets []secretLine
-	var allCandidates []correlate.Candidate
 	w := cmd.OutOrStdout()
 	for i, line := range envFile.Lines {
 		if line.Kind != scanner.KVLine {
 			continue
 		}
-		// Feed every KV line into the correlator pool so basicCorrelator
-		// can see USER/USERNAME halves whose values (typical identifiers
-		// like "alice") would not pass IsSecretLike on their own.
-		allCandidates = append(allCandidates, correlate.Candidate{Key: line.Key, Value: line.Value})
 		if !placeholder.IsSecretLike(line.Key, line.Value) {
 			if flagVerbose {
 				ui.Dimf(w, "  skip (not secret-like): %s", line.Key)
@@ -424,22 +418,16 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		}
 		secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
 	}
-	groups, remaining := correlate.DetectAll(allCandidates)
-	// filterSecretsByRemaining keeps only entries that were both in the
-	// original secret-like-filtered list AND not consumed by a correlator,
-	// so non-secret-shaped candidates that fell through stay out of the
-	// loose-bearer path.
-	remainingSecrets := filterSecretsByRemaining(secrets, remaining)
-	if len(groups) == 0 && len(remainingSecrets) == 0 {
+	if len(secrets) == 0 {
 		return 0, 0, nil
 	}
 
-	selectedGroups, selectedSecrets := selectEnvKeys(in, w, root, envPath, groups, remainingSecrets, interactive)
-	if len(selectedGroups) == 0 && len(selectedSecrets) == 0 {
+	selectedSecrets := selectEnvKeys(in, w, root, envPath, secrets, interactive)
+	if len(selectedSecrets) == 0 {
 		return 0, 0, nil
 	}
 
-	res, err := buildEnvFileCredentials(envFile, selectedGroups, selectedSecrets, seen)
+	res, err := buildEnvFileCredentials(envFile, selectedSecrets, seen)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -450,7 +438,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	printVaultSummary(w, res, dryRun)
 
 	if dryRun {
-		printDryRunVaultLines(w, selectedGroups, selectedSecrets, res.Creds)
+		printDryRunVaultLines(w, selectedSecrets, res.Creds)
 		return res.Vaulted, res.Scoped, nil
 	}
 
@@ -517,51 +505,10 @@ type vaultBuildResult struct {
 // placeholder generated, in caller-visible order.
 func buildEnvFileCredentials(
 	envFile *scanner.EnvFile,
-	groups []correlate.Group,
 	secrets []secretLine,
 	seen placeholder.Set,
 ) (vaultBuildResult, error) {
 	var res vaultBuildResult
-	for _, g := range groups {
-		switch g.Scheme {
-		case "basic":
-			userPh, gErr := placeholder.Generate(g.Basic.UsernameVar, g.Basic.Username, seen)
-			if gErr != nil {
-				return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.UsernameVar), gErr)
-			}
-			seen[userPh] = struct{}{}
-			passPh, gErr := placeholder.Generate(g.Basic.PasswordVar, g.Basic.Password, seen)
-			if gErr != nil {
-				return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", g.Basic.PasswordVar), gErr)
-			}
-			seen[passPh] = struct{}{}
-
-			credHosts := placeholder.HostsForCredential(g.Basic.PasswordVar, g.Basic.Password)
-			res.Creds = append(res.Creds, &vault.Credential{
-				ID:                  vault.NewID(),
-				Name:                g.Name, // password var's key
-				Real:                g.Basic.Password,
-				Placeholder:         passPh,
-				Source:              "init",
-				AllowedHosts:        credHosts,
-				CreatedAt:           time.Now(),
-				Username:            g.Basic.Username,
-				UsernamePlaceholder: userPh,
-				UsernameVar:         g.Basic.UsernameVar,
-			})
-			// Basic pairs are produced by the correlator's name-pattern
-			// pairing, so the most honest reason is the name-gate
-			// applied to the password var.
-			_, reason := placeholder.DetectWithReason(g.Basic.PasswordVar, g.Basic.Password)
-			res.CredReasons = append(res.CredReasons, reason)
-			envFile.SetValue(g.Basic.UsernameVar, userPh)
-			envFile.SetValue(g.Basic.PasswordVar, passPh)
-			res.Vaulted++
-			if len(credHosts) > 0 {
-				res.Scoped++
-			}
-		}
-	}
 
 	for _, s := range secrets {
 		bucket, reason, scheme := classifyCredential(s.key, s.value)
@@ -609,46 +556,16 @@ func buildEnvFileCredentials(
 // buildEnvFileCredentials and just calls envFile.Bytes() there.
 func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) []byte {
 	for _, c := range creds {
-		// For basic credentials, also rewrite the username var using a
-		// value-match since the original username var name isn't stored
-		// separately (only Username and UsernamePlaceholder are).
-		if c.UsernamePlaceholder != "" && c.Username != "" {
-			replaceValueIfMatches(envFile, c.Username, c.UsernamePlaceholder)
-		}
 		envFile.SetValue(c.Name, c.Placeholder)
 	}
 	return envFile.Bytes()
 }
 
-// replaceValueIfMatches scans envFile and, for the first KV line whose
-// decoded value equals oldVal, swaps it to newVal.
-func replaceValueIfMatches(envFile *scanner.EnvFile, oldVal, newVal string) {
-	for _, line := range envFile.Lines {
-		if line.Kind == scanner.KVLine && line.Value == oldVal {
-			envFile.SetValue(line.Key, newVal)
-			return
-		}
-	}
-}
-
 // printDryRunVaultLines emits the same "would vault" lines the legacy code
-// path produced, derived from the prepared credentials. Group lines list
-// each member var. Both groups and creds[] share appearance order.
-func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secretLine, creds []*vault.Credential) {
+// path produced, derived from the prepared credentials. secrets and creds
+// share appearance order.
+func printDryRunVaultLines(w io.Writer, secrets []secretLine, creds []*vault.Credential) {
 	ci := 0
-	for _, g := range groups {
-		if ci >= len(creds) {
-			break
-		}
-		c := creds[ci]
-		ci++
-		switch g.Scheme {
-		case "basic":
-			ui.Dimf(w, "  would vault (basic): %s", g.Name)
-			ui.Dimf(w, "    %-24s -> %s", g.Basic.UsernameVar, c.UsernamePlaceholder)
-			ui.Dimf(w, "    %-24s -> %s", g.Basic.PasswordVar, c.Placeholder)
-		}
-	}
 	for _, s := range secrets {
 		if ci >= len(creds) {
 			break
@@ -745,9 +662,6 @@ func needsEnvRewrite(envPath string, creds []*vault.Credential) (bool, error) {
 		if c.Placeholder != "" && bytes.Contains(data, []byte(c.Placeholder)) {
 			return false, nil
 		}
-		if c.UsernamePlaceholder != "" && bytes.Contains(data, []byte(c.UsernamePlaceholder)) {
-			return false, nil
-		}
 	}
 	return true, nil
 }
@@ -767,12 +681,10 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	}
 	var owned []*vault.Credential
 	ownedValues := make(map[string]string)
-	linesByKey := make(map[string]string)
 	for _, line := range envFile.Lines {
 		if line.Kind != scanner.KVLine {
 			continue
 		}
-		linesByKey[line.Key] = line.Value
 		if c, ok := v.Get(line.Key); ok {
 			owned = append(owned, c)
 			ownedValues[line.Key] = line.Value
@@ -780,19 +692,6 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	}
 	if len(owned) == 0 {
 		return false, nil
-	}
-	// Capture the cleartext value of the username half for any basic cred
-	// we own. The vault entry is keyed by the password var (c.Name), so
-	// v.Get(usernameVar) above won't surface it — without this second pass
-	// the divergence check below would miss a user edit to the username
-	// line and silently overwrite it.
-	for _, c := range owned {
-		if c.UsernameVar == "" {
-			continue
-		}
-		if val, ok := linesByKey[c.UsernameVar]; ok {
-			ownedValues[c.UsernameVar] = val
-		}
 	}
 	rewrite, err := needsEnvRewrite(envPath, owned)
 	if err != nil {
@@ -814,16 +713,6 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 		}
 		if val != c.Real {
 			diverged = append(diverged, c.Name)
-		}
-		// For basic creds, also check the username half (kept in
-		// c.Username, not c.Real). UsernameVar is empty for bearer creds
-		// and for manually-added basic creds (`veil add --user ...`),
-		// which is correct — only init-detected pairs carry the source
-		// var name needed to detect an edit.
-		if c.UsernameVar != "" {
-			if userVal, userOK := ownedValues[c.UsernameVar]; userOK && userVal != c.Username {
-				diverged = append(diverged, c.UsernameVar)
-			}
 		}
 	}
 	if len(diverged) > 0 {
@@ -874,56 +763,24 @@ func cleanupStaleVaultedCreds(cmd *cobra.Command, v *vault.Vault, envPath string
 	return nil
 }
 
-// selectEnvKeys returns the groups and bearer secrets the user chose to
-// vault. In non-interactive mode everything is selected. Callers that
-// receive two empty slices should skip the file.
+// selectEnvKeys returns the bearer secrets the user chose to vault.
+// In non-interactive mode everything is selected. Callers that receive
+// an empty slice should skip the file.
 func selectEnvKeys(
 	in io.Reader, w io.Writer, root, envPath string,
-	groups []correlate.Group, secrets []secretLine, interactive bool,
-) (selectedGroups []correlate.Group, selectedSecrets []secretLine) {
+	secrets []secretLine, interactive bool,
+) (selectedSecrets []secretLine) {
 	if !interactive {
-		return groups, secrets
+		return secrets
 	}
 
 	rel := displayRel(root, envPath)
 
 	total := len(secrets)
-	for _, g := range groups {
-		total += len(g.Members)
-	}
-	header := fmt.Sprintf("\nDetected %d %s in %s", total, plural(total, "secret", "secrets"), rel)
-	basicCount := 0
-	for _, g := range groups {
-		if g.Scheme == "basic" {
-			basicCount++
-		}
-	}
-	switch {
-	case basicCount == 0:
-		header += ":"
-	case basicCount == 1:
-		header += " (1 correlated as HTTP Basic):"
-	default:
-		header += fmt.Sprintf(" (%d HTTP Basic credentials):", basicCount)
-	}
+	header := fmt.Sprintf("\nDetected %d %s in %s:", total, plural(total, "secret", "secrets"), rel)
 	_, _ = fmt.Fprintln(w, header)
 
-	var names []string
-	for _, g := range groups {
-		var tag string
-		if g.Scheme == "basic" {
-			tag = "[basic]"
-		}
-		label := fmt.Sprintf("%s %s", tag, g.Name)
-		for i, m := range g.Members {
-			if i == 0 {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", tag, m.Key, ui.Muted.Sprint(redactValue(m.Value)))
-			} else {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", m.Key, ui.Muted.Sprint(redactValue(m.Value)))
-			}
-		}
-		names = append(names, label)
-	}
+	names := make([]string, 0, len(secrets))
 	for _, s := range secrets {
 		_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", s.key, ui.Muted.Sprint(redactValue(s.value)))
 		names = append(names, s.key)
@@ -932,48 +789,22 @@ func selectEnvKeys(
 
 	switch promptYNS(in, w, "Vault all?") {
 	case choiceYes:
-		return groups, secrets
+		return secrets
 	case choiceNo:
-		return nil, nil
+		return nil
 	case choiceSelect:
 		picked := make(map[string]bool)
 		for _, n := range promptMultiSelect(in, w, names) {
 			picked[n] = true
-		}
-		for _, g := range groups {
-			var tag string
-			if g.Scheme == "basic" {
-				tag = "[basic]"
-			}
-			if picked[fmt.Sprintf("%s %s", tag, g.Name)] {
-				selectedGroups = append(selectedGroups, g)
-			}
 		}
 		for _, s := range secrets {
 			if picked[s.key] {
 				selectedSecrets = append(selectedSecrets, s)
 			}
 		}
-		return selectedGroups, selectedSecrets
+		return selectedSecrets
 	}
-	return nil, nil
-}
-
-// filterSecretsByRemaining keeps secretLine entries whose key is still in
-// the remaining (un-correlated) candidate set, preserving the original
-// file-order of secrets so dry-run and prompt output stay stable.
-func filterSecretsByRemaining(secrets []secretLine, remaining []correlate.Candidate) []secretLine {
-	keep := make(map[string]struct{}, len(remaining))
-	for _, c := range remaining {
-		keep[c.Key] = struct{}{}
-	}
-	out := secrets[:0:0]
-	for _, s := range secrets {
-		if _, ok := keep[s.key]; ok {
-			out = append(out, s)
-		}
-	}
-	return out
+	return nil
 }
 
 // promptSkipHostsPhase asks the user to seed the skip-host list after vaulting.
