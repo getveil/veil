@@ -152,7 +152,7 @@ type Format struct {
 	Charset    string   // "alphanumeric", "hex", "base64", "upper-alphanumeric"
 	Hosts      []string
 	Priority   int        // optional; defaults to PriorityFormat if zero
-	AuthScheme AuthScheme
+	AuthScheme AuthScheme // declared per-format; AuthUnknown if unset
 }
 
 // registerFormat constructs a ProviderPattern from a Format and appends it

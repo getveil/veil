@@ -44,6 +44,20 @@ func TestVaultEligible_Unknown_Refused(t *testing.T) {
 	}
 }
 
+func TestVaultEligible_MTLS_Refused(t *testing.T) {
+	p := &ProviderPattern{Name: "test", AuthScheme: AuthMTLS, Hosts: []string{"api.example.com"}}
+	if VaultEligible(p) {
+		t.Fatalf("mTLS must not be vault-eligible")
+	}
+}
+
+func TestVaultEligible_HMAC_Refused(t *testing.T) {
+	p := &ProviderPattern{Name: "test", AuthScheme: AuthHMAC, Hosts: []string{"api.example.com"}}
+	if VaultEligible(p) {
+		t.Fatalf("HMAC must not be vault-eligible")
+	}
+}
+
 func TestVaultEligible_EmptyHosts_Refused(t *testing.T) {
 	p := &ProviderPattern{Name: "test", AuthScheme: AuthBearer, Hosts: nil}
 	if VaultEligible(p) {
