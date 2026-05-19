@@ -123,6 +123,19 @@ func buildSelectQuery(clauses []string) string { //nolint:gosec // clauses are s
 	return b.String()
 }
 
+// HasAnyRows reports whether the injections table has ever recorded an
+// event. Used by `veil log` to distinguish a freshly init'd project that
+// has never been `veil run` (no rows ever) from a quiet period (rows
+// exist outside the current --since window).
+func (s *Store) HasAnyRows() (bool, error) {
+	var present int
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM injections)").Scan(&present)
+	if err != nil {
+		return false, err
+	}
+	return present != 0, nil
+}
+
 // Summary returns aggregate information about injections since the given time.
 // It returns the total count of successful injections, a separate blocked
 // count, a separate leaked count (placeholder-leak detections — these are NOT

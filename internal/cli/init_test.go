@@ -1258,8 +1258,12 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		t.Error("created .gitignore must not be a symlink")
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("created .gitignore should be 0600, got %o", perm)
+	// .gitignore contents (/.veil/, *.veil-backup) are not sensitive, so
+	// match the conventional 0644 rather than the tight 0600 used for the
+	// vault. A world-unreadable .gitignore confused early E2E testers and
+	// diverges from every other repo's convention.
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("created .gitignore should be 0644, got %o", perm)
 	}
 }
 

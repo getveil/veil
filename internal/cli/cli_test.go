@@ -294,27 +294,6 @@ func TestAddForce(t *testing.T) {
 	}
 }
 
-func TestLogEmpty(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"log", "--path", root})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("log failed: %v", err)
-	}
-	output := out.String()
-	if !strings.Contains(output, "No credential injections") {
-		t.Errorf("expected empty log message, got: %s", output)
-	}
-	if !strings.Contains(output, "proxy was active") {
-		t.Errorf("expected proxy-active clarification, got: %s", output)
-	}
-}
-
 func TestLogJSON(t *testing.T) {
 	root := initProject(t)
 
@@ -1629,6 +1608,65 @@ func TestLogShowsSuspectMarker(t *testing.T) {
 	}
 	if !strings.Contains(jsonOut.String(), `"suspect":true`) {
 		t.Errorf("--json output missing suspect flag:\n%s", jsonOut.String())
+	}
+}
+
+// TestStatusShowsLeakHint covers F15: when status reports Leaks: N (N > 0),
+// the operator should see a follow-up line pointing them at the log command
+// to investigate. Without the hint, "Leaks: 1" was the only signal and
+// E2E testers had to guess how to dig deeper.
+func TestStatusShowsLeakHint(t *testing.T) {
+	root := initProject(t)
+
+	// Seed a leaked row so Summary returns leaked > 0.
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp: time.Now(),
+		RequestID: "req-leak",
+		Host:      "api.example.com",
+		Method:    "POST",
+		Location:  "leaked",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"status", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Leaks") {
+		t.Fatalf("status output missing Leaks line:\n%s", output)
+	}
+	if !strings.Contains(output, "veil log --suspect") {
+		t.Errorf("status output missing 'veil log --suspect' hint after Leaks:\n%s", output)
+	}
+}
+
+// TestStatusOmitsLeakHintWhenZero verifies the hint only appears when
+// there are actual leaks to investigate. A fresh project with no leaked
+// rows should not advertise the flag.
+func TestStatusOmitsLeakHintWhenZero(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"status", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	output := out.String()
+	if strings.Contains(output, "veil log --suspect") {
+		t.Errorf("status output should not show suspect hint when no leaks:\n%s", output)
 	}
 }
 

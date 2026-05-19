@@ -1363,3 +1363,93 @@ func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 		t.Errorf("expected error to mention 'symbolic link', got: %v / %s", execErr, errBuf.String())
 	}
 }
+
+// TestUninstallRemovesVeilOnlyGitignore covers F8: when init created a
+// .gitignore from scratch (it contains only the two Veil-added lines), the
+// uninstall pass should clean it up — leaving it behind makes the project
+// non-pristine. We seed a fresh repo, init, then uninstall, and assert the
+// file is gone.
+func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	// Sanity: init must have created the .gitignore.
+	gitignorePath := filepath.Join(root, ".gitignore")
+	if _, err := os.Stat(gitignorePath); err != nil {
+		t.Fatalf("init should have created .gitignore: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	if _, err := os.Stat(gitignorePath); !os.IsNotExist(err) {
+		got, _ := os.ReadFile(gitignorePath)
+		t.Errorf("Veil-only .gitignore should be removed by uninstall; still present with content:\n%s", got)
+	}
+}
+
+// TestUninstallPreservesUserGitignore covers the other half of F8: if the
+// .gitignore had any non-Veil entries (added by the user, before or after
+// init), uninstall must leave it in place. The two Veil-added lines may
+// remain in the file — the user is on the hook for cleaning those, but we
+// must not delete a file with their own ignores in it.
+func TestUninstallPreservesUserGitignore(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	clearShellEnvTestNoise(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// User had their own .gitignore before init.
+	userOriginal := "node_modules/\n*.log\n"
+	gitignorePath := filepath.Join(root, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(userOriginal), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	got, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf(".gitignore must remain when user had non-Veil entries: %v", err)
+	}
+	if !strings.Contains(string(got), "node_modules/") {
+		t.Errorf("user's .gitignore entries must be preserved, got:\n%s", got)
+	}
+}

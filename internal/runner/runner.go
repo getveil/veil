@@ -64,6 +64,13 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = auditStore.Close() }()
 
+	// Mark that the runner has started at least once for this project, so
+	// `veil log` on a future invocation can distinguish "proxy ran but
+	// produced no injections" from "veil run has never been executed". The
+	// write is best-effort: a missing marker only degrades the zero-state
+	// hint, never the run itself.
+	_ = vault.WriteFileNoFollow(config.RunnerMarkerFile(cfg.Root), nil, 0o600)
+
 	ca, err := proxy.LoadOrCreateCA()
 	if err != nil {
 		return nil, fmt.Errorf("load or create CA: %w", err)

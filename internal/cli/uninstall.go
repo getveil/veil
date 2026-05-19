@@ -566,6 +566,8 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
+	removeVeilOnlyGitignore(w, root)
+
 	if materialized > 0 {
 		_, _ = fmt.Fprintf(w, "\nMoved %d %s into place (%d newly materialized).\n",
 			moved, plural(moved, "backup", "backups"), materialized)
@@ -577,6 +579,56 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
 	}
 	return nil
+}
+
+// removeVeilOnlyGitignore deletes .gitignore when its non-empty content is
+// exactly the two lines veil init writes (`/.veil/` and `*.veil-backup`).
+// If the user added other entries (before or after init), the file is left
+// untouched — those entries are theirs. Best-effort: any read or stat
+// failure is silent so uninstall completes cleanly.
+func removeVeilOnlyGitignore(w io.Writer, root string) {
+	gitignorePath := filepath.Join(root, ".gitignore")
+	// Reject symlinks: a hostile cloned repo could swing the path at
+	// another file (~/.bashrc, etc.). os.Lstat sees the link itself.
+	info, err := os.Lstat(gitignorePath)
+	if err != nil {
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	data, err := os.ReadFile(gitignorePath) // #nosec G304 -- project-local gitignore
+	if err != nil {
+		return
+	}
+	if !gitignoreIsVeilOnly(data) {
+		return
+	}
+	if err := os.Remove(gitignorePath); err == nil {
+		ui.Step(w, "removed Veil-only .gitignore")
+	}
+}
+
+// gitignoreIsVeilOnly reports whether the file content is exactly the two
+// Veil-added lines (in either order, with blank-line / trailing-whitespace
+// tolerance) and nothing else. Comments count as non-Veil content.
+func gitignoreIsVeilOnly(data []byte) bool {
+	veilLines := map[string]bool{
+		"/.veil/":       true,
+		"*.veil-backup": true,
+	}
+	seen := make(map[string]bool, 2)
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !veilLines[line] {
+			return false
+		}
+		seen[line] = true
+	}
+	return len(seen) == len(veilLines)
 }
 
 // purgeKeystoreEntry best-effort deletes the keystore entry tied to this
