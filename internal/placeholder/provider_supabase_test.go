@@ -10,8 +10,14 @@ import (
 func TestProviderSupabase(t *testing.T) {
 	prov := mustProvider(t, "supabase")
 
-	// A real-looking Supabase anon key (JWT).
-	anonKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByb2plY3RpZCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNjg2MDAwMDAwLCJleHAiOjE4NDM2ODAwMDB9.abc123def456ghijklmnopqrstuvwxyz01234567890AB"
+	// A real-looking Supabase anon key (JWT). iss includes "supabase.co" so the
+	// JWT body alone is enough to trigger the provider — the tightened
+	// isJWTWithAlg requires either SUPABASE in the key name or iss containing
+	// "supabase.co" in the JWT payload.
+	anonPayload := `{"iss":"https://abcdefg.supabase.co/auth/v1","ref":"abcdefg","role":"anon","iat":1686000000,"exp":1843680000}`
+	anonKey := jwtHeader + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(anonPayload)) + "." +
+		"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
 
 	t.Run("match_name_anon", func(t *testing.T) {
 		if !prov.Match("SUPABASE_ANON_KEY", "anything") {
@@ -34,6 +40,20 @@ func TestProviderSupabase(t *testing.T) {
 	t.Run("no_match", func(t *testing.T) {
 		if prov.Match("OTHER_KEY", "some-value") {
 			t.Fatal("should not match unrelated key/value")
+		}
+	})
+
+	t.Run("no_match_unrelated_jwt", func(t *testing.T) {
+		// JWTs from Auth0/Cognito/Firebase/etc. share the {alg,typ:JWT}
+		// header shape with Supabase. Matching on header shape alone
+		// caused Supabase placeholders to be injected for unrelated
+		// providers; the iss check rules these out.
+		auth0Payload := `{"iss":"https://example.auth0.com/","sub":"auth0|abc","aud":"client123"}`
+		auth0JWT := jwtHeader + "." +
+			base64.RawURLEncoding.EncodeToString([]byte(auth0Payload)) + "." +
+			"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
+		if prov.Match("AUTH0_TOKEN", auth0JWT) {
+			t.Fatal("should not match Auth0 JWT (iss does not contain supabase.co)")
 		}
 	})
 

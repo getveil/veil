@@ -17,12 +17,7 @@ func init() {
 		Name:       "supabase",
 		AuthScheme: AuthBearer,
 		Priority:   PriorityHandwritten,
-		Match: func(name, value string) bool {
-			if strings.Contains(strings.ToUpper(name), "SUPABASE") {
-				return true
-			}
-			return isJWTWithAlg(value)
-		},
+		Match:      isJWTWithAlg,
 		Generate: func(_, _ string) string {
 			return generateSupabaseJWT("anon")
 		},
@@ -30,23 +25,30 @@ func init() {
 	})
 }
 
-// isJWTWithAlg checks if a value looks like a JWT by splitting on dots and
-// attempting to decode the first segment as JSON with an "alg" field.
-func isJWTWithAlg(value string) bool {
+// isJWTWithAlg returns true only when the credential is clearly a Supabase
+// JWT — either the key name carries "SUPABASE", or the JWT payload's iss
+// field references supabase.co. The earlier shape-only check ("looks like a
+// JWT") matched every signed token in the wild (Auth0, Cognito, Firebase,
+// custom apps), producing false positives that caused us to inject Supabase
+// placeholders for unrelated credentials.
+func isJWTWithAlg(name, value string) bool {
+	if strings.Contains(strings.ToUpper(name), "SUPABASE") {
+		return true
+	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
 		return false
 	}
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false
 	}
-	var header map[string]interface{}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return false
 	}
-	_, hasAlg := header["alg"]
-	return hasAlg
+	iss, _ := payload["iss"].(string)
+	return strings.Contains(iss, "supabase.co")
 }
 
 // generateSupabaseJWT creates a structurally valid JWT with Supabase-style
