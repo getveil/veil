@@ -67,3 +67,13 @@ func TestProviderSendGrid(t *testing.T) {
 		}
 	})
 }
+
+func TestProviderSendgrid_AuthSchemeIsBearer(t *testing.T) {
+	p, ok := DefaultRegistry().Get("sendgrid")
+	if !ok {
+		t.Fatal("sendgrid provider not registered")
+	}
+	if p.AuthScheme != AuthBearer {
+		t.Fatalf("sendgrid AuthScheme = %v, want AuthBearer", p.AuthScheme)
+	}
+}

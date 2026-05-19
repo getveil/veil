@@ -88,3 +88,13 @@ func TestProviderTwilio(t *testing.T) {
 		}
 	})
 }
+
+func TestProviderTwilio_AuthSchemeIsBasic(t *testing.T) {
+	p, ok := DefaultRegistry().Get("twilio")
+	if !ok {
+		t.Fatal("twilio provider not registered")
+	}
+	if p.AuthScheme != AuthBasic {
+		t.Fatalf("twilio AuthScheme = %v, want AuthBasic", p.AuthScheme)
+	}
+}
