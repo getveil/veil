@@ -105,6 +105,18 @@ func cliErrorWith(sentinel error, msg, hint string) error {
 	}
 }
 
+// cliErrorWithWriter is cliErrorWith with an injectable writer. Used by
+// commands whose tests inject a buffer via cmd.SetErr; cliErrorWith's
+// hardcoded os.Stderr write would bypass that injection.
+func cliErrorWithWriter(w io.Writer, sentinel error, msg, hint string) error {
+	_ = ui.FormatError(w, ui.RedactPath(msg), ui.RedactPath(hint))
+	return &exitError{
+		code:    exitCodeForSentinel(sentinel),
+		msg:     ui.RedactPath(msg),
+		wrapped: sentinel,
+	}
+}
+
 // formatCLIError is cliError's writer-injectable core, used by tests.
 // Returns an *exitError so cmd/veil/main.go can detect that the message has
 // already been written and skip its fallback printer (which exists to surface

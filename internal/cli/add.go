@@ -118,14 +118,14 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 		// default: bearer (or basic when --user is set)
 	case "aws":
 		if !opts.experimental {
-			return formatCLIError(cmd.ErrOrStderr(),
+			return cliErrorWithWriter(cmd.ErrOrStderr(), ErrUsage,
 				"veil add --scheme aws is not supported in v0.1.x — AWS SigV4 re-signing is on the roadmap. See docs/MVP.md §5.",
 				"If you understand the risk and want to try the signer anyway, pass --experimental.")
 		}
 		return runAddAWS(cmd, root, v, name, opts)
 	case "github_app":
 		if !opts.experimental {
-			return formatCLIError(cmd.ErrOrStderr(),
+			return cliErrorWithWriter(cmd.ErrOrStderr(), ErrUsage,
 				"veil add --scheme github_app is not supported in v0.1.x — GitHub App JWT signing is on the roadmap. See docs/MVP.md §5.",
 				"If you understand the risk and want to try the signer anyway, pass --experimental.")
 		}

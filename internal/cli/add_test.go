@@ -578,6 +578,9 @@ func TestAdd_SchemeGitHubApp_RefusedWithoutExperimental(t *testing.T) {
 	if !strings.Contains(stderr.String(), "not supported in v0.1.x") {
 		t.Errorf("stderr missing 'not supported in v0.1.x': %q", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "--experimental") {
+		t.Errorf("stderr should mention --experimental: %q", stderr.String())
+	}
 }
 
 func TestAdd_BearerScheme_NotAffectedByGate(t *testing.T) {
