@@ -1166,11 +1166,12 @@ func TestPrintSessionFooter_F9_RealStoreShortSession(t *testing.T) {
 	}
 }
 
-// TestRunEmitsBypassWarningWhenDockerOnPath locks in F12/F14: when `docker`
-// is on the host's PATH and we're on macOS, the startup banner emits the
-// docker-bypass warning. PATH is rewritten via t.Setenv so the test works
-// regardless of whether docker is actually installed on the host.
-func TestRunEmitsBypassWarningWhenDockerOnPath(t *testing.T) {
+// TestRunEmitsBypassWarningWhenInvokingDocker locks in F12/F14: when the user
+// runs `veil run -- docker ...` on macOS, the startup banner emits the
+// docker-bypass warning. The fake `docker` lives in a temp dir and is passed
+// as the child command directly, so the test does not depend on docker being
+// installed on the host.
+func TestRunEmitsBypassWarningWhenInvokingDocker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -1178,7 +1179,55 @@ func TestRunEmitsBypassWarningWhenDockerOnPath(t *testing.T) {
 		t.Skip("docker bypass warning is darwin-only")
 	}
 
-	// Put a fake `docker` binary on PATH so detectBypassClients finds it.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "docker")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	root, ks := testutil.SetupVaultProject(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	_, err := Run(ctx, Config{
+		Root:            root,
+		Command:         fake,
+		Args:            []string{"--version"},
+		Keystore:        ks,
+		AllowEnvSecrets: allowAllAmbientSecretLikes(),
+	})
+	_ = w.Close()
+	os.Stderr = oldStderr
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	stderr := buf.String()
+
+	if !strings.Contains(stderr, "docker") || !strings.Contains(stderr, "docs/DOCKER.md") {
+		t.Errorf("startup banner should warn when running docker on macOS; stderr=\n%s", stderr)
+	}
+}
+
+// TestRunSilentForUnrelatedCommandEvenWithDockerOnPath is the negative
+// half of the F12/F14 contract: `docker` sitting on PATH does NOT make the
+// warning fire when the user is running something else. Without this guard
+// the warning would appear on every `veil run -- claude` (or any other
+// command) on every Mac that has docker installed.
+func TestRunSilentForUnrelatedCommandEvenWithDockerOnPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("only the darwin docker rule could regress here")
+	}
+
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "docker")
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
@@ -1211,7 +1260,7 @@ func TestRunEmitsBypassWarningWhenDockerOnPath(t *testing.T) {
 	_, _ = buf.ReadFrom(r)
 	stderr := buf.String()
 
-	if !strings.Contains(stderr, "docker") || !strings.Contains(stderr, "docs/DOCKER.md") {
-		t.Errorf("startup banner should warn about docker on macOS; stderr=\n%s", stderr)
+	if strings.Contains(stderr, "docs/DOCKER.md") {
+		t.Errorf("bypass warning must not fire when command is not docker; stderr=\n%s", stderr)
 	}
 }

@@ -1,102 +1,75 @@
 package runner
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
 
-// stubLookPath returns a lookPath function that "finds" exactly the names in
-// present. This lets bypass-check tests probe the static detection table
-// without depending on what's actually installed on the host.
-func stubLookPath(present ...string) func(string) (string, error) {
-	set := make(map[string]struct{}, len(present))
-	for _, n := range present {
-		set[n] = struct{}{}
+func TestBypassWarningForCommand_DarwinDocker(t *testing.T) {
+	w := bypassWarningForCommand("darwin", "docker")
+	if w == nil {
+		t.Fatal("expected warning for docker on darwin, got nil")
 	}
-	return func(name string) (string, error) {
-		if _, ok := set[name]; ok {
-			return "/fake/path/" + name, nil
-		}
-		return "", errors.New("not found")
+	if w.Tool != "docker" {
+		t.Errorf("Tool = %q, want %q", w.Tool, "docker")
 	}
-}
-
-func TestDetectBypassClients_DarwinDocker(t *testing.T) {
-	got := detectBypassClients("darwin", stubLookPath("docker"))
-	if len(got) != 1 {
-		t.Fatalf("got %d warnings, want 1: %+v", len(got), got)
+	if !strings.Contains(w.Message, "docker") {
+		t.Errorf("Message should mention docker; got %q", w.Message)
 	}
-	if got[0].Tool != "docker" {
-		t.Errorf("Tool = %q, want %q", got[0].Tool, "docker")
-	}
-	if !strings.Contains(got[0].Message, "docker") {
-		t.Errorf("Message should mention docker; got %q", got[0].Message)
-	}
-	if !strings.Contains(got[0].Message, "docs/DOCKER.md") {
-		t.Errorf("Message should link docs/DOCKER.md; got %q", got[0].Message)
+	if !strings.Contains(w.Message, "docs/DOCKER.md") {
+		t.Errorf("Message should link docs/DOCKER.md; got %q", w.Message)
 	}
 }
 
-func TestDetectBypassClients_DarwinDotnet(t *testing.T) {
-	got := detectBypassClients("darwin", stubLookPath("dotnet"))
-	if len(got) != 1 {
-		t.Fatalf("got %d warnings, want 1: %+v", len(got), got)
+func TestBypassWarningForCommand_DarwinDotnet(t *testing.T) {
+	w := bypassWarningForCommand("darwin", "dotnet")
+	if w == nil {
+		t.Fatal("expected warning for dotnet on darwin, got nil")
 	}
-	if got[0].Tool != "dotnet" {
-		t.Errorf("Tool = %q, want %q", got[0].Tool, "dotnet")
+	if w.Tool != "dotnet" {
+		t.Errorf("Tool = %q, want %q", w.Tool, "dotnet")
 	}
-	if !strings.Contains(strings.ToLower(got[0].Message), "dotnet") &&
-		!strings.Contains(got[0].Message, ".NET") {
-		t.Errorf("Message should mention dotnet/.NET; got %q", got[0].Message)
-	}
-}
-
-func TestDetectBypassClients_DarwinNone(t *testing.T) {
-	got := detectBypassClients("darwin", stubLookPath())
-	if len(got) != 0 {
-		t.Fatalf("expected no warnings, got %+v", got)
+	if !strings.Contains(strings.ToLower(w.Message), "dotnet") &&
+		!strings.Contains(w.Message, ".NET") {
+		t.Errorf("Message should mention dotnet/.NET; got %q", w.Message)
 	}
 }
 
-func TestDetectBypassClients_LinuxDockerNoWarning(t *testing.T) {
-	got := detectBypassClients("linux", stubLookPath("docker"))
-	for _, w := range got {
-		if w.Tool == "docker" {
-			t.Errorf("docker should not warn on linux; got %+v", w)
-		}
+func TestBypassWarningForCommand_LinuxDockerNil(t *testing.T) {
+	if w := bypassWarningForCommand("linux", "docker"); w != nil {
+		t.Errorf("docker on linux should not warn; got %+v", w)
 	}
 }
 
-func TestDetectBypassClients_SccacheAnyPlatform(t *testing.T) {
+func TestBypassWarningForCommand_SccacheAnyPlatform(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux"} {
 		t.Run(goos, func(t *testing.T) {
-			got := detectBypassClients(goos, stubLookPath("sccache"))
-			found := false
-			for _, w := range got {
-				if w.Tool == "sccache" {
-					found = true
-					if !strings.Contains(strings.ToLower(w.Message), "sccache") {
-						t.Errorf("Message should mention sccache; got %q", w.Message)
-					}
-				}
+			w := bypassWarningForCommand(goos, "sccache")
+			if w == nil {
+				t.Fatalf("expected sccache warning on %s, got nil", goos)
 			}
-			if !found {
-				t.Errorf("expected sccache warning on %s; got %+v", goos, got)
+			if w.Tool != "sccache" {
+				t.Errorf("Tool = %q, want %q", w.Tool, "sccache")
 			}
 		})
 	}
 }
 
-func TestDetectBypassClients_DarwinAllThree(t *testing.T) {
-	got := detectBypassClients("darwin", stubLookPath("docker", "dotnet", "sccache"))
-	if len(got) != 3 {
-		t.Fatalf("got %d warnings, want 3: %+v", len(got), got)
+func TestBypassWarningForCommand_UnrelatedCommandSilent(t *testing.T) {
+	for _, cmd := range []string{"claude", "cursor", "echo", "bash", "zsh", "pytest", "make"} {
+		t.Run(cmd, func(t *testing.T) {
+			if w := bypassWarningForCommand("darwin", cmd); w != nil {
+				t.Errorf("unrelated command %q should not warn; got %+v", cmd, w)
+			}
+		})
 	}
-	wantOrder := []string{"docker", "dotnet", "sccache"}
-	for i, w := range got {
-		if w.Tool != wantOrder[i] {
-			t.Errorf("warnings[%d].Tool = %q, want %q", i, w.Tool, wantOrder[i])
-		}
+}
+
+func TestBypassWarningForCommand_AcceptsFullPath(t *testing.T) {
+	// Callers pass the resolved realpath, not the bare name. The detector
+	// must strip directories before matching against the rule table.
+	w := bypassWarningForCommand("darwin", "/usr/local/bin/docker")
+	if w == nil || w.Tool != "docker" {
+		t.Errorf("/usr/local/bin/docker on darwin should match docker rule; got %+v", w)
 	}
 }

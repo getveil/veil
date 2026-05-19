@@ -124,7 +124,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if warning := formatStartupWarning(credCount); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
 	}
-	for _, bw := range detectBypassClients(runtime.GOOS, exec.LookPath) {
+	if bw := bypassWarningForCommand(runtime.GOOS, resolvedCmd); bw != nil {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Warning.Sprint("!"), bw.Message)
 	}
 

@@ -1,9 +1,11 @@
 package runner
 
-// BypassWarning is a startup-time hint about a tool on the host that would
-// dodge Veil's HTTPS_PROXY. Tool is the bare binary name; Message is the
-// rendered text shown to the user (without the leading "! " prefix —
-// runner.Run adds that).
+import "path/filepath"
+
+// BypassWarning is a startup-time hint that the command about to be run dodges
+// Veil's HTTPS_PROXY. Tool is the bare binary name; Message is the rendered
+// text shown to the user (without the leading "! " prefix — runner.Run adds
+// that).
 type BypassWarning struct {
 	Tool    string
 	Message string
@@ -17,8 +19,11 @@ type bypassRule struct {
 	message string
 }
 
-// bypassRules is the ordered list of (tool, platform, message) checks
-// detectBypassClients walks. Order matters: a test asserts on it.
+// bypassRules lists commands whose HTTPS traffic is known to dodge Veil's
+// HTTPS_PROXY on at least one platform. The list is intentionally tight:
+// firing only when the user is directly invoking one of these binaries keeps
+// the startup banner quiet for every other command, since `docker` is on
+// PATH on almost every Mac.
 var bypassRules = []bypassRule{
 	{
 		tool:    "docker",
@@ -37,24 +42,28 @@ var bypassRules = []bypassRule{
 	},
 }
 
-// detectBypassClients scans PATH (via the injected lookPath) for known
-// bypass-prone tools on the current platform and returns one BypassWarning
-// per match. The check is static — no process spawned, no daemon contacted —
-// so a missing daemon or stopped Docker Desktop doesn't suppress the warning.
+// bypassWarningForCommand returns the bypass warning associated with command
+// on goos, or nil if the command isn't a known bypass-prone tool on that
+// platform. command may be a bare name or a full path — the directory part
+// is stripped before matching, so callers can pass the resolved realpath.
 //
-// Errors from lookPath are treated as "not present"; the subsystem is
-// best-effort and a missing warning is much less harmful than a crash at
-// session start.
-func detectBypassClients(goos string, lookPath func(string) (string, error)) []BypassWarning {
-	var out []BypassWarning
+// This warns only when the user is *directly* invoking a bypass tool through
+// `veil run`. It does not catch the case where a long-lived agent or shell
+// (e.g. `veil run -- claude`) later spawns docker from inside; that scenario
+// is documented in docs/USE_CASES.md "Known gaps" and docs/DOCKER.md.
+func bypassWarningForCommand(goos, command string) *BypassWarning {
+	if command == "" {
+		return nil
+	}
+	base := filepath.Base(command)
 	for _, r := range bypassRules {
 		if !r.goosAny && r.goos != goos {
 			continue
 		}
-		if _, err := lookPath(r.tool); err != nil {
+		if r.tool != base {
 			continue
 		}
-		out = append(out, BypassWarning{Tool: r.tool, Message: r.message})
+		return &BypassWarning{Tool: r.tool, Message: r.message}
 	}
-	return out
+	return nil
 }
