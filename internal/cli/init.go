@@ -501,15 +501,15 @@ func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, co
 	}
 
 	if len(notManaged) > 0 {
-		fmt.Fprintf(w, "\nNot managed — MCP secrets Veil v0.1.x doesn't mediate (%d):\n", len(notManaged))
+		_, _ = fmt.Fprintf(w, "\nNot managed — MCP secrets Veil v0.1.x doesn't mediate (%d):\n", len(notManaged))
 		for _, s := range notManaged {
-			fmt.Fprintf(w, "    %-42s %s\n", s.name, s.reason)
+			_, _ = fmt.Fprintf(w, "    %-42s %s\n", s.name, s.reason)
 		}
 	}
 	if len(unrecognized) > 0 {
-		fmt.Fprintf(w, "\nUnrecognized — MCP secrets left as-is (%d):\n", len(unrecognized))
+		_, _ = fmt.Fprintf(w, "\nUnrecognized — MCP secrets left as-is (%d):\n", len(unrecognized))
 		for _, name := range unrecognized {
-			fmt.Fprintf(w, "    %-42s %s\n", name, "no known format")
+			_, _ = fmt.Fprintf(w, "    %-42s %s\n", name, "no known format")
 		}
 	}
 

@@ -704,21 +704,21 @@ func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secr
 // lines, so printing them here too would double-print each credential.
 func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 	if !dryRun && len(res.Creds) > 0 {
-		fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
+		_, _ = fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
 		for _, c := range res.Creds {
-			fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
 		}
 	}
 	if len(res.NotManaged) > 0 {
-		fmt.Fprintf(w, "\nNot managed — Veil v0.1.x doesn't mediate these yet (%d):\n", len(res.NotManaged))
+		_, _ = fmt.Fprintf(w, "\nNot managed — Veil v0.1.x doesn't mediate these yet (%d):\n", len(res.NotManaged))
 		for _, s := range res.NotManaged {
-			fmt.Fprintf(w, "    %-30s %s\n", s.key, s.reason)
+			_, _ = fmt.Fprintf(w, "    %-30s %s\n", s.key, s.reason)
 		}
 	}
 	if len(res.Unrecognized) > 0 {
-		fmt.Fprintf(w, "\nUnrecognized — left as-is (%d):\n", len(res.Unrecognized))
+		_, _ = fmt.Fprintf(w, "\nUnrecognized — left as-is (%d):\n", len(res.Unrecognized))
 		for _, s := range res.Unrecognized {
-			fmt.Fprintf(w, "    %-30s %s\n", s.key, "no known format")
+			_, _ = fmt.Fprintf(w, "    %-30s %s\n", s.key, "no known format")
 		}
 	}
 }

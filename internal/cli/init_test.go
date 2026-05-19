@@ -1617,8 +1617,8 @@ func TestInit_AWSCredentialResignsViaProxy(t *testing.T) {
 		t.Fatalf("CreateVault: %v", err)
 	}
 	const (
-		realAKID    = "AKIAIOSFODNN7EXAMPLE"
-		realSecret  = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+		realAKID        = "AKIAIOSFODNN7EXAMPLE"
+		realSecret      = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 		placeholderAKID = "AKIA_VEIL_PLACEHOLDER_EXMPL"
 	)
 	cred := &vault.Credential{
