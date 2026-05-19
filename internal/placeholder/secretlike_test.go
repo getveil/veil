@@ -358,7 +358,7 @@ func TestDetectWithReason_None(t *testing.T) {
 		{"HOSTNAME", "myserver"},
 		{"GREETING", "hello"},
 		{"NEXT_PUBLIC_API_KEY", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"}, // public-prefix
-		{"API_KEY", "your_token_here"},                                    // stub
+		{"API_KEY", "your_token_here"},                                     // stub
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
