@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -322,11 +323,28 @@ func TestLog_DefaultExcludesLeakedRows(t *testing.T) {
 	if strings.Contains(s, leakedCred) {
 		t.Errorf("default output must hide leaked rows; saw %q:\n%s", leakedCred, s)
 	}
-	if strings.Contains(s, "blocked") {
-		t.Errorf("default output must not show the 'blocked' location label:\n%s", s)
+	// The 'blocked'/'leaked' location labels must not appear in any data
+	// row. The new I1 disclosure footer ("2 hidden (--blocked ...)") DOES
+	// mention them by design — that's how the user discovers the rows exist.
+	// Split the assertion to data rows only by walking lines and skipping
+	// the header, footer (last non-empty line), and blanks.
+	lines := strings.Split(s, "\n")
+	var lastNonEmpty int
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lastNonEmpty = i
+		}
 	}
-	if strings.Contains(s, "leaked") {
-		t.Errorf("default output must not show the 'leaked' location label:\n%s", s)
+	for i, line := range lines {
+		if i == 0 || i == lastNonEmpty || strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.Contains(line, "blocked") {
+			t.Errorf("data row %d contains 'blocked' location label: %q", i, line)
+		}
+		if strings.Contains(line, "leaked") {
+			t.Errorf("data row %d contains 'leaked' location label: %q", i, line)
+		}
 	}
 }
 
@@ -363,6 +381,133 @@ func TestLog_BlockedFlagShowsBlockedAndLeaked(t *testing.T) {
 	// Footer reports the row count for the displayed window.
 	if !strings.Contains(s, "3 events") {
 		t.Errorf("--blocked footer must report 3 events; got:\n%s", s)
+	}
+}
+
+// TestLog_HiddenCountFooter covers I1: when blocked or leaked events are
+// hidden by default, the user must be told they exist — otherwise an
+// operator investigating a suspected leak sees a quiet table and never
+// discovers the sentinel-leaked rows. The footer reports both shown and
+// hidden counts and points at the --blocked flag.
+func TestLog_HiddenCountFooter(t *testing.T) {
+	root := initProject(t)
+
+	// Seed 3 regular injections + 17 hidden events (mix of blocked + leaked
+	// to exercise both exclusion arms in one fixture).
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+1) * time.Second),
+			RequestID:      "req-regular-" + strconv.Itoa(i),
+			Host:           "api.example.com",
+			Method:         "GET",
+			Location:       "header",
+			CredentialName: "regular",
+		})
+	}
+	for i := 0; i < 10; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+10) * time.Second),
+			RequestID:      "req-blocked-" + strconv.Itoa(i),
+			Host:           "evil.example.com",
+			Method:         "GET",
+			Location:       "blocked",
+			CredentialName: "blocked",
+		})
+	}
+	for i := 0; i < 7; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+30) * time.Second),
+			RequestID:      "req-leaked-" + strconv.Itoa(i),
+			Host:           "api.example.com",
+			Method:         "GET",
+			Location:       "leaked",
+			CredentialName: "leaked",
+		})
+	}
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	// The shown count and hidden count must both surface in the footer so
+	// a user looking at "3 events" knows there are 17 more behind --blocked.
+	if !strings.Contains(s, "3 events shown") {
+		t.Errorf("expected '3 events shown' in footer:\n%s", s)
+	}
+	if !strings.Contains(s, "17 hidden") {
+		t.Errorf("expected '17 hidden' in footer:\n%s", s)
+	}
+	if !strings.Contains(s, "--blocked") {
+		t.Errorf("footer should mention --blocked flag:\n%s", s)
+	}
+}
+
+// TestLog_NoEventsButHiddenExist covers the empty-shown variant of I1:
+// when nothing matches the default filter but blocked/leaked rows DO exist
+// in the window, the "No credential injections during this period" message
+// must point the user at --blocked instead of leaving them to wonder.
+func TestLog_NoEventsButHiddenExist(t *testing.T) {
+	root := initProject(t)
+
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:      time.Now().Add(-time.Second),
+		RequestID:      "req-leaked",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "leaked",
+		CredentialName: "leaked",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	if !strings.Contains(s, "No credential injections during this period") {
+		t.Errorf("expected period-bounded zero-state, got:\n%s", s)
+	}
+	if !strings.Contains(s, "1 event") || !strings.Contains(s, "hidden") {
+		t.Errorf("expected '1 event hidden' disclosure, got:\n%s", s)
+	}
+	if !strings.Contains(s, "--blocked") {
+		t.Errorf("expected --blocked pointer in zero-state, got:\n%s", s)
+	}
+}
+
+// TestLogCmd_ShortDescriptionMentionsHidden verifies that `veil log --help`
+// announces that blocked/leaked events are hidden by default, so users do
+// not have to discover the --blocked flag by accident.
+func TestLogCmd_ShortDescriptionMentionsHidden(t *testing.T) {
+	cmd := logCmd()
+	short := strings.ToLower(cmd.Short)
+	for _, kw := range []string{"blocked", "leaked", "hidden"} {
+		if !strings.Contains(short, kw) {
+			t.Errorf("logCmd.Short should mention %q so the default-hide is discoverable; got: %q", kw, cmd.Short)
+		}
 	}
 }
 

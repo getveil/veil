@@ -41,7 +41,7 @@ func logCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "log",
-		Short: "Show audit log of secret injections",
+		Short: "Show audit log of secret injections (blocked and sentinel-leaked events are hidden by default; pass --blocked to include them)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLog(cmd, since, host, credential, limit, jsonOutput, showBlocked)
 		},
@@ -84,6 +84,20 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
 	}
 
+	// Count blocked+leaked rows so the renderer can disclose how many events
+	// are hidden by the default filter. Without this, an operator
+	// investigating a leak would see a quiet table and never discover that
+	// sentinel-leaked rows exist. When showBlocked is true the rows are
+	// already in `rows`, so no hidden count applies.
+	var hidden int
+	if !showBlocked {
+		_, blocked, leaked, _, _, summaryErr := store.Summary(sinceTime)
+		if summaryErr != nil {
+			return cliError(fmt.Sprintf("querying audit log: %v", summaryErr), "")
+		}
+		hidden = blocked + leaked
+	}
+
 	w := cmd.OutOrStdout()
 
 	if jsonOutput {
@@ -116,6 +130,13 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		}
 		_, _ = fmt.Fprintln(w, "No credential injections during this period.")
 		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("The proxy was active but no managed credentials were used in outbound requests"))
+		if hidden > 0 {
+			// I1: an operator investigating a suspected leak would
+			// otherwise see only the quiet "no injections" message even
+			// when blocked/leaked rows exist in the window — surface the
+			// hidden count and point at the flag that reveals them.
+			_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprintf("%d %s hidden — re-run with --blocked to inspect.", hidden, plural(hidden, "event", "events")))
+		}
 		return nil
 	}
 
@@ -172,7 +193,15 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		}
 		_, _ = fmt.Fprintln(w, strings.Join(cells, gap))
 	}
-	ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
+	if hidden > 0 {
+		// I1: disclose hidden-row count alongside the shown count so the
+		// operator can tell a quiet window from an active-but-filtered one.
+		// Pointer to --blocked stays in the footer so users don't have to
+		// remember the flag name.
+		ui.Footer(w, fmt.Sprintf("%d events shown · %d hidden (--blocked to include host-blocked and sentinel-leaked events)", len(rows), hidden))
+	} else {
+		ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
+	}
 	return nil
 }
 
