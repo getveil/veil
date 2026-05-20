@@ -157,3 +157,29 @@ func TestAllRegisteredProvidersHaveSamples_Dynamic(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderSamples_ClearShapeGate locks in that every registered
+// provider's representative sample value passes through the
+// (*Registry).Match pre-gate. Without this, a new provider could be
+// added with a Repeat("a", N)-style sample that fails the distinct-byte
+// floor — the provider's own Match would still match the sample
+// directly (used by TestProviderContract above), but the sample would
+// never route through Registry.Match in production. This guarantees
+// the contract holds end-to-end.
+func TestProviderSamples_ClearShapeGate(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	for name, s := range providerSamples {
+		t.Run(name, func(t *testing.T) {
+			p := reg.Match(s.keyName, s.value)
+			if p == nil {
+				t.Errorf("provider %q sample (name=%q value=%q) does not match through Registry.Match — likely fails the shape gate",
+					name, s.keyName, s.value)
+				return
+			}
+			if p.Name != name {
+				t.Errorf("provider %q sample matched a different provider %q via Registry.Match",
+					name, p.Name)
+			}
+		})
+	}
+}
