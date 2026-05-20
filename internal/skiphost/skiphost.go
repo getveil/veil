@@ -19,9 +19,17 @@ var ErrInvalidHost = errors.New("invalid skip host")
 // that would either disable proxying entirely (the bare "*" wildcard, which Go's
 // httpproxy and curl/requests treat as "bypass everything") or corrupt the
 // comma-delimited NO_PROXY format (commas, whitespace, control chars). It also
-// rejects empty and pure-punctuation entries. Legitimate NO_PROXY forms are
-// permitted: hostnames, IPs, CIDR notation, leading-dot, and wildcard subdomain
-// patterns like "*.internal.corp.com".
+// rejects empty and pure-punctuation entries, and URL-shaped values (anything
+// containing "://" or "/") — the proxy matches bare hostnames, so a value like
+// "https://api.com/" would never fire and the silent-no-op is worse than a
+// loud reject. Legitimate NO_PROXY forms are permitted: hostnames (with
+// optional leading dot), IPs, host:port, and wildcard subdomain patterns like
+// "*.internal.corp.com".
+//
+// Tradeoff: CIDR notation (e.g. "10.0.0.0/8") contains "/" and is now
+// rejected. Veil's HostMatches (internal/placeholder/hosts.go) never parsed
+// CIDR for credential host matching, so accepting it was misleading — see
+// C4 in the UX review.
 func Validate(host string) error {
 	trimmed := strings.TrimSpace(host)
 	if trimmed == "" {
@@ -29,6 +37,12 @@ func Validate(host string) error {
 	}
 	if trimmed == "*" {
 		return fmt.Errorf("%w: %q matches all hosts and would disable proxying", ErrInvalidHost, trimmed)
+	}
+	if strings.Contains(trimmed, "://") {
+		return fmt.Errorf("%w: %q looks like a URL — pass just the hostname (e.g. api.example.com)", ErrInvalidHost, trimmed)
+	}
+	if strings.Contains(trimmed, "/") {
+		return fmt.Errorf("%w: %q contains a path separator — pass just the hostname (e.g. api.example.com)", ErrInvalidHost, trimmed)
 	}
 	hasAlnum := false
 	for _, r := range trimmed {

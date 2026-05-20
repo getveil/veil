@@ -11,6 +11,7 @@ import (
 
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/scanner"
+	"github.com/getveil/veil/internal/skiphost"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
 	"github.com/mattn/go-isatty"
@@ -66,6 +67,23 @@ func runAdd(cmd *cobra.Command, name string, opts addOpts) error {
 }
 
 func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string, opts addOpts) error {
+	// Validate every --host before doing any value reads. A user typing
+	// `veil add NAME --host "https://api.com/"` previously got an unreachable
+	// credential silently stored (the proxy matches against bare hostnames,
+	// so a URL-shaped host pattern never fires). Reject URL/path-shaped
+	// inputs at the boundary so the failure mode is loud, not silent.
+	// Wildcard subdomains ("*.foo.com") are still permitted — validate the
+	// remainder after stripping the leading "*.".
+	for _, h := range opts.hosts {
+		check := strings.TrimPrefix(h, "*.")
+		if err := skiphost.Validate(check); err != nil {
+			if strings.Contains(h, "://") || strings.Contains(h, "/") {
+				return cliErrorf("invalid --host value: %q looks like a URL — pass just the hostname (e.g. api.mycompany.com)", h)
+			}
+			return cliErrorf("invalid --host value: %v", err)
+		}
+	}
+
 	value, err := readCredentialValue(cmd, name, opts.value, opts.valueStdin)
 	if err != nil {
 		return err

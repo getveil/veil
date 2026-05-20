@@ -155,6 +155,100 @@ func TestAdd_DuplicateWithoutForce_PrintsOverwriteHint(t *testing.T) {
 	}
 }
 
+// TestAdd_RejectsURLShapedHost covers C4: --host accepted URL/scheme/path
+// garbage, so `veil add NAME --host "https://api.com/"` landed a credential
+// with an unreachable host pattern (proxy matches against bare hostnames).
+// Validation must fail loud at input rather than silently store a dead
+// credential.
+func TestAdd_RejectsURLShapedHost(t *testing.T) {
+	root := initProject(t)
+
+	cases := []struct {
+		name string
+		host string
+	}{
+		{"https URL", "https://api.mycompany.com/"},
+		{"http URL", "http://api.mycompany.com"},
+		{"trailing slash", "api.com/"},
+		{"with path", "api.com/v1/things"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := NewRoot("test")
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{
+				"add", "--path", root, "INTERNAL_TOKEN",
+				"--value", "real-value-1234567890abcdef",
+				"--host", tc.host,
+			})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected --host %q to be rejected", tc.host)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "--host") {
+				t.Errorf("error should mention --host, got: %q", msg)
+			}
+			if !strings.Contains(msg, tc.host) {
+				t.Errorf("error should echo the bad value %q, got: %q", tc.host, msg)
+			}
+			// Make sure the credential did not land in the vault despite
+			// validation failing.
+			v, openErr := openVault(root)
+			if openErr != nil {
+				t.Fatalf("openVault: %v", openErr)
+			}
+			if _, found := v.Get("INTERNAL_TOKEN"); found {
+				t.Errorf("credential must not be added when --host validation fails")
+			}
+		})
+	}
+}
+
+// TestAdd_AcceptsHostPlainAndWildcard guards the happy path: bare hostnames,
+// host:port, and *.suffix wildcards must still pass through unchanged so the
+// hardened validator doesn't break existing scoping flows.
+func TestAdd_AcceptsHostPlainAndWildcard(t *testing.T) {
+	cases := []struct {
+		credName string
+		host     string
+	}{
+		{"PLAIN_TOKEN", "api.example.com"},
+		{"WILDCARD_TOKEN", "*.internal.example.com"},
+		{"PORT_TOKEN", "api.example.com:8443"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.credName, func(t *testing.T) {
+			root := initProject(t)
+			cmd := NewRoot("test")
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{
+				"add", "--path", root, tc.credName,
+				"--value", "ok-value-1234567890abcdef",
+				"--host", tc.host,
+			})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("expected --host %q to be accepted, got: %v", tc.host, err)
+			}
+			v, openErr := openVault(root)
+			if openErr != nil {
+				t.Fatalf("openVault: %v", openErr)
+			}
+			cred, ok := v.Get(tc.credName)
+			if !ok {
+				t.Fatalf("credential %s not stored", tc.credName)
+			}
+			if len(cred.AllowedHosts) != 1 || cred.AllowedHosts[0] != tc.host {
+				t.Errorf("AllowedHosts = %v, want exactly [%q]", cred.AllowedHosts, tc.host)
+			}
+		})
+	}
+}
+
 func TestAdd_BearerScheme_NotAffectedByGate(t *testing.T) {
 	root := initProject(t)
 

@@ -34,13 +34,27 @@ func TestValidate(t *testing.T) {
 		{"contains newline", "foo\nbar.com", true},
 		// Reject: control characters.
 		{"contains control char", "foo\x00bar.com", true},
+		// Reject (C4): URL-shaped values. The proxy matches NO_PROXY against
+		// bare hostnames, so a credential scoped to "https://api.com/" never
+		// fires. Catch the typo at input rather than silently shipping a
+		// dead credential.
+		{"contains scheme https", "https://api.com", true},
+		{"contains scheme http", "http://api.com", true},
+		{"trailing slash", "api.com/", true},
+		{"contains path", "api.com/v1/things", true},
+		{"scheme delimiter only", "://api.com", true},
 		// Accept: legitimate NO_PROXY forms that Veil already supports.
 		{"plain hostname", "api.anthropic.com", false},
 		{"single label", "localhost", false},
 		{"wildcard subdomain", "*.internal.corp.com", false},
 		{"leading dot", ".internal.com", false},
 		{"ipv4", "192.168.1.1", false},
-		{"cidr", "10.0.0.0/8", false},
+		// CIDR notation (e.g. 10.0.0.0/8) contains "/" and is rejected by
+		// the new URL-path guard. Documented as a tradeoff: Veil never
+		// claimed CIDR matching for skip-host comparisons (HostMatches in
+		// internal/placeholder/hosts.go does exact / wildcard suffix only),
+		// so accepting it was misleading. See C4 in the UX review.
+		{"cidr (now rejected)", "10.0.0.0/8", true},
 		{"host with port", "api.example.com:8443", false},
 		{"trims surrounding whitespace", "  api.example.com  ", false},
 	}
