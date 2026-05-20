@@ -20,15 +20,18 @@ func TestProviderSupabase(t *testing.T) {
 		"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
 
 	t.Run("match_name_anon", func(t *testing.T) {
-		// Name-only fallback requires a credential-shaped value length so
-		// SUPABASE_REGION=us-east-1 and similar config vars aren't misclassified.
-		if !prov.Match("SUPABASE_ANON_KEY", strings.Repeat("a", 40)) {
+		// Exercises isJWTWithAlg's name-hint path directly via prov.Match;
+		// shape-gate enforcement is covered separately by
+		// TestSupabaseNameMatchGatedAtRegistry, so this test uses a
+		// credential-shaped varied value rather than a low-distinct
+		// Repeat("a", 40).
+		if !prov.Match("SUPABASE_ANON_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
 			t.Fatal("should match SUPABASE in name for credential-shaped value")
 		}
 	})
 
 	t.Run("match_name_service_role", func(t *testing.T) {
-		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", strings.Repeat("a", 40)) {
+		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
 			t.Fatal("should match SUPABASE in name for credential-shaped value")
 		}
 	})

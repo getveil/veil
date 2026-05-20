@@ -90,7 +90,7 @@ func TestContainsSentinel(t *testing.T) {
 		{"sentinel_after_prefix", "ghp_" + Sentinel + "abc", true},
 		{"generated_placeholder_round_trip", "", true}, // filled in below
 	}
-	ph, err := Generate("GITHUB_TOKEN", "ghp_"+strings.Repeat("a", 36), nil)
+	ph, err := Generate("GITHUB_TOKEN", "ghp_"+variedSentinelBody(36), nil)
 	if err != nil {
 		t.Fatalf("Generate seed: %v", err)
 	}

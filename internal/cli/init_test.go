@@ -1404,9 +1404,9 @@ func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeEnv(".env", "GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
-	writeEnv(filepath.Join("apps", "api", ".env"), "OPENAI_API_KEY=sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
-	writeEnv(filepath.Join("packages", "db", ".env.local"), "STRIPE_API_KEY=sk_test_aaaaaaaaaaaaaaaaaaaaaaaa\n")
+	writeEnv(".env", "GITHUB_TOKEN=ghp_abcdef0123456789abcdef0123456789abcd\n")
+	writeEnv(filepath.Join("apps", "api", ".env"), "OPENAI_API_KEY=sk-proj-abcdef0123456789abcdef0123456789abcdef0\n")
+	writeEnv(filepath.Join("packages", "db", ".env.local"), "STRIPE_API_KEY=sk_test_abcdef0123456789abcdef\n")
 	writeEnv(filepath.Join("apps", "web", ".env.example"), "OPENAI_API_KEY=sk-proj-EXAMPLE\n")
 	writeEnv(filepath.Join("apps", "web", ".gitignore"), ".env\n")
 	writeEnv(filepath.Join("apps", "web", ".env"), "SECRET=should-be-ignored\n")
@@ -1427,9 +1427,9 @@ func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", rel, err)
 		}
-		if bytes.Contains(data, []byte("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) ||
-			bytes.Contains(data, []byte("sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) ||
-			bytes.Contains(data, []byte("sk_test_aaaaaaaaaaaaaaaaaaaaaaaa")) {
+		if bytes.Contains(data, []byte("ghp_abcdef0123456789abcdef0123456789abcd")) ||
+			bytes.Contains(data, []byte("sk-proj-abcdef0123456789abcdef0123456789abcdef0")) ||
+			bytes.Contains(data, []byte("sk_test_abcdef0123456789abcdef")) {
 			t.Errorf("%s still contains real secret after init", rel)
 		}
 	}

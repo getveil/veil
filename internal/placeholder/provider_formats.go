@@ -127,15 +127,14 @@ func init() {
 		VaultEligible: true,
 	})
 
-	// Resend is hand-written rather than declarative because the
-	// declarative OR-of-(prefix, name-hint) classifier would match any
-	// shape-passing value under a RESEND_* name — e.g.
+	// Resend is hand-written rather than declarative because adding a
+	// RESEND KeyHint to the declarative matcher would let any shape-
+	// passing value under a RESEND_* name match — e.g.
 	// RESEND_FROM_EMAIL=team@example.somewhere.com (28 chars, clears the
 	// Registry.Match shape gate) would be vaulted as a Resend credential.
-	// The hand-written matcher constrains the name-hint path so it only
-	// fires when the value also carries the re_ prefix. The Registry-
-	// level shape gate handles the length floor; this matcher does not
-	// repeat it.
+	// Restrict matching to the re_ prefix only; no name-hint path. The
+	// Registry-level shape gate handles the length floor; this matcher
+	// does not repeat it.
 	register(ProviderPattern{
 		Name:          "resend",
 		Prefixes:      []string{"re_"},
@@ -143,18 +142,8 @@ func init() {
 		Charset:       "alphanumeric",
 		Hosts:         []string{"api.resend.com"},
 		VaultEligible: true,
-		Match: func(name, value string) bool {
-			if strings.HasPrefix(value, "re_") {
-				return true
-			}
-			// Name-hint path: requires the value to also carry the
-			// re_ prefix — mirroring the gate applied to Stripe's name
-			// hint, which only fires for secret-key-prefixed values.
-			if strings.Contains(strings.ToUpper(name), "RESEND") &&
-				strings.HasPrefix(value, "re_") {
-				return true
-			}
-			return false
+		Match: func(_, value string) bool {
+			return strings.HasPrefix(value, "re_")
 		},
 	})
 }
