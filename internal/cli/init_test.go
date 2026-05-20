@@ -1749,3 +1749,40 @@ func TestAnnounceFileBackedKeystore_NonFileNoOp(t *testing.T) {
 		t.Errorf("announce should print nothing for non-file keystore, got: %q", buf.String())
 	}
 }
+
+// TestInit_ForceFlagDescribesDestructiveScope verifies that the --force flag's
+// help text names the destructive surfaces it touches (vault entries and
+// .veil-backup files). The original "reinitialize even if .veil/ exists"
+// undersold the blast radius: --force also clears keystore entries for the
+// prior projectID, overwrites same-named credentials, and replaces existing
+// .veil-backup sidecars for any file being re-vaulted.
+func TestInit_ForceFlagDescribesDestructiveScope(t *testing.T) {
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --help failed: %v", err)
+	}
+
+	// Locate the --force flag's help line. cobra renders flags as
+	//   --force   <description>
+	// possibly wrapped across lines, so scan for the line that begins the
+	// flag and accept the rest of the help text following it.
+	output := out.String()
+	idx := strings.Index(output, "--force")
+	if idx == -1 {
+		t.Fatalf("--force flag missing from help output:\n%s", output)
+	}
+	forceSection := output[idx:]
+
+	// The new description should name at least the vault and backup
+	// surfaces so users know --force is not just "skip the already-init
+	// check".
+	for _, want := range []string{"vault", "backup"} {
+		if !strings.Contains(forceSection, want) {
+			t.Errorf("--force description should mention %q to convey destructive scope, got:\n%s", want, forceSection)
+		}
+	}
+}

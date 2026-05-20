@@ -66,7 +66,7 @@ func initCmd() *cobra.Command {
 			return runInit(cmd, force, dryRun, yes)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "reinitialize even if .veil/ exists")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing Veil state (vault entries, keystore master key, and backups for files being re-vaulted)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be vaulted without making changes")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept all defaults non-interactively")
 	return cmd
