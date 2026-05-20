@@ -105,7 +105,13 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 		CreatedAt:    time.Now(),
 	}
 	if err := v.Add(cred); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		// Vault returns ErrDuplicateCredential (wrapped) when the name is
+		// already in use. Previously this branch did a substring match for
+		// "already exists" — but the actual vault error reads
+		// "vault: duplicate credential name: <name>", so the hint never
+		// fired and users saw the raw error. Match the sentinel directly
+		// so the actionable hint always surfaces.
+		if errors.Is(err, vault.ErrDuplicateCredential) {
 			return cliError(fmt.Sprintf("credential %q already exists", name), "Use --force to overwrite")
 		}
 		return cliError(fmt.Sprintf("adding credential: %v", err), "")

@@ -108,6 +108,53 @@ func TestAdd_InteractiveUsesReadPasswordHook(t *testing.T) {
 	}
 }
 
+// TestAdd_DuplicateWithoutForce_PrintsOverwriteHint covers C2: the duplicate-
+// detection branch in runAddInVault did `strings.Contains(err.Error(), "already
+// exists")` but the actual vault error string is "vault: duplicate credential
+// name: <name>" — so the hint never fired and the user saw a raw "adding
+// credential: vault: duplicate credential name" leak. With
+// errors.Is(vault.ErrDuplicateCredential) the user gets the actionable
+// "already exists" message and the cliError carries the "--force to overwrite"
+// hint.
+func TestAdd_DuplicateWithoutForce_PrintsOverwriteHint(t *testing.T) {
+	root := initProject(t)
+
+	// First add succeeds.
+	cmd := NewRoot("test")
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"add", "--path", root, "DUP_KEY",
+		"--value", "first-value-1234567890abcdef",
+		"--host", "api.example.com",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first add failed: %v", err)
+	}
+
+	// Second add for the same name (no --force) must surface the
+	// "already exists" message instead of a raw vault-package error string.
+	cmd2 := NewRoot("test")
+	cmd2.SetOut(io.Discard)
+	cmd2.SetErr(io.Discard)
+	cmd2.SetArgs([]string{
+		"add", "--path", root, "DUP_KEY",
+		"--value", "second-value-abcdef1234567890",
+		"--host", "api.example.com",
+	})
+	err := cmd2.Execute()
+	if err == nil {
+		t.Fatal("expected duplicate add to fail without --force")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `credential "DUP_KEY" already exists`) {
+		t.Errorf("expected friendly already-exists message, got: %q", msg)
+	}
+	if strings.Contains(msg, "duplicate credential name") {
+		t.Errorf("user-facing message must not leak the raw vault error string, got: %q", msg)
+	}
+}
+
 func TestAdd_BearerScheme_NotAffectedByGate(t *testing.T) {
 	root := initProject(t)
 
