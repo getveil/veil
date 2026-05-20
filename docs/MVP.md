@@ -29,9 +29,10 @@ Face, GitLab, SendGrid, Supabase. Each has its own placeholder shape so
 agents treat the placeholder as a real key.
 
 **Unknown Bearer secrets.** `.env` values that look high-entropy and have
-a credential-like name (e.g. `API_KEY`, `_TOKEN`) are still vaulted with
-a generic placeholder, but a host is not inferred — the credential will
-not fire until `veil add --host <host>` is run to scope it.
+a credential-like name (e.g. `API_KEY`, `_TOKEN`) are detected and
+reported by `veil init`, but are *not* automatically vaulted — a
+credential with no inferred host has nowhere to fire on injection. To
+vault and scope one, run `veil add NAME --value-stdin --host <host>`.
 
 **Authorization primitive.** Host-scoping. A credential fires only against
 the hosts on its allow-list, derived automatically from the provider

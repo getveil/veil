@@ -151,7 +151,7 @@ veil uninstall --dry-run    # preview the plan without changes
 | | Status |
 |---|---|
 | **Bearer providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab |
-| **Unknown Bearer secrets** | Detected by entropy + name pattern; needs manual `veil add --host` to scope |
+| **Unknown Bearer secrets** | Detected and reported by `veil init`, but not auto-vaulted; run `veil add NAME --host <host>` to vault and scope |
 | **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
 | **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |
 
@@ -173,8 +173,9 @@ Veil isn't a replacement for a secrets manager — it sits beside one. Secrets m
 
 Anything sent as HTTP `Authorization: Bearer` for the providers listed in
 the support table — OpenAI, Anthropic, Stripe, Slack, GitHub PATs, and the
-rest. Unknown Bearer-shaped secrets in `.env` are detected by entropy +
-name-pattern but need a manual `veil add --host <host>` to be routed.
+rest. Unknown Bearer-shaped secrets in `.env` are detected and reported
+but not automatically vaulted — run `veil add NAME --value-stdin --host <host>`
+to vault them with host scope.
 **Not in scope:** HTTP Basic, AWS SigV4, GitHub App JWTs, Google
 service-accounts, HMAC webhook signing, shell-environment secrets, MCP
 config files. If Veil can't safely manage a credential, `veil init` leaves
