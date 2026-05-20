@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -389,10 +390,55 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 // callers can render the summary without changing the function's
 // positional return list every time a new bucket is added.
 type vaultBuildResult struct {
-	Creds   []*vault.Credential
-	Vaulted int
-	Scoped  int
-	Skipped []secretLine // not vault-eligible (no provider, or provider has no host scope)
+	Creds      []*vault.Credential
+	Vaulted    int
+	Scoped     int
+	Skipped    []secretLine     // Bearer-shaped but no registered provider — `veil add` may help
+	OutOfScope []outOfScopeLine // known v1 non-Bearer scheme — `veil add` won't help
+}
+
+// outOfScopeLine is a secret that init explicitly cannot mediate in v1
+// (URL-with-embedded-password, AWS SigV4, HTTP Basic, etc.). The annotation
+// explains the scheme so the user understands the `veil add` hint shown for
+// the Bearer-shaped Skipped bucket would not actually protect this value.
+type outOfScopeLine struct {
+	key        string
+	annotation string
+}
+
+// Compiled name-pattern matchers for the out-of-scope categorizer. Compiled
+// once at package init to avoid the per-call compile cost on every init run.
+var (
+	outOfScopeURLNameRE   = regexp.MustCompile(`(?i)^DATABASE_URL$|^DB_URL$|.*_DSN$|.*_CONNECTION_STRING$|.*POSTGRES.*|.*MYSQL.*|.*MONGO.*`)
+	outOfScopeAWSNameRE   = regexp.MustCompile(`(?i)^AWS_.*`)
+	outOfScopeBasicNameRE = regexp.MustCompile(`(?i).*BASIC.*`)
+	// embeddedPasswordURLRE matches scheme://user:password@host... URLs that
+	// look like a TCP-protocol connection string with an inline password.
+	// Used as the value-shape leg of the URL-with-embedded-password rule.
+	embeddedPasswordURLRE = regexp.MustCompile(`^(postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|rediss|amqp|amqps)://[^/@]*:[^/@]+@`)
+)
+
+// categorizeOutOfScope reports whether (name, value) belongs to a v1 out-of-
+// scope scheme and, if so, returns the annotation to surface in the summary.
+// Returns ("", false) for Bearer-shaped values that should keep the existing
+// "Skipped — `veil add`" path.
+//
+// Rules applied in order (first match wins):
+//  1. URL-with-embedded-password: name looks like a connection-string env or
+//     value parses as scheme://user:password@... — annotation explains TCP.
+//  2. AWS_*: SigV4 is out of scope for v1.
+//  3. *BASIC*: HTTP Basic auth is out of scope (see docs/MVP.md §5).
+func categorizeOutOfScope(name, value string) (string, bool) {
+	if outOfScopeURLNameRE.MatchString(name) || embeddedPasswordURLRE.MatchString(value) {
+		return "(URL with embedded password — not a Bearer header)", true
+	}
+	if outOfScopeAWSNameRE.MatchString(name) {
+		return "(looks like an AWS credential — Veil does not handle SigV4 in v1)", true
+	}
+	if outOfScopeBasicNameRE.MatchString(name) {
+		return "(HTTP Basic auth — see docs/MVP.md §5)", true
+	}
+	return "", false
 }
 
 // buildEnvFileCredentials constructs the credentials for one .env file from
@@ -409,6 +455,14 @@ func buildEnvFileCredentials(
 
 	for _, s := range secrets {
 		if !isVaultEligible(s.key, s.value) {
+			// Route v1 out-of-scope schemes (URL-with-password, AWS SigV4,
+			// HTTP Basic) to a dedicated bucket so the renderer can mark them
+			// as "Veil cannot mediate these" rather than implying the user
+			// can rescue them with `veil add`.
+			if annotation, ok := categorizeOutOfScope(s.key, s.value); ok {
+				res.OutOfScope = append(res.OutOfScope, outOfScopeLine{key: s.key, annotation: annotation})
+				continue
+			}
 			res.Skipped = append(res.Skipped, s)
 			continue
 		}
@@ -484,11 +538,17 @@ func isVaultEligible(name, value string) bool {
 	return p.VaultEligible
 }
 
-// printVaultSummary emits the two-section summary: Vaulted and Skipped.
-// Called on every run (not just --dry-run) after buildEnvFileCredentials
-// returns. When dryRun is true the Vaulted section is suppressed —
-// printDryRunVaultLines already shows those keys as "would vault" lines,
-// so printing them here too would double-print each credential.
+// printVaultSummary emits the three-section summary: Vaulted, Skipped, and
+// Out of scope. Called on every run (not just --dry-run) after
+// buildEnvFileCredentials returns. When dryRun is true the Vaulted section is
+// suppressed — printDryRunVaultLines already shows those keys as "would
+// vault" lines, so printing them here too would double-print each credential.
+//
+// Empty sections are omitted. Section order is Vaulted → Skipped (Bearer-no-
+// provider, with the `veil add` hint) → Out of scope (with the docs/MVP.md
+// footer). The split matters because the `veil add` hint can rescue a Bearer
+// value with an unknown provider, but it cannot help with the schemes routed
+// to Out of scope (URL-with-password, AWS SigV4, HTTP Basic).
 func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 	if !dryRun && len(res.Creds) > 0 {
 		_, _ = fmt.Fprintf(w, "\nVaulted (%d):\n", len(res.Creds))
@@ -506,6 +566,13 @@ func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 		// names. Printed only once at the bottom so a file with N skipped
 		// rows doesn't repeat the line N times.
 		ui.Dim(w, "  To vault a custom credential manually: veil add <NAME> --value-stdin --host <host>")
+	}
+	if len(res.OutOfScope) > 0 {
+		_, _ = fmt.Fprintf(w, "\nOut of scope — Veil cannot mediate these in v1 (%d):\n", len(res.OutOfScope))
+		for _, s := range res.OutOfScope {
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", s.key, ui.Muted.Sprint(s.annotation))
+		}
+		ui.Dim(w, "  These remain in your .env. See docs/MVP.md for the v1 scope contract.")
 	}
 }
 

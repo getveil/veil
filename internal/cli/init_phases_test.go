@@ -497,13 +497,18 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
 
-	// Only GITHUB_TOKEN may be vaulted; both AWS_* land in Skipped (the AWS
-	// provider was removed in the v1 launch cut so no provider claims them).
+	// Only GITHUB_TOKEN may be vaulted; both AWS_* are routed to OutOfScope
+	// because the categorizer recognizes their AWS_ prefix as a v1 non-Bearer
+	// scheme (SigV4 is not handled). They do NOT land in Skipped because the
+	// `veil add` hint shown there would not actually protect them.
 	if len(res.Creds) != 1 || res.Creds[0].Name != "GITHUB_TOKEN" {
 		t.Fatalf("Creds = %+v, want exactly GITHUB_TOKEN", res.Creds)
 	}
-	if len(res.Skipped) != 2 {
-		t.Fatalf("Skipped len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.Skipped))
+	if len(res.OutOfScope) != 2 {
+		t.Fatalf("OutOfScope len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.OutOfScope))
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("Skipped len = %d, want 0 (AWS_* routed to OutOfScope)", len(res.Skipped))
 	}
 }
 
@@ -512,8 +517,9 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 // schemes bypass Veil's HTTP proxy entirely, so DATABASE_URL=postgres://...
 // is not vaulted. If a postgres URL is still surfaced to
 // buildEnvFileCredentials (e.g. via a name-hint gate match like
-// DB_PASSWORD or via the entropy gate on a long value), it lands in
-// Skipped rather than Creds because no provider claims it.
+// DB_PASSWORD or via the entropy gate on a long value), the URL-with-
+// embedded-password categorizer now routes it to OutOfScope rather than
+// Skipped — `veil add` cannot rescue a TCP connection string.
 func TestBuildEnvFileCredentials_PostgresURLNotVaulted(t *testing.T) {
 	// IsSecretLike no longer recognizes a postgres URL by name alone, so
 	// DATABASE_URL=postgres://... is not surfaced at all. The DB_PASSWORD
@@ -538,8 +544,11 @@ func TestBuildEnvFileCredentials_PostgresURLNotVaulted(t *testing.T) {
 	if len(res.Creds) != 0 {
 		t.Fatalf("Creds = %+v, want empty (postgres:// has no provider and TCP can't be proxied)", res.Creds)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0].key != "DB_PASSWORD" {
-		t.Fatalf("Skipped = %+v, want exactly DB_PASSWORD", res.Skipped)
+	if len(res.OutOfScope) != 1 || res.OutOfScope[0].key != "DB_PASSWORD" {
+		t.Fatalf("OutOfScope = %+v, want exactly DB_PASSWORD (postgres:// value triggers the URL-with-password categorizer)", res.OutOfScope)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("Skipped len = %d, want 0 (URL-with-password routed to OutOfScope)", len(res.Skipped))
 	}
 }
 
@@ -668,6 +677,144 @@ func TestPrintVaultSummary_NoSkippedNoHint(t *testing.T) {
 	printVaultSummary(&buf, res, false)
 	if strings.Contains(buf.String(), "veil add") {
 		t.Errorf("hint must not appear without a Skipped section:\n%s", buf.String())
+	}
+}
+
+// TestBuildEnvFileCredentials_OutOfScopeAnnotations covers C3: secrets that
+// belong to schemes Veil cannot mediate in v1 (URL-with-password, AWS SigV4,
+// HTTP Basic) must be separated from Bearer-shaped-but-no-provider entries so
+// the summary can explain that the `veil add` hint won't actually protect
+// them. They land in a dedicated OutOfScope bucket with a short annotation
+// describing why.
+func TestBuildEnvFileCredentials_OutOfScopeAnnotations(t *testing.T) {
+	envFile := scanner.ParseBytes([]byte(
+		"OPENAI_API_KEY=sk-proj-1234567890abcdefghijklmnopqrstuvwxyzABCDEF\n" +
+			"ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyzABCDEF12\n" +
+			"DATABASE_URL=postgres://user:password@db:5432/app\n" +
+			"AWS_SECRET_ACCESS_KEY=wxYxQwSn1U2t3vBhB8I7sDX2RaQDvBcwLzPgUyDt\n" +
+			"HTTP_BASIC_PASSWORD=correct-horse-battery-staple-1980\n" +
+			"CUSTOM_API_TOKEN=somelongstringthatisbearershapedbutunknown12\n"))
+	// The IsSecretLike pre-gate inside processEnvFile filters non-secret
+	// values before they reach buildEnvFileCredentials. For this test we
+	// bypass that gate and route every KV line straight in — the goal is to
+	// verify the categorizer, not the filter.
+	var secrets []secretLine
+	for i, line := range envFile.Lines {
+		if line.Kind == scanner.KVLine {
+			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
+		}
+	}
+
+	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
+	if err != nil {
+		t.Fatalf("buildEnvFileCredentials: %v", err)
+	}
+
+	// Two Bearer creds should vault: OPENAI and ANTHROPIC.
+	gotCreds := make(map[string]bool, len(res.Creds))
+	for _, c := range res.Creds {
+		gotCreds[c.Name] = true
+	}
+	for _, name := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"} {
+		if !gotCreds[name] {
+			t.Errorf("expected %s in Creds, got: %v", name, gotCreds)
+		}
+	}
+
+	// Out-of-scope must contain DATABASE_URL, AWS_SECRET_ACCESS_KEY,
+	// HTTP_BASIC_PASSWORD — each carrying the right annotation.
+	oos := make(map[string]string, len(res.OutOfScope))
+	for _, s := range res.OutOfScope {
+		oos[s.key] = s.annotation
+	}
+	if !strings.Contains(oos["DATABASE_URL"], "URL with embedded password") {
+		t.Errorf("DATABASE_URL annotation = %q, want substring 'URL with embedded password'", oos["DATABASE_URL"])
+	}
+	if !strings.Contains(oos["AWS_SECRET_ACCESS_KEY"], "AWS") || !strings.Contains(oos["AWS_SECRET_ACCESS_KEY"], "SigV4") {
+		t.Errorf("AWS_SECRET_ACCESS_KEY annotation = %q, want substring 'AWS' and 'SigV4'", oos["AWS_SECRET_ACCESS_KEY"])
+	}
+	if !strings.Contains(oos["HTTP_BASIC_PASSWORD"], "HTTP Basic") {
+		t.Errorf("HTTP_BASIC_PASSWORD annotation = %q, want substring 'HTTP Basic'", oos["HTTP_BASIC_PASSWORD"])
+	}
+
+	// Bearer-shaped no-provider stays in Skipped.
+	gotSkipped := make(map[string]bool, len(res.Skipped))
+	for _, s := range res.Skipped {
+		gotSkipped[s.key] = true
+	}
+	if !gotSkipped["CUSTOM_API_TOKEN"] {
+		t.Errorf("expected CUSTOM_API_TOKEN in Skipped (Bearer no provider), got: %v", gotSkipped)
+	}
+	// Out-of-scope entries must NOT leak into the Skipped section.
+	for _, name := range []string{"DATABASE_URL", "AWS_SECRET_ACCESS_KEY", "HTTP_BASIC_PASSWORD"} {
+		if gotSkipped[name] {
+			t.Errorf("%s should be in OutOfScope, not Skipped", name)
+		}
+	}
+}
+
+// TestPrintVaultSummary_RendersOutOfScopeSection verifies the rendered summary
+// includes a dedicated "Out of scope" block with per-entry annotations and the
+// footer pointing at docs/MVP.md. Asserts the section is absent when nothing
+// landed there.
+func TestPrintVaultSummary_RendersOutOfScopeSection(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
+		},
+		OutOfScope: []outOfScopeLine{
+			{key: "DATABASE_URL", annotation: "(URL with embedded password — not a Bearer header)"},
+			{key: "AWS_SECRET_ACCESS_KEY", annotation: "(looks like an AWS credential — Veil does not handle SigV4 in v1)"},
+			{key: "HTTP_BASIC_PASSWORD", annotation: "(HTTP Basic auth — see docs/MVP.md §5)"},
+		},
+	}
+
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	out := buf.String()
+
+	if !strings.Contains(out, "Out of scope") {
+		t.Errorf("missing 'Out of scope' header:\n%s", out)
+	}
+	if !strings.Contains(out, "(3)") {
+		t.Errorf("missing '(3)' count in Out of scope header:\n%s", out)
+	}
+	for _, want := range []string{
+		"DATABASE_URL",
+		"URL with embedded password",
+		"AWS_SECRET_ACCESS_KEY",
+		"SigV4",
+		"HTTP_BASIC_PASSWORD",
+		"HTTP Basic",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Out of scope section missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "These remain in your .env") {
+		t.Errorf("missing footer about remaining-in-.env:\n%s", out)
+	}
+	if !strings.Contains(out, "docs/MVP.md") {
+		t.Errorf("footer should mention docs/MVP.md:\n%s", out)
+	}
+}
+
+// TestPrintVaultSummary_NoOutOfScopeNoFooter guards that the docs/MVP.md
+// footer is suppressed when the OutOfScope bucket is empty.
+func TestPrintVaultSummary_NoOutOfScopeNoFooter(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
+		},
+	}
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	out := buf.String()
+	if strings.Contains(out, "Out of scope") {
+		t.Errorf("Out of scope section must not render when bucket is empty:\n%s", out)
+	}
+	if strings.Contains(out, "docs/MVP.md") {
+		t.Errorf("footer must not appear without an Out of scope section:\n%s", out)
 	}
 }
 
