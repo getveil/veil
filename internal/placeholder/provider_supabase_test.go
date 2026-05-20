@@ -148,20 +148,20 @@ func TestProviderSupabase(t *testing.T) {
 	})
 }
 
-// TestSupabaseNameMatchRequiresValueShape ensures the name-only fallback in
-// isJWTWithAlg won't flag CI / config metadata vars whose name happens to
-// contain "SUPABASE" but whose value is clearly not a credential. Mirrors the
-// secretMinLength floor used by the GitHub provider for GITHUB_REF_NAME et al.
-func TestSupabaseNameMatchRequiresValueShape(t *testing.T) {
-	prov := mustProvider(t, "supabase")
-
+// TestSupabaseNameMatchGatedAtRegistry ensures the name-only fallback
+// in isJWTWithAlg won't flag CI / config metadata vars whose name
+// happens to contain "SUPABASE" but whose value is clearly not a
+// credential. The check now lives at Registry.Match
+// (passesValueShapeGate) rather than inside isJWTWithAlg.
+func TestSupabaseNameMatchGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
 	cases := []struct{ name, value string }{
 		{"SUPABASE_REGION", "us-east-1"},
 		{"SUPABASE_PROJECT_REF", "abcd1234"},
 	}
 	for _, c := range cases {
-		if prov.Match(c.name, c.value) {
-			t.Errorf("should not match Supabase metadata %s=%q (value below secretMinLength)", c.name, c.value)
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("Registry.Match should not match Supabase metadata %s=%q; got %s", c.name, c.value, p.Name)
 		}
 	}
 }

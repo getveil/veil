@@ -41,20 +41,16 @@ func init() {
 // every signed token in the wild (Auth0, Cognito, Firebase, custom apps),
 // producing false positives that caused us to inject Supabase placeholders
 // for unrelated credentials.
+//
+// The credential-shape floor lives at Registry.Match (passesValueShapeGate);
+// short config metadata like SUPABASE_REGION=us-east-1 is rejected there
+// before this matcher is consulted, so neither the sbp_ prefix path nor
+// the name-hint path repeats the length check.
 func isJWTWithAlg(name, value string) bool {
-	// sbp_ personal-access-token prefix. Length floor matches the
-	// credential-shape gate applied to the SUPABASE_* name path so a stray
-	// `sbp_x` config value doesn't slip through.
-	if strings.HasPrefix(value, "sbp_") && len(value) >= secretMinLength {
+	if strings.HasPrefix(value, "sbp_") {
 		return true
 	}
-	// Name-only fallback: catches custom/unprefixed tokens stored under a
-	// SUPABASE_* name. Require a credential-shaped value length so we don't
-	// classify config metadata like SUPABASE_REGION=us-east-1 or
-	// SUPABASE_PROJECT_REF=abcd1234 as secrets. Mirrors the floor applied in
-	// provider_github.go.
-	if len(value) >= secretMinLength &&
-		strings.Contains(strings.ToUpper(name), "SUPABASE") {
+	if strings.Contains(strings.ToUpper(name), "SUPABASE") {
 		return true
 	}
 	parts := strings.Split(value, ".")
