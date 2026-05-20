@@ -17,6 +17,7 @@ import (
 
 func TestInitHappyPath(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 
@@ -108,6 +109,7 @@ func TestInitHappyPath(t *testing.T) {
 
 func TestInitDryRun(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -170,6 +172,7 @@ func TestInitDryRun(t *testing.T) {
 // would conclude that --dry-run had vaulted secrets when nothing changed.
 func TestInitDryRun_SummaryQualified(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -220,6 +223,7 @@ func TestInitDryRun_SummaryQualified(t *testing.T) {
 
 func TestInitForce(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -262,6 +266,7 @@ func TestInitForce(t *testing.T) {
 // entry for the project.
 func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -312,6 +317,7 @@ func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
 // leak an orphan entry (F-15).
 func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -361,6 +367,7 @@ func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
 // entries belonging to this project.
 func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -463,6 +470,7 @@ func TestInitAlreadyInitialized(t *testing.T) {
 
 func TestInitGitignoreAppend(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -507,6 +515,7 @@ func TestInitGitignoreAppend(t *testing.T) {
 
 func TestInitYes_VaultsAll(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nGITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz1234\n"), 0644)
@@ -537,6 +546,7 @@ func TestInitYes_VaultsAll(t *testing.T) {
 
 func TestInitInteractive_SkipFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
@@ -566,6 +576,7 @@ func TestInitInteractive_SkipFile(t *testing.T) {
 
 func TestInitInteractive_SkipToken(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nSTRIPE_KEY=sk_live_12345678901234567890abcd\n"), 0644)
@@ -593,6 +604,7 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
@@ -617,6 +629,7 @@ func TestInitInteractive_SkipHosts(t *testing.T) {
 
 func TestInitForce_WipesVault(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	envContent := []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n")
@@ -666,6 +679,7 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 	// vault rather than silently skipping (which would leave the placeholder
 	// in .env unvaulted on the second pass).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -724,6 +738,7 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 
 func TestInitEnvCreatesBackupBeforeRewrite(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -861,6 +876,7 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 // vault — without it, an init that does nothing at all would pass.
 func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -975,6 +991,7 @@ func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
 // sentinel and surfaces an actionable error instead.
 func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	dir := t.TempDir()
@@ -1073,6 +1090,7 @@ func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
 // refuse the operation before any destructive step.
 func TestInitRefusesSymlinkedEnv(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	// External target outside the project — the "safe" location the user
 	// deliberately picked to keep secrets out of source control.
@@ -1362,6 +1380,7 @@ func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 // remaining surface for shell-exported secrets.
 func TestInit_DoesNotScanShellEnv(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
 
 	tmpDir := t.TempDir()
@@ -1405,6 +1424,7 @@ func TestInit_DoesNotScanShellEnv(t *testing.T) {
 // flag is no longer accepted. Cobra returns an "unknown flag" error.
 func TestInit_RejectsScanShellEnvFlag(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {

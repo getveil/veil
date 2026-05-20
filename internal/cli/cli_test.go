@@ -43,11 +43,26 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// pinTestHome pins HOME and XDG_DATA_HOME to a tempdir so init/uninstall's
+// user-global CA writes (~/Library/Application Support/veil/ca/ on macOS,
+// ~/.local/share/veil/ca/ on Linux) land in a sandbox. Without this, tests
+// that run `veil init` create/load the developer's real CA, and tests that
+// run `veil uninstall` will DELETE it — breaking the dev's actual Veil
+// installation when they run `make test`. Apply to any test that exercises
+// init or uninstall through cmd.Execute.
+func pinTestHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+}
+
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
 // It returns the project root path.
 func initProject(t *testing.T) string {
 	t.Helper()
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -351,6 +366,7 @@ func TestStatusOutput(t *testing.T) {
 
 func TestListEmpty(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1069,6 +1085,7 @@ func TestRemoveCancelled(t *testing.T) {
 
 func TestInitEmptyEnvFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1090,6 +1107,7 @@ func TestInitEmptyEnvFile(t *testing.T) {
 
 func TestInitExportPrefixPreserved(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1123,6 +1141,7 @@ func TestInitExportPrefixPreserved(t *testing.T) {
 
 func TestInitQuotedValuesRoundTrip(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1166,6 +1185,7 @@ func TestInitQuotedValuesRoundTrip(t *testing.T) {
 
 func TestInitNoSecretsInOutput(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {

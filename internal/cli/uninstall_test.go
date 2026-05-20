@@ -500,6 +500,7 @@ func TestResolverFromVault(t *testing.T) {
 
 func TestUninstallDryRunNoChanges(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -546,6 +547,7 @@ func TestUninstallDryRunNoChanges(t *testing.T) {
 
 func TestUninstallBlocksOnActiveProxy(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -584,6 +586,7 @@ func TestUninstallBlocksOnActiveProxy(t *testing.T) {
 
 func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -629,6 +632,7 @@ func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 
 func TestUninstallRoundTripFidelity(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -679,6 +683,7 @@ func TestUninstallRoundTripFidelity(t *testing.T) {
 
 func TestUninstallMultiFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -721,6 +726,7 @@ func TestUninstallMultiFile(t *testing.T) {
 
 func TestUninstallNoOpAfterPriorUninstall(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -759,6 +765,7 @@ func TestUninstallNoOpAfterPriorUninstall(t *testing.T) {
 
 func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -807,6 +814,7 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 // the proceed-anyway behavior; this one pins the warning text.
 func TestUninstallYesWithModifiedFilesPrintsWarning(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -858,6 +866,7 @@ func TestUninstallYesWithModifiedFilesPrintsWarning(t *testing.T) {
 // path), the noisy "files will be overwritten" line must not appear.
 func TestUninstallYesNoWarningWhenNothingModified(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -899,6 +908,7 @@ func TestUninstallYesNoWarningWhenNothingModified(t *testing.T) {
 // for both, then confirm both relative paths appear in the uninstall output.
 func TestUninstallPrintsPerFileRestoreLine(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -956,6 +966,7 @@ func TestUninstallPrintsPerFileRestoreLine(t *testing.T) {
 // rename fires.
 func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	// Step 1: produce a legitimate post-init state with a real .env.veil-backup.
 	root := t.TempDir()
@@ -1070,6 +1081,7 @@ func TestDiscoverBackups_FindsExtendedEnvNames(t *testing.T) {
 // the target's bytes appear as the '-' side of the printed diff.
 func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -1129,6 +1141,7 @@ func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 // file is gone.
 func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -1171,6 +1184,7 @@ func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
 // must not delete a file with their own ignores in it.
 func TestUninstallPreservesUserGitignore(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
