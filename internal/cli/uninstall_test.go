@@ -799,6 +799,151 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 	}
 }
 
+// TestUninstallYesWithModifiedFilesPrintsWarning covers Fix 1: when --yes is
+// used and the plan contains modified pairs, the user never saw the diff —
+// we must still proceed (the --yes contract is "skip the prompt") but print
+// a one-line warning so scripted runs that overwrite user edits don't fail
+// silently. The companion test TestUninstallUserEditOverwrittenWithYes pins
+// the proceed-anyway behavior; this one pins the warning text.
+func TestUninstallYesWithModifiedFilesPrintsWarning(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	original := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// User adds a new line post-init — this makes the pair classModified.
+	current, _ := os.ReadFile(envPath)
+	edited := append(current, []byte("LOG_LEVEL=debug\n")...)
+	if err := os.WriteFile(envPath, edited, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "user edits that will be overwritten") {
+		t.Errorf("expected warning about user edits being overwritten; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
+	}
+	if !strings.Contains(combined, "--yes") {
+		t.Errorf("warning should point at --yes; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
+	}
+}
+
+// TestUninstallYesNoWarningWhenNothingModified ensures the warning is scoped
+// to the actual problem case — if every pair is classUnmodified (the common
+// path), the noisy "files will be overwritten" line must not appear.
+func TestUninstallYesNoWarningWhenNothingModified(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	combined := stdout.String() + stderr.String()
+	if strings.Contains(combined, "user edits that will be overwritten") {
+		t.Errorf("warning should NOT fire when no files are modified; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
+	}
+}
+
+// TestUninstallPrintsPerFileRestoreLine covers Fix 2: before each rename, the
+// uninstall loop emits a "restoring: <rel>" line so a mid-loop crash leaves a
+// trail of which files were already restored vs. still pending. We seed two
+// .env files, each carrying a named-provider secret so init creates a backup
+// for both, then confirm both relative paths appear in the uninstall output.
+func TestUninstallPrintsPerFileRestoreLine(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env.local"),
+		[]byte("STRIPE_SECRET_KEY=sk_live_1234567890abcdef1234567890\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	// Sanity: both files must have been backed up by init, otherwise the
+	// per-file output assertion below is testing the wrong thing.
+	for _, name := range []string{".env", ".env.local"} {
+		if _, err := os.Stat(filepath.Join(root, name+backupSuffix)); err != nil {
+			t.Fatalf("init did not create backup for %s: %v", name, err)
+		}
+	}
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	out := stdout.String()
+	for _, rel := range []string{".env", ".env.local"} {
+		if !strings.Contains(out, "restoring: "+rel) {
+			t.Errorf("expected per-file restoring line for %q; got:\n%s", rel, out)
+		}
+	}
+}
+
 // TestUninstallRefusesSymlinkedBackup covers the regression where a symlinked
 // .env.veil-backup turns `veil uninstall --dry-run` into an arbitrary-file-read
 // primitive. discoverBackups used os.Stat (which follows symlinks) and

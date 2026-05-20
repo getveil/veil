@@ -422,6 +422,24 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		return nil
 	}
 
+	// When --yes is used non-interactively, the user never saw the diff —
+	// surface a single warning so scripted runs that clobber post-init edits
+	// don't fail silently. We still proceed (the existing --yes contract is
+	// "skip the prompt"), but the warning tells the operator to re-run
+	// interactively if they want to review the diff first.
+	if yes {
+		modifiedCount := 0
+		for _, pl := range plan {
+			if pl.status == classModified {
+				modifiedCount++
+			}
+		}
+		if modifiedCount > 0 {
+			ui.Warnf(w, "%d %s have user edits that will be overwritten. Re-run without --yes to review the diff.",
+				modifiedCount, plural(modifiedCount, "file", "files"))
+		}
+	}
+
 	if !yes && !promptYN(newLineReader(cmd.InOrStdin()), w, "Proceed with uninstall?", false) {
 		_, _ = fmt.Fprintln(w, "Aborted.")
 		return nil
@@ -431,6 +449,12 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	// subset where the original was absent (newly placed rather than restored).
 	moved, materialized := 0, 0
 	for _, pl := range plan {
+		// Print a per-file dim line BEFORE the rename so a mid-loop crash
+		// leaves a trail of which files were restored vs. still pending.
+		// Re-running uninstall picks up the unmoved sidecars via
+		// discoverBackups, but the user otherwise has no signal about
+		// partial progress.
+		ui.Dimf(w, "  restoring: %s", displayRelOr(root, pl.pair.original, pl.pair.original))
 		if err := os.Rename(pl.pair.backup, pl.pair.original); err != nil {
 			return wrapErr(fmt.Sprintf("restoring %s", pl.pair.original), err)
 		}
