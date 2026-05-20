@@ -134,3 +134,54 @@ func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 		}
 	}
 }
+
+// TestPrintUnvaultedWarning_GrammarSingularPlural asserts the warning header
+// reads correctly for both N=1 and N>1 cases. Prior to this fix, the message
+// "1 shell env var look like secrets" was ungrammatical at N=1.
+func TestPrintUnvaultedWarning_GrammarSingularPlural(t *testing.T) {
+	cases := []struct {
+		name           string
+		names          []string
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name:  "singular",
+			names: []string{"FOO_TOKEN"},
+			wantContains: []string{
+				"1 shell env var ",
+				"looks",
+				"a secret",
+			},
+			// Must not use the plural verb form. Match with trailing space to
+			// avoid a false positive on the singular "looks".
+			wantNotContain: []string{"look "},
+		},
+		{
+			name:  "plural",
+			names: []string{"FOO_TOKEN", "BAR_SECRET"},
+			wantContains: []string{
+				"2 shell env vars ",
+				"look like secrets",
+			},
+			wantNotContain: []string{"looks"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printUnvaultedWarning(&buf, tc.names)
+			out := buf.String()
+			for _, want := range tc.wantContains {
+				if !strings.Contains(out, want) {
+					t.Errorf("warning missing %q:\n%s", want, out)
+				}
+			}
+			for _, bad := range tc.wantNotContain {
+				if strings.Contains(out, bad) {
+					t.Errorf("warning unexpectedly contains %q:\n%s", bad, out)
+				}
+			}
+		})
+	}
+}
