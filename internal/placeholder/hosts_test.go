@@ -77,7 +77,7 @@ func TestExtractURLHost_NoScheme(t *testing.T) {
 }
 
 func TestHostsForCredential_GitHubToken(t *testing.T) {
-	hosts := HostsForCredential("GITHUB_TOKEN", "ghp_abc123def456")
+	hosts := HostsForCredential("GITHUB_TOKEN", "ghp_abc123def456ghi789jkl")
 	if len(hosts) == 0 {
 		t.Fatal("expected hosts for GitHub token")
 	}
@@ -94,7 +94,7 @@ func TestHostsForCredential_GitHubToken(t *testing.T) {
 }
 
 func TestHostsForCredential_OpenAIKey(t *testing.T) {
-	hosts := HostsForCredential("OPENAI_API_KEY", "sk-proj-abc123")
+	hosts := HostsForCredential("OPENAI_API_KEY", "sk-proj-abc123def456ghi789")
 	if len(hosts) != 1 || hosts[0] != "api.openai.com" {
 		t.Errorf("expected [api.openai.com], got %v", hosts)
 	}
@@ -177,5 +177,26 @@ func TestExtractURLHost_AcceptsAllowedSchemes(t *testing.T) {
 				t.Fatalf("ExtractURLHost(%q) = %q, want %q", tc.value, got, tc.wantHost)
 			}
 		})
+	}
+}
+
+// TestHostsForCredential_GatedByValueShape locks in that the auto-scope
+// path also runs through the unified value-shape gate. Without this,
+// a sub-gate value would receive provider hosts even though
+// (*Registry).Match would have rejected it for vaulting — desynced
+// behavior between detection and host scoping.
+func TestHostsForCredential_GatedByValueShape(t *testing.T) {
+	// Sub-gate value under a provider name hint: would otherwise pick
+	// up Vercel hosts via the declarativeMatcher name-hint path.
+	hosts := HostsForCredential("VERCEL_ENV", "production")
+	if len(hosts) != 0 {
+		t.Errorf("HostsForCredential should not auto-scope sub-gate values; got %v", hosts)
+	}
+
+	// URL-extraction path must still fire for sub-gate values — URLs
+	// are a separate signal from provider matching.
+	urlHosts := HostsForCredential("WEBHOOK_URL", "https://hooks.example.com/path")
+	if len(urlHosts) != 1 || urlHosts[0] != "hooks.example.com" {
+		t.Errorf("HostsForCredential should still extract URL hosts; got %v", urlHosts)
 	}
 }

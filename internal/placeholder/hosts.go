@@ -71,25 +71,31 @@ func ExtractURLHost(value string) string {
 
 // HostsForCredential resolves the allowed hosts for a credential using the
 // resolution chain:
-//  1. Provider registry — if a provider matches, return its Hosts
+//  1. Provider registry — if a provider matches AND the value passes
+//     the shared value-shape gate, return the provider's Hosts
 //  2. URL parsing — if the value is URL-shaped, extract the host
 //  3. Return nil (credential is inert until manually scoped)
+//
+// The value-shape gate sits at step 1 so sub-gate values can't receive
+// provider hosts via the declarativeMatcher's name-hint path —
+// preserving symmetry with (*Registry).Match. URL extraction stays
+// ungated: URLs are a separate signal class (parsed structure, not
+// random-alphabet density) and short URLs are still valid hosts to
+// auto-scope to.
 func HostsForCredential(name, value string) []string {
-	// 1. Check provider registry (registration-ordered after the launch
-	// cuts dropped the handwritten-vs-format priority split).
-	for _, p := range DefaultRegistry().All() {
-		if p.Match(name, value) && len(p.Hosts) > 0 {
-			hosts := make([]string, len(p.Hosts))
-			copy(hosts, p.Hosts)
-			return hosts
+	if passesValueShapeGate(value) {
+		for _, p := range DefaultRegistry().All() {
+			if p.Match(name, value) && len(p.Hosts) > 0 {
+				hosts := make([]string, len(p.Hosts))
+				copy(hosts, p.Hosts)
+				return hosts
+			}
 		}
 	}
 
-	// 2. Try URL host extraction.
 	if h := ExtractURLHost(value); h != "" {
 		return []string{h}
 	}
 
-	// 3. No hosts detected.
 	return nil
 }
