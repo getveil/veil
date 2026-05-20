@@ -230,20 +230,24 @@ func TestDefaultRegistryMatchesPackageRegistry(t *testing.T) {
 // applies any priority-based reordering after the Phase 9 cuts.
 func TestRegistry_StableWithinRegistration(t *testing.T) {
 	saved := append([]ProviderPattern(nil), registry...)
+	// Use a value that passes the Registry-level shape gate (>= 20 chars,
+	// >= 6 distinct bytes) so the ordering assertion is not masked by the
+	// pre-gate short-circuit.
+	const sharedVal = "shared-xB9k4mP2nQ7vY3wR8"
 	register(ProviderPattern{
 		Name:     "first",
-		Match:    func(name, value string) bool { return value == "shared" },
+		Match:    func(name, value string) bool { return value == sharedVal },
 		Generate: func(_, _ string) string { return "a" },
 	})
 	register(ProviderPattern{
 		Name:     "second",
-		Match:    func(name, value string) bool { return value == "shared" },
+		Match:    func(name, value string) bool { return value == sharedVal },
 		Generate: func(_, _ string) string { return "b" },
 	})
 	defer func() { registry = saved }()
 
 	r := DefaultRegistry()
-	p := r.Match("ANY", "shared")
+	p := r.Match("ANY", sharedVal)
 	if p == nil {
 		t.Fatal("expected a match")
 	}

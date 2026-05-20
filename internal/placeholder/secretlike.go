@@ -114,11 +114,10 @@ func IsSecretLike(name, value string) bool {
 	if isStubValue(value) {
 		return false
 	}
-	// 1. Provider patterns.
-	for _, p := range DefaultRegistry().All() {
-		if p.Match(name, value) {
-			return true
-		}
+	// 1. Provider patterns — routed through Registry.Match so the unified
+	// value-shape pre-gate applies before any per-provider Match is consulted.
+	if DefaultRegistry().Match(name, value) != nil {
+		return true
 	}
 	// 2. Key name heuristic, gated by value shape.
 	if secretNamePattern.MatchString(name) {

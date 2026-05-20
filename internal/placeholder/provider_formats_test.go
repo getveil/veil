@@ -355,3 +355,30 @@ func TestSupabase_SBPPrefixDetected_UnderGenericName(t *testing.T) {
 		t.Fatalf("generated sbp_ placeholder %q does not round-trip through Match", gen)
 	}
 }
+
+// TestProviderMatchers_RejectShortNameHintValues is the regression test
+// for the SLACK / VERCEL name-hint false positive: SLACK_CHANNEL=general,
+// VERCEL_ENV=production, VERCEL_URL=my-app.vercel.app, and
+// VERCEL_REGION=iad1 are all injected automatically by deployment
+// platforms and were being offered for vaulting (and auto-vaulted under
+// --yes / piped stdin) via the declarativeMatcher's name-hint path. The
+// Registry-level shape gate must reject them before any per-provider
+// Match is consulted.
+func TestProviderMatchers_RejectShortNameHintValues(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"SLACK_CHANNEL", "general"},
+		{"VERCEL_ENV", "production"},
+		{"VERCEL_URL", "my-app.vercel.app"},
+		{"VERCEL_REGION", "iad1"},
+	}
+	reg := DefaultRegistry()
+	for _, c := range cases {
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("%s=%q matched provider %s via Registry.Match — should fail shape gate",
+				c.name, c.value, p.Name)
+		}
+		if IsSecretLike(c.name, c.value) {
+			t.Errorf("%s=%q classified secret-like — should fail all gates", c.name, c.value)
+		}
+	}
+}

@@ -174,7 +174,16 @@ func (r *Registry) Register(p ProviderPattern) {
 }
 
 // Match returns the first provider whose Match returns true, or nil if none.
+// Runs the unified value-shape pre-gate first: if value is too short or
+// too uniform to plausibly be a credential, every provider's Match is
+// skipped. This is the chokepoint that closes the name-hint false-
+// positive bug class (SLACK_CHANNEL=general, VERCEL_ENV=production, …)
+// — replacing the per-provider length floors that hand-written providers
+// each had to remember to add.
 func (r *Registry) Match(name, value string) *ProviderPattern {
+	if !passesValueShapeGate(value) {
+		return nil
+	}
 	for i := range r.patterns {
 		if r.patterns[i].Match(name, value) {
 			return &r.patterns[i]
