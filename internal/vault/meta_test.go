@@ -65,14 +65,12 @@ func TestReadProjectIDErrorsOnEmptyProjectID(t *testing.T) {
 	}
 }
 
-// TestReadVaultedFiles_TolerantOfLegacyKindField verifies the compat
-// rationale documented on vaultMeta.VaultedFiles: existing vault.meta
-// files that recorded a "kind" discriminator (for the now-removed MCP
-// scanning path) must still unmarshal cleanly. JSON's tolerant
-// field-drop on unknown struct fields is what keeps the entry shape
-// stable across the v1 launch cut; this guards against an inadvertent
-// switch to []string that would break old vaults silently.
-func TestReadVaultedFiles_TolerantOfLegacyKindField(t *testing.T) {
+// TestReadProjectID_TolerantOfLegacyVaultedFilesField verifies vault.meta
+// files written by pre-v1 builds (with a `vaulted_files` registry of paths
+// init had touched) still unmarshal cleanly after the launch cuts dropped
+// that field. JSON's tolerant unknown-field drop on struct unmarshaling is
+// what keeps old vaults loadable; this test pins that contract.
+func TestReadProjectID_TolerantOfLegacyVaultedFilesField(t *testing.T) {
 	root := t.TempDir()
 	stateDir := config.ProjectStateDir(root)
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
@@ -85,16 +83,11 @@ func TestReadVaultedFiles_TolerantOfLegacyKindField(t *testing.T) {
 	if err := os.WriteFile(config.VaultMetaFile(root), []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := vault.ReadVaultedFiles(root)
+	got, err := vault.ReadProjectID(root)
 	if err != nil {
-		t.Fatalf("ReadVaultedFiles: %v (legacy kind field must not break unmarshal)", err)
+		t.Fatalf("ReadProjectID: %v (legacy vaulted_files must not break unmarshal)", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d: %+v", len(entries), entries)
-	}
-	for _, e := range entries {
-		if e.Path == "" {
-			t.Errorf("entry has empty Path: %+v", e)
-		}
+	if got != "p" {
+		t.Errorf("got %q, want %q", got, "p")
 	}
 }

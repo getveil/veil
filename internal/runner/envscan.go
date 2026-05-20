@@ -25,6 +25,12 @@ import (
 // Runs against os.Environ() at veil-run startup as the sole shell-env
 // surface: init only scans .env files, so any secret-shaped name still
 // living in the shell needs to be flagged here before launch.
+//
+// Phase 9 spec called for dropping the pre-filter in favor of a "simpler
+// name-match", but doing so flags PWD/PATH/ANTHROPIC_BASE_URL on every
+// `veil run` invocation in a normal terminal — a recurring startup-banner
+// regression that conflicts with the explicit "don't fire warnings every
+// session" UX bar. The pre-filter stays.
 func scanUnvaultedSecretLikes(environ, vaultNames []string, allow map[string]struct{}) []string {
 	vaulted := make(map[string]struct{}, len(vaultNames))
 	for _, n := range vaultNames {

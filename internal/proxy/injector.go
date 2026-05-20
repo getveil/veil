@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cloudflare/ahocorasick"
@@ -23,9 +22,10 @@ import (
 const defaultBodyCap = 10 * 1024 * 1024
 
 // Injector performs Aho-Corasick multi-pattern matching to replace placeholder
-// strings with real secret values in HTTP requests.
+// strings with real secret values in HTTP requests. All fields are set at
+// construction and never mutated, so concurrent ProcessRequest / Replace
+// calls don't need synchronization.
 type Injector struct {
-	mu       sync.RWMutex
 	matcher  *ahocorasick.Matcher
 	patterns []string                     // ordered slice of placeholder strings
 	creds    map[string]*vault.Credential // placeholder -> credential
@@ -54,21 +54,6 @@ func NewInjector(placeholderMap map[string]*vault.Credential, auditStore *audit.
 	}
 }
 
-// Reload rebuilds the AC matcher and credential map for vault reload during
-// runtime.
-func (inj *Injector) Reload(placeholderMap map[string]*vault.Credential) {
-	patterns, creds := extractPatterns(placeholderMap)
-	var matcher *ahocorasick.Matcher
-	if len(patterns) > 0 {
-		matcher = ahocorasick.NewStringMatcher(patterns)
-	}
-	inj.mu.Lock()
-	inj.matcher = matcher
-	inj.patterns = patterns
-	inj.creds = creds
-	inj.mu.Unlock()
-}
-
 // ProcessRequest scans a request's URL, headers, and body for placeholder
 // strings and replaces them with real secret values. It returns the modified
 // components and a slice of audit injection records.
@@ -79,11 +64,9 @@ func (inj *Injector) ProcessRequest(
 	header http.Header,
 	body []byte,
 ) (newURL string, newHeader http.Header, newBody []byte, injections []audit.Injection) {
-	inj.mu.RLock()
 	matcher := inj.matcher
 	patterns := inj.patterns
 	creds := inj.creds
-	inj.mu.RUnlock()
 
 	now := time.Now()
 
@@ -170,11 +153,9 @@ func hostAuthorized(cred *vault.Credential, host string) bool {
 // result. It uses the AC matcher for detection, then strings.ReplaceAll for
 // each matched pattern.
 func (inj *Injector) Replace(input string) string {
-	inj.mu.RLock()
 	matcher := inj.matcher
 	patterns := inj.patterns
 	creds := inj.creds
-	inj.mu.RUnlock()
 
 	if matcher == nil {
 		return input

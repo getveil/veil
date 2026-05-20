@@ -180,12 +180,12 @@ func TestSupabasePlaceholderRoundTripsThroughMatch(t *testing.T) {
 	}
 }
 
-func TestProviderSupabase_AuthSchemeIsBearer(t *testing.T) {
+func TestProviderSupabase_IsVaultEligible(t *testing.T) {
 	p, ok := DefaultRegistry().Get("supabase")
 	if !ok {
 		t.Fatal("supabase provider not registered")
 	}
-	if p.AuthScheme != AuthBearer {
-		t.Fatalf("supabase AuthScheme = %v, want AuthBearer", p.AuthScheme)
+	if !p.VaultEligible {
+		t.Fatal("supabase provider must declare VaultEligible: true")
 	}
 }

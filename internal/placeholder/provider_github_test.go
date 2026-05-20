@@ -95,16 +95,16 @@ func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
 	})
 }
 
-func TestProviderGitHub_AuthSchemeIsBearer(t *testing.T) {
+func TestProviderGitHub_IsVaultEligible(t *testing.T) {
 	r := DefaultRegistry()
 	p, ok := r.Get("github")
 	if !ok {
 		t.Fatal("github provider not registered")
 	}
-	if p.AuthScheme != AuthBearer {
-		t.Fatalf("github AuthScheme = %v, want AuthBearer", p.AuthScheme)
+	if !p.VaultEligible {
+		t.Fatal("github provider must declare VaultEligible: true")
 	}
-	if !VaultEligible(&p) {
-		t.Fatal("github (PAT) must be VaultEligible")
+	if len(p.Hosts) == 0 {
+		t.Fatal("github provider must declare a non-empty Hosts set")
 	}
 }

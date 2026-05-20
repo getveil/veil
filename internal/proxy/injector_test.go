@@ -160,33 +160,6 @@ func TestNoMatch(t *testing.T) {
 	}
 }
 
-func TestReload(t *testing.T) {
-	c1 := makeCred("old-key", "VEIL_PLACEHOLDER_OLD_0001", "old-real")
-	inj := NewInjector(placeholderMap(c1), nil, 1, "agent")
-
-	// Verify old placeholder is matched.
-	result := inj.Replace("use VEIL_PLACEHOLDER_OLD_0001 here")
-	if !strings.Contains(result, "old-real") {
-		t.Errorf("expected old-real in result, got %s", result)
-	}
-
-	// Reload with new placeholder.
-	c2 := makeCred("new-key", "VEIL_PLACEHOLDER_NEW_0002", "new-real")
-	inj.Reload(placeholderMap(c2))
-
-	// Old placeholder should no longer be matched.
-	result = inj.Replace("use VEIL_PLACEHOLDER_OLD_0001 here")
-	if strings.Contains(result, "old-real") {
-		t.Errorf("old placeholder should not be matched after reload")
-	}
-
-	// New placeholder should be matched.
-	result = inj.Replace("use VEIL_PLACEHOLDER_NEW_0002 here")
-	if !strings.Contains(result, "new-real") {
-		t.Errorf("expected new-real in result, got %s", result)
-	}
-}
-
 func TestAuditInjectionFields(t *testing.T) {
 	cred := makeCred("my-secret", "VEIL_PLACEHOLDER_FFFF6666", "the-real-deal", "api.example.com")
 	inj := NewInjector(placeholderMap(cred), nil, 42, "my-agent-cmd")

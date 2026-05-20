@@ -65,9 +65,9 @@ func TestActiveProxyPIDsNoStateDir(t *testing.T) {
 	}
 }
 
-func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
+func TestDiscoverBackupsFindsEveryBackupPair(t *testing.T) {
 	root := t.TempDir()
-	// Valid pair: both original and backup exist.
+	// .env pair with both original and backup present.
 	envPath := filepath.Join(root, ".env")
 	envBackup := envPath + ".veil-backup"
 	if err := os.WriteFile(envPath, []byte("KEY=placeholder"), 0600); err != nil {
@@ -76,14 +76,17 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 	if err := os.WriteFile(envBackup, []byte("KEY=original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Curated-name alternative: .env.local with only a backup (original deleted).
+	// .env.local with only a backup (original was deleted).
 	localBackup := filepath.Join(root, ".env.local.veil-backup")
 	if err := os.WriteFile(localBackup, []byte("FOO=bar"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Noise: a backup file with an unsupported name (should be ignored).
-	randomBackup := filepath.Join(root, "random.conf.veil-backup")
-	if err := os.WriteFile(randomBackup, []byte("zzz"), 0600); err != nil {
+	// Any other .veil-backup the walker encounters is restored too — post-
+	// launch-cut discoverBackups walks the project for the sidecar pattern
+	// rather than consulting a curated name list. A backup at
+	// random.conf.veil-backup must come along for the restore.
+	otherBackup := filepath.Join(root, "random.conf.veil-backup")
+	if err := os.WriteFile(otherBackup, []byte("zzz"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,8 +105,8 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 	if !byOriginal[filepath.Join(root, ".env.local")] {
 		t.Errorf("missing pair for .env.local; got: %v", byOriginal)
 	}
-	if byOriginal[filepath.Join(root, "random.conf")] {
-		t.Errorf("unexpected pair for non-curated file: random.conf")
+	if !byOriginal[filepath.Join(root, "random.conf")] {
+		t.Errorf("missing pair for random.conf; the walk surfaces every *.veil-backup")
 	}
 }
 

@@ -12,22 +12,13 @@ import (
 	"github.com/getveil/veil/internal/placeholder"
 )
 
-// vaultMeta is the on-disk JSON written to vault.meta.
+// vaultMeta is the on-disk JSON written to vault.meta. Pre-v1 builds also
+// wrote a `vaulted_files` registry tracking every .env path init touched;
+// the field is gone after the launch cuts but `json.Unmarshal` silently
+// ignores it on load, so existing on-disk meta files still parse cleanly.
 type vaultMeta struct {
 	ProjectID string `json:"project_id"`
 	Version   int    `json:"version"`
-	// VaultedFiles is every .env file init has rewritten and has a
-	// .veil-backup for. Uninstall consumes this list to locate backups
-	// reliably without re-walking. Kept as a struct (rather than []string)
-	// so existing vault.meta files that recorded a "kind" discriminator
-	// for MCP entries — removed in the v1 launch cut — still unmarshal
-	// cleanly via JSON's tolerant field-drop behavior.
-	VaultedFiles []VaultedFile `json:"vaulted_files,omitempty"`
-}
-
-// VaultedFile is a single entry in the vaulted-files registry.
-type VaultedFile struct {
-	Path string `json:"path"`
 }
 
 // Vault is an in-memory representation of an opened vault.
@@ -75,11 +66,10 @@ func Open(root string, ks Keystore) (*Vault, error) {
 		return nil, fmt.Errorf("%w: corrupt or truncated vault file (unseal failed): %w", ErrCorrupt, err)
 	}
 
-	var creds []*Credential
-	if err := json.Unmarshal(plaintext, &creds); err != nil {
+	creds, err := decodeCredentials(plaintext)
+	if err != nil {
 		return nil, fmt.Errorf("%w: corrupt credential data: %w", ErrCorrupt, err)
 	}
-	creds = skipUnsupportedSchemes(creds)
 
 	return &Vault{
 		root:        root,
@@ -89,22 +79,62 @@ func Open(root string, ks Keystore) (*Vault, error) {
 	}, nil
 }
 
-// skipUnsupportedSchemes drops credentials whose Scheme is no longer
-// supported (aws, github_app, basic — removed in the v1 launch cut). The
-// records are unreachable for the proxy and the CLI; silently filtering
-// them at Open keeps existing vaults loadable without crashing on the
-// unknown scheme. Affected entries are still on disk and will be left
-// alone until the user runs `veil init --force` or `veil remove`.
-func skipUnsupportedSchemes(creds []*Credential) []*Credential {
-	out := creds[:0]
-	for _, c := range creds {
-		switch c.Scheme {
-		case "aws", "github_app", "basic":
+// decodeCredentials unmarshals the vault's plaintext blob into a slice of
+// Credentials, after pre-filtering any records whose JSON carries a
+// `"scheme"` field naming a Veil-pre-v1 scheme (aws / github_app / basic —
+// removed in the launch cuts).
+//
+// Vault on-disk compat choice: rationale for the raw-JSON pre-filter.
+//
+// The Credential struct has no Scheme field as of Phase 9 (item 5). Without
+// pre-filtering, Go's encoding/json silently drops the unknown `scheme`
+// field — stale aws/basic/github_app records would load AS Bearer
+// placeholders, and the proxy would happily inject their (incorrect for
+// the original scheme) `real` values into outbound requests to whatever
+// host scope they happen to carry. That's garbage-injection on legacy
+// vaults that the v0.1.x install never intended.
+//
+// The pre-filter inspects each array element's raw JSON for the literal
+// pattern `"scheme":"aws"` (or basic / github_app) before unmarshaling,
+// and drops those elements. Survivors unmarshal cleanly into the Scheme-
+// less Credential struct via Go's tolerant unknown-field handling. The
+// dropped records are still on disk and will be left alone until the
+// user runs `veil init --force` or `veil remove`.
+func decodeCredentials(plaintext []byte) ([]*Credential, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(plaintext, &raw); err != nil {
+		return nil, err
+	}
+	creds := make([]*Credential, 0, len(raw))
+	for _, elem := range raw {
+		if rawCredentialHasUnsupportedScheme(elem) {
 			continue
 		}
-		out = append(out, c)
+		var c Credential
+		if err := json.Unmarshal(elem, &c); err != nil {
+			return nil, err
+		}
+		creds = append(creds, &c)
 	}
-	return out
+	return creds, nil
+}
+
+// rawCredentialHasUnsupportedScheme reports whether elem's JSON has a
+// `scheme` field set to one of the v0.1.x schemes the launch cuts dropped.
+// Uses a thin probe struct (rather than full unmarshal) so the check stays
+// independent of the live Credential struct's field set.
+func rawCredentialHasUnsupportedScheme(elem json.RawMessage) bool {
+	var probe struct {
+		Scheme string `json:"scheme"`
+	}
+	if err := json.Unmarshal(elem, &probe); err != nil {
+		return false
+	}
+	switch probe.Scheme {
+	case "aws", "github_app", "basic":
+		return true
+	}
+	return false
 }
 
 // Save encrypts and atomically writes the vault to disk. When the vault was

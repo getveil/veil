@@ -213,31 +213,23 @@ func TestFormatProviders(t *testing.T) {
 	}
 }
 
-func TestProviderFormats_AuthSchemes(t *testing.T) {
-	want := map[string]AuthScheme{
-		"openai":      AuthBearer,
-		"anthropic":   AuthBearer,
-		"stripe":      AuthBearer,
-		"slack":       AuthBearer,
-		"google":      AuthBearer,
-		"replicate":   AuthBearer,
-		"huggingface": AuthBearer,
-		"vercel":      AuthBearer,
-		"gitlab":      AuthBearer,
-		"resend":      AuthBearer,
+func TestProviderFormats_AreVaultEligible(t *testing.T) {
+	names := []string{
+		"openai", "anthropic", "stripe", "slack", "google",
+		"replicate", "huggingface", "vercel", "gitlab", "resend",
 	}
 	r := DefaultRegistry()
-	for name, expected := range want {
+	for _, name := range names {
 		p, ok := r.Get(name)
 		if !ok {
 			t.Errorf("provider %q not registered", name)
 			continue
 		}
-		if p.AuthScheme != expected {
-			t.Errorf("%s AuthScheme = %v, want %v", name, p.AuthScheme, expected)
+		if !p.VaultEligible {
+			t.Errorf("%s must declare VaultEligible: true", name)
 		}
-		if !VaultEligible(&p) {
-			t.Errorf("%s must be VaultEligible (Bearer with hosts)", name)
+		if len(p.Hosts) == 0 {
+			t.Errorf("%s must declare a non-empty Hosts set", name)
 		}
 	}
 }

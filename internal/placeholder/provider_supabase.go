@@ -14,14 +14,13 @@ const jwtHeader = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 
 func init() {
 	register(ProviderPattern{
-		Name:       "supabase",
-		AuthScheme: AuthBearer,
-		Priority:   PriorityHandwritten,
-		Match:      isJWTWithAlg,
+		Name:          "supabase",
+		VaultEligible: true,
+		Hosts:         []string{"*.supabase.co", "*.supabase.com"},
+		Match:         isJWTWithAlg,
 		Generate: func(_, _ string) string {
 			return generateSupabaseJWT("anon")
 		},
-		Hosts: []string{"*.supabase.co", "*.supabase.com"},
 	})
 }
 

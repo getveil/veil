@@ -96,18 +96,43 @@ const (
 	nameMatchMinDistinct = 6
 )
 
-// IsSecretLike determines whether a name/value pair likely represents a secret.
-// It returns true if:
-//   - The value matches any registered provider pattern.
-//   - The key name matches common secret-related patterns.
-//   - The value is long, has high Shannon entropy, AND has enough distinct
-//     bytes to rule out repetitive strings and typical file paths.
+// IsSecretLike determines whether a name/value pair likely represents a
+// secret. Returns true when any of:
+//   - the value matches a registered provider pattern,
+//   - the key name matches a secret-name hint AND the value clears the
+//     name-pattern value-shape floor (length + distinct bytes),
+//   - the value clears the length + entropy + distinct-byte floor.
 //
-// IsSecretLike is a thin wrapper over DetectWithReason; callers that need
-// to know which gate matched should call DetectWithReason directly.
+// Two pre-gates short-circuit detection: a name that carries a front-end
+// build-system public-bundle prefix (NEXT_PUBLIC_, VITE_, ...) and a
+// value that looks like a developer stub (your_, placeholder, ...).
+// Both ALWAYS return false regardless of value shape.
 func IsSecretLike(name, value string) bool {
-	ok, _ := DetectWithReason(name, value)
-	return ok
+	if hasPublicEnvPrefix(name) {
+		return false
+	}
+	if isStubValue(value) {
+		return false
+	}
+	// 1. Provider patterns.
+	for _, p := range DefaultRegistry().All() {
+		if p.Match(name, value) {
+			return true
+		}
+	}
+	// 2. Key name heuristic, gated by value shape.
+	if secretNamePattern.MatchString(name) {
+		if len(value) >= nameMatchMinLength && distinctBytes(value) >= nameMatchMinDistinct {
+			return true
+		}
+	}
+	// 3. Length + entropy + distinct-byte check.
+	if len(value) >= secretMinLength &&
+		shannonEntropy(value) >= secretMinEntropy &&
+		distinctBytes(value) >= secretMinDistinct {
+		return true
+	}
+	return false
 }
 
 // shannonEntropy computes Shannon entropy in bits per character over byte

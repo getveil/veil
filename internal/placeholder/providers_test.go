@@ -6,16 +6,20 @@ import (
 	"testing"
 )
 
-func TestRegisterFormat_BasicMatch(t *testing.T) {
+// TestRegisterDeclarative_BasicMatch exercises the declarative registration
+// path: a provider with Prefixes / KeyHints / Length / Charset and no
+// explicit Match/Generate gets functional defaults.
+func TestRegisterDeclarative_BasicMatch(t *testing.T) {
 	before := len(registry)
 	saved := append([]ProviderPattern(nil), registry...)
-	registerFormat(Format{
-		Name:     "testprovider",
-		Prefixes: []string{"tp_"},
-		KeyHints: []string{"TESTPROV"},
-		Length:   20,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.testprovider.com"},
+	register(ProviderPattern{
+		Name:          "testprovider",
+		Prefixes:      []string{"tp_"},
+		KeyHints:      []string{"TESTPROV"},
+		Length:        20,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.testprovider.com"},
+		VaultEligible: true,
 	})
 	defer func() { registry = saved }()
 
@@ -57,10 +61,10 @@ func TestRegisterFormat_BasicMatch(t *testing.T) {
 	}
 }
 
-func TestRegisterFormat_HexCharset(t *testing.T) {
+func TestRegisterDeclarative_HexCharset(t *testing.T) {
 	before := len(registry)
 	saved := append([]ProviderPattern(nil), registry...)
-	registerFormat(Format{
+	register(ProviderPattern{
 		Name:     "testhex",
 		Prefixes: nil,
 		KeyHints: []string{"TESTHEX"},
@@ -97,10 +101,10 @@ func TestRegisterFormat_HexCharset(t *testing.T) {
 	}
 }
 
-func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
+func TestRegisterDeclarative_ZeroLengthPreservesInput(t *testing.T) {
 	before := len(registry)
 	saved := append([]ProviderPattern(nil), registry...)
-	registerFormat(Format{
+	register(ProviderPattern{
 		Name:     "testflex",
 		Prefixes: []string{"flex_"},
 		KeyHints: nil,
@@ -128,15 +132,15 @@ func TestRegisterFormat_ZeroLengthPreservesInput(t *testing.T) {
 	}
 }
 
-// TestRegisterFormat_LongerPrefixWins asserts that when a Format is registered
-// with overlapping prefixes, the LONGER prefix is the one extracted by
-// Generate regardless of caller-provided order. This is the correctness
-// invariant required to migrate anthropic (prefixes "sk-ant-api", "sk-ant-")
-// to a Format entry.
-func TestRegisterFormat_LongerPrefixWins(t *testing.T) {
+// TestRegisterDeclarative_LongerPrefixWins asserts that when a provider is
+// registered with overlapping declarative Prefixes, the LONGER prefix is
+// the one extracted by Generate regardless of caller-provided order. This
+// is the correctness invariant required to migrate anthropic (prefixes
+// "sk-ant-api", "sk-ant-") to a declarative entry.
+func TestRegisterDeclarative_LongerPrefixWins(t *testing.T) {
 	before := len(registry)
 	saved := append([]ProviderPattern(nil), registry...)
-	registerFormat(Format{
+	register(ProviderPattern{
 		Name:     "testprefixorder",
 		Prefixes: []string{"sk-", "sk-ant-api", "sk-ant-"}, // shortest first; intentionally unordered
 		KeyHints: nil,
@@ -221,51 +225,18 @@ func TestDefaultRegistryMatchesPackageRegistry(t *testing.T) {
 	}
 }
 
-// TestPriority_HandwrittenBeforeFormat asserts that a hand-written provider
-// (PriorityHandwritten) is matched before a Format provider (PriorityFormat)
-// when both would match the same input, regardless of init-order / filename.
-func TestPriority_HandwrittenBeforeFormat(t *testing.T) {
-	saved := append([]ProviderPattern(nil), registry...)
-	// Register the Format FIRST, then the hand-written. Without Priority
-	// sorting, first-registered wins. With Priority sorting, the
-	// hand-written entry must still be picked because its Priority is higher.
-	registerFormat(Format{
-		Name:     "fmtfoo",
-		Prefixes: []string{"foo_"},
-		Length:   20,
-		Charset:  "alphanumeric",
-	})
-	register(ProviderPattern{
-		Name:     "hwfoo",
-		Priority: PriorityHandwritten,
-		Match:    func(name, value string) bool { return strings.HasPrefix(value, "foo_") },
-		Generate: func(_, _ string) string { return "HANDWRITTEN-WON" },
-	})
-	defer func() { registry = saved }()
-
-	r := DefaultRegistry()
-	p := r.Match("ANY", "foo_abcdefghij1234567890")
-	if p == nil {
-		t.Fatal("expected a match")
-	}
-	if p.Name != "hwfoo" {
-		t.Fatalf("expected hand-written hwfoo to win via Priority, got %q", p.Name)
-	}
-}
-
-// TestPriority_StableWithinTier asserts that providers registered within the
-// same Priority tier are matched in registration order (stable sort).
-func TestPriority_StableWithinTier(t *testing.T) {
+// TestRegistry_StableWithinRegistration asserts that providers registered
+// in a particular order are matched in that order — the registry no longer
+// applies any priority-based reordering after the Phase 9 cuts.
+func TestRegistry_StableWithinRegistration(t *testing.T) {
 	saved := append([]ProviderPattern(nil), registry...)
 	register(ProviderPattern{
-		Name:     "tier1a",
-		Priority: PriorityFormat,
+		Name:     "first",
 		Match:    func(name, value string) bool { return value == "shared" },
 		Generate: func(_, _ string) string { return "a" },
 	})
 	register(ProviderPattern{
-		Name:     "tier1b",
-		Priority: PriorityFormat,
+		Name:     "second",
 		Match:    func(name, value string) bool { return value == "shared" },
 		Generate: func(_, _ string) string { return "b" },
 	})
@@ -276,39 +247,17 @@ func TestPriority_StableWithinTier(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected a match")
 	}
-	if p.Name != "tier1a" {
-		t.Fatalf("expected first-registered tier1a to win stable sort, got %q", p.Name)
+	if p.Name != "first" {
+		t.Fatalf("expected first-registered to win, got %q", p.Name)
 	}
 }
 
-// TestRegistryAll_ReturnsSortedSnapshot asserts Registry.All() returns the
-// patterns in Priority-descending order (higher first).
-func TestRegistryAll_ReturnsSortedSnapshot(t *testing.T) {
-	r := DefaultRegistry()
-	all := r.All()
-	if len(all) == 0 {
-		t.Fatal("All() returned empty slice")
-	}
-	for i := 1; i < len(all); i++ {
-		if all[i-1].Priority < all[i].Priority {
-			t.Fatalf("All() not sorted descending by Priority: %q(%d) before %q(%d)",
-				all[i-1].Name, all[i-1].Priority, all[i].Name, all[i].Priority)
-		}
-	}
-}
-
-// TestDefaultRegistry_ConcurrentSortIsRaceFree runs many goroutines where
-// some iterate a wrapper's patterns while others call DefaultRegistry()
-// concurrently (which acquires the sort mutex). This is a regression test for
-// the data race pattern where a goroutine holding a wrapper iterates the
-// shared backing array while another goroutine inside DefaultRegistry() is
-// calling sort.SliceStable on the same array. The defensive-copy snapshot in
-// DefaultRegistry ensures each wrapper owns its own slice.
-//
-// Run under -race to verify. Without the defensive copy, -race would report
-// a DATA RACE between the iteration (Match/All/Names) and the concurrent
-// sort inside another goroutine's DefaultRegistry() call.
-func TestDefaultRegistry_ConcurrentSortIsRaceFree(t *testing.T) {
+// TestDefaultRegistry_ConcurrentSnapshotIsRaceFree runs many goroutines
+// where some iterate a wrapper's patterns while others call DefaultRegistry()
+// concurrently. The defensive-copy snapshot ensures each wrapper owns its
+// own slice, so iteration on one wrapper never races with a register() or
+// snapshot copy in another goroutine. Run under -race to verify.
+func TestDefaultRegistry_ConcurrentSnapshotIsRaceFree(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Half the goroutines grab a wrapper once and iterate it many times.
@@ -325,9 +274,9 @@ func TestDefaultRegistry_ConcurrentSortIsRaceFree(t *testing.T) {
 		}()
 	}
 
-	// The other half keep calling DefaultRegistry (which re-enters the sort
-	// mutex) while the first half iterate — the exact interleaving that would
-	// race on the shared backing array without a defensive copy.
+	// The other half keep calling DefaultRegistry (which re-enters the
+	// snapshot mutex) while the first half iterate — the exact interleaving
+	// that would race on the shared backing array without a defensive copy.
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
 		go func() {

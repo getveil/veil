@@ -85,8 +85,8 @@ func TestRemovedLowSignalProviders(t *testing.T) {
 
 // TestAllRegisteredProvidersHaveSamples_Dynamic drives the contract off
 // Registry.Names() instead of a hardcoded list. Adding a new provider via
-// register()/registerFormat() without also adding a providerSamples entry
-// now fails this test loudly instead of being silently ignored.
+// register() without also adding a providerSamples entry now fails this
+// test loudly instead of being silently ignored.
 func TestAllRegisteredProvidersHaveSamples_Dynamic(t *testing.T) {
 	reg := placeholder.DefaultRegistry()
 	names := reg.Names()

@@ -8,9 +8,9 @@ var githubPrefixes = []string{"github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "gh
 
 func init() {
 	register(ProviderPattern{
-		Name:       "github",
-		Priority:   PriorityHandwritten,
-		AuthScheme: AuthBearer,
+		Name:          "github",
+		VaultEligible: true,
+		Hosts:         []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com", "ghcr.io"},
 		Match: func(name, value string) bool {
 			for _, p := range githubPrefixes {
 				if strings.HasPrefix(value, p) {
@@ -49,6 +49,5 @@ func init() {
 			rest := len(value) - len(prefix)
 			return sentinelize(prefix+randAlphanumeric(rest), len(prefix))
 		},
-		Hosts: []string{"api.github.com", "uploads.github.com", "raw.githubusercontent.com", "ghcr.io"},
 	})
 }

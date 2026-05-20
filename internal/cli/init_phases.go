@@ -274,17 +274,20 @@ type secretLine struct {
 //  2. build .env bytes in memory
 //  3. writeBackup(envPath)
 //  4. v.AddBatch(creds)
-//  5. registerVaultedFile(root, envPath)
-//  6. atomicWriteFile(envPath, bytes)
+//  5. atomicWriteFile(envPath, bytes)
 //
-// If we crash between 5 and 6 the next run detects the registered-but-
-// cleartext .env via needsEnvRewrite and replays step 6 only.
+// If we crash between 4 and 5 the next run detects the vault-knows-but-
+// cleartext-on-disk state via recoverPendingEnvRewrite and replays step 5
+// only.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
-		// An orphaned backup (one not in the current vault's registry)
-		// indicates a prior Veil install whose state is gone — the backup is
-		// the source of truth, not the placeholder-filled .env on disk.
-		orphan, oerr := isOrphanedBackup(root, envPath)
+		// Orphan check: a backup whose adjacent .env carries Veil-shaped
+		// placeholders that the CURRENT vault doesn't own is the output of
+		// a prior install whose state is gone (different vault root, wiped
+		// .veil/, etc.) — the backup, not the stale placeholders, is the
+		// true pre-Veil state. Replaces the vault.meta vaulted-files
+		// registry the launch cuts dropped.
+		orphan, oerr := isOrphanByContent(v, envPath)
 		if oerr != nil {
 			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", envPath), oerr)
 		}
@@ -293,12 +296,6 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
 			}
 			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
-			// A crashed run may have committed credentials between AddBatch
-			// and registerVaultedFile. Wipe them before re-vaulting so the
-			// imminent AddBatch doesn't hit ErrDuplicateCredential.
-			if err := cleanupStaleVaultedCreds(cmd, v, envPath); err != nil {
-				return 0, 0, wrapErr(fmt.Sprintf("cleaning stale vault credentials for %s", envPath), err)
-			}
 		} else {
 			recovered, rerr := recoverPendingEnvRewrite(cmd, v, envPath, dryRun)
 			if rerr != nil {
@@ -344,7 +341,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(res.Creds) == 0 && len(res.NotManaged) == 0 && len(res.Unrecognized) == 0 {
+	if len(res.Creds) == 0 && len(res.Skipped) == 0 {
 		return 0, 0, nil
 	}
 
@@ -382,33 +379,20 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err := v.AddBatch(res.Creds); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", envPath), err)
 	}
-	if err := registerVaultedFile(root, envPath); err != nil {
-		return 0, 0, wrapErr(fmt.Sprintf("registering %s", envPath), err)
-	}
 	if err := atomicWriteFile(envPath, newBytes); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing %s", envPath), err)
 	}
 	return res.Vaulted, res.Scoped, nil
 }
 
-// skippedEntry is a secret that `veil init` decided not to vault.
-// Reason is the human-readable label shown in the summary.
-type skippedEntry struct {
-	key    string
-	value  string
-	reason string
-}
-
 // vaultBuildResult bundles the outputs of buildEnvFileCredentials so
-// callers can render the three-section summary without changing the
-// function's positional return list every time a new bucket is added.
+// callers can render the summary without changing the function's
+// positional return list every time a new bucket is added.
 type vaultBuildResult struct {
-	Creds        []*vault.Credential
-	CredReasons  []placeholder.Reason // parallel to Creds; describes which detection gate fired
-	Vaulted      int
-	Scoped       int
-	NotManaged   []skippedEntry // recognized provider but not vault-eligible
-	Unrecognized []secretLine   // no provider matched (charclass fallback)
+	Creds   []*vault.Credential
+	Vaulted int
+	Scoped  int
+	Skipped []secretLine // not vault-eligible (no provider, or provider has no host scope)
 }
 
 // buildEnvFileCredentials constructs the credentials for one .env file from
@@ -424,17 +408,8 @@ func buildEnvFileCredentials(
 	var res vaultBuildResult
 
 	for _, s := range secrets {
-		bucket, reason, scheme := classifyCredential(s.key, s.value)
-		switch bucket {
-		case bucketUnrecognized:
-			res.Unrecognized = append(res.Unrecognized, s)
-			continue
-		case bucketNotManaged:
-			res.NotManaged = append(res.NotManaged, skippedEntry{
-				key:    s.key,
-				value:  s.value,
-				reason: placeholder.AuthSchemeReason(scheme),
-			})
+		if !isVaultEligible(s.key, s.value) {
+			res.Skipped = append(res.Skipped, s)
 			continue
 		}
 		ph, gErr := placeholder.Generate(s.key, s.value, seen)
@@ -451,7 +426,6 @@ func buildEnvFileCredentials(
 			AllowedHosts: credHosts,
 			CreatedAt:    time.Now(),
 		})
-		res.CredReasons = append(res.CredReasons, reason)
 		envFile.SetValue(s.key, ph)
 		seen[ph] = struct{}{}
 		res.Vaulted++
@@ -490,66 +464,42 @@ func printDryRunVaultLines(w io.Writer, secrets []secretLine, creds []*vault.Cre
 	}
 }
 
-// credBucket is the disposition classifyCredential returns: which of the
-// three summary sections (Unrecognized / Not managed / Managed) a
-// (name, value) pair lands in.
-type credBucket int
-
-const (
-	bucketUnrecognized credBucket = iota
-	bucketNotManaged
-	bucketEligible
-)
-
-// classifyCredential is the disposition gate used by buildEnvFileCredentials.
-// It returns the bucket plus, for bucketEligible, the Reason that should
-// annotate the Managed line; for bucketNotManaged, the AuthScheme the caller
-// renders via placeholder.AuthSchemeReason. The Reason / scheme values are
-// zero for buckets that don't use them.
-func classifyCredential(name, value string) (credBucket, placeholder.Reason, placeholder.AuthScheme) {
+// isVaultEligible reports whether `veil init` should move (name, value)
+// into the vault. True iff a registered provider claims the pair AND the
+// provider declares VaultEligible with a non-empty host scope. The
+// charclass fallback (no named provider) is never eligible — a vaulted
+// credential without host scope has nowhere to fire on injection.
+//
+// Replaces the pre-launch three-way bucket discriminator (Unrecognized /
+// Not managed / Eligible) the AuthScheme enum used to drive. With only
+// Bearer surviving, the gate is binary: vault or skip.
+func isVaultEligible(name, value string) bool {
 	p := placeholder.DefaultRegistry().Match(name, value)
 	if p == nil {
-		// No named provider claimed this secret; the charclass fallback
-		// can shape a placeholder, but without a provider it lacks a
-		// known auth scheme and host scope, so it's not vault-eligible.
-		return bucketUnrecognized, placeholder.Reason{}, 0
+		return false
 	}
-	if !placeholder.VaultEligible(p) {
-		return bucketNotManaged, placeholder.Reason{}, p.AuthScheme
+	if len(p.Hosts) == 0 {
+		return false
 	}
-	return bucketEligible, placeholder.Reason{Kind: placeholder.ReasonProvider, Detail: p.Name}, 0
+	return p.VaultEligible
 }
 
-// printVaultSummary emits the three-section summary: Managed, Not managed,
-// and Unrecognized. Called on every run (not just --dry-run) after
-// buildEnvFileCredentials returns. When dryRun is true the Managed section is
-// suppressed — printDryRunVaultLines already shows those keys as "would vault"
-// lines, so printing them here too would double-print each credential.
+// printVaultSummary emits the two-section summary: Vaulted and Skipped.
+// Called on every run (not just --dry-run) after buildEnvFileCredentials
+// returns. When dryRun is true the Vaulted section is suppressed —
+// printDryRunVaultLines already shows those keys as "would vault" lines,
+// so printing them here too would double-print each credential.
 func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 	if !dryRun && len(res.Creds) > 0 {
-		_, _ = fmt.Fprintf(w, "\nManaged by Veil (%d):\n", len(res.Creds))
-		for i, c := range res.Creds {
-			ann := ""
-			if i < len(res.CredReasons) {
-				ann = res.CredReasons[i].Annotation()
-			}
-			if ann == "" {
-				_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
-			} else {
-				_, _ = fmt.Fprintf(w, "    %s    %s  %s\n", c.Name, c.Placeholder, ann)
-			}
+		_, _ = fmt.Fprintf(w, "\nVaulted (%d):\n", len(res.Creds))
+		for _, c := range res.Creds {
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
 		}
 	}
-	if len(res.NotManaged) > 0 {
-		_, _ = fmt.Fprintf(w, "\nNot managed — Veil v0.1.x doesn't mediate these yet (%d):\n", len(res.NotManaged))
-		for _, s := range res.NotManaged {
-			_, _ = fmt.Fprintf(w, "    %-30s %s\n", s.key, s.reason)
-		}
-	}
-	if len(res.Unrecognized) > 0 {
-		_, _ = fmt.Fprintf(w, "\nUnrecognized — left as-is (%d):\n", len(res.Unrecognized))
-		for _, s := range res.Unrecognized {
-			_, _ = fmt.Fprintf(w, "    %-30s %s\n", s.key, "no known format")
+	if len(res.Skipped) > 0 {
+		_, _ = fmt.Fprintf(w, "\nSkipped — no recognized provider or host scope (%d):\n", len(res.Skipped))
+		for _, s := range res.Skipped {
+			_, _ = fmt.Fprintf(w, "    %s\n", s.key)
 		}
 	}
 }
@@ -634,38 +584,6 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	}
 	ui.Warnf(cmd.ErrOrStderr(), "%s: recovering interrupted init — re-applying placeholders", envPath)
 	return true, nil
-}
-
-// cleanupStaleVaultedCreds removes any credential in v whose name matches a
-// secret-like key in the just-reclaimed .env at envPath. Called from the
-// orphan-recovery path after reclaimOrphanedBackup restores the cleartext
-// .env: those credentials were committed to the vault by a crashed run
-// before registerVaultedFile fired, so they're now orphaned and would
-// trigger ErrDuplicateCredential on the imminent AddBatch. "Not found"
-// (the credential isn't actually present) is non-fatal; only true persist
-// errors surface.
-func cleanupStaleVaultedCreds(cmd *cobra.Command, v *vault.Vault, envPath string) error {
-	envFile, err := scanner.ParseFile(envPath)
-	if err != nil {
-		return wrapErr(fmt.Sprintf("parsing %s", envPath), err)
-	}
-	w := cmd.ErrOrStderr()
-	for _, line := range envFile.Lines {
-		if line.Kind != scanner.KVLine {
-			continue
-		}
-		if !placeholder.IsSecretLike(line.Key, line.Value) {
-			continue
-		}
-		removed, derr := v.Delete(line.Key)
-		if derr != nil {
-			return wrapErr(fmt.Sprintf("removing stale credential %s", line.Key), derr)
-		}
-		if removed {
-			ui.Dimf(w, "  removed stale vault entry %s from crashed run", line.Key)
-		}
-	}
-	return nil
 }
 
 // selectEnvKeys returns the bearer secrets the user chose to vault.

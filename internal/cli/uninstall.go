@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -80,55 +81,48 @@ type backupPair struct {
 	backup   string
 }
 
-// envCuratedNames mirrors the names a legacy curated-probe install would
-// have written backups for, PLUS the newer names the recursive walker
-// added. Kept local to avoid exporting scanner internals; the list changes
-// rarely.
-var envCuratedNames = []string{
-	".env",
-	".env.ci",
-	".env.development",
-	".env.local",
-	".env.preview",
-	".env.production",
-	".env.staging",
-	".env.test",
-}
-
-// discoverBackups returns every (original, backup) pair uninstall should
-// consider. Source of truth is vault.meta's vaulted-files registry. Falls
-// back to the legacy curated-name scan for vaults written before the
-// registry existed; duplicates are deduped.
+// discoverBackups walks the project rooted at root and returns every
+// (original, backup) pair uninstall should consider — one per
+// `*.veil-backup` sidecar found on disk. The pre-v1 vault.meta vaulted-
+// files registry that previously sourced this list was dropped in the
+// launch cuts; the walk is its replacement, with one consequence: backups
+// for files outside the project root (e.g. an init run with --path
+// pointing at a sibling tree) are no longer surfaced and must be removed
+// manually. Symlinked directories are skipped to avoid leaking through
+// attacker-planted links; symlinked leaf backups are returned so the
+// existing symlink-refusal gate produces an explicit error.
 func discoverBackups(root string) ([]backupPair, error) {
 	var pairs []backupPair
-	seen := make(map[string]bool)
-
-	registered, err := vault.ReadVaultedFiles(root)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			// Prune source-tree noise + .veil itself; matches the env-file
+			// walker's baselineExcludeDirs so the two scans agree on scope.
+			if path != root {
+				switch d.Name() {
+				case ".git", ".veil", "node_modules", "vendor", "target",
+					"dist", "build", ".next", ".nuxt", ".turbo", ".cache",
+					".pnpm-store", ".yarn":
+					return fs.SkipDir
+				}
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), backupSuffix) {
+			return nil
+		}
+		original := strings.TrimSuffix(path, backupSuffix)
+		pairs = append(pairs, backupPair{original: original, backup: path})
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("reading vaulted-files registry: %w", err)
+		return nil, fmt.Errorf("walking for backups: %w", err)
 	}
-	for _, entry := range registered {
-		backup := entry.Path + backupSuffix
-		if _, err := os.Stat(backup); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{original: entry.Path, backup: backup})
-		seen[entry.Path] = true
-	}
-
-	for _, name := range envCuratedNames {
-		orig := filepath.Join(root, name)
-		if seen[orig] {
-			continue
-		}
-		backup := orig + backupSuffix
-		if _, err := os.Stat(backup); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{original: orig, backup: backup})
-		seen[orig] = true
-	}
-
 	return pairs, nil
 }
 

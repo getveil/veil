@@ -291,51 +291,34 @@ func TestIsSecretLike_StubValueDenylist(t *testing.T) {
 	}
 }
 
-// TestDetectWithReason_Provider verifies provider matches surface as
-// Reason{ReasonProvider, <name>}.
-func TestDetectWithReason_Provider(t *testing.T) {
-	ok, r := DetectWithReason("OPENAI_API_KEY", "sk-proj-abc123def456ghi")
-	if !ok {
-		t.Fatal("expected ok=true for OpenAI-style key")
-	}
-	if r.Kind != ReasonProvider {
-		t.Errorf("Kind = %v, want ReasonProvider", r.Kind)
-	}
-	if r.Detail != "openai" {
-		t.Errorf("Detail = %q, want %q", r.Detail, "openai")
+// TestIsSecretLike_ProviderMatchWins exercises the provider gate: a value
+// matching a registered provider classifies as a secret regardless of
+// name-shape or entropy floors.
+func TestIsSecretLike_ProviderMatchWins(t *testing.T) {
+	if !IsSecretLike("OPENAI_API_KEY", "sk-proj-abc123def456ghi") {
+		t.Fatal("expected provider-shaped value to be secret-like")
 	}
 }
 
-// TestDetectWithReason_KeyName verifies the name-heuristic gate surfaces
-// the matched hint substring.
-func TestDetectWithReason_KeyName(t *testing.T) {
-	ok, r := DetectWithReason("MY_AUTH_TOKEN", "abcdef123456")
-	if !ok {
-		t.Fatal("expected ok=true for AUTH_TOKEN-named key with shape-passing value")
-	}
-	if r.Kind != ReasonKeyName {
-		t.Errorf("Kind = %v, want ReasonKeyName", r.Kind)
-	}
-	if r.Detail == "" {
-		t.Error("Detail should carry the matched hint substring, got empty string")
+// TestIsSecretLike_NameHeuristicWithShape exercises the key-name gate:
+// secret-named keys with shape-passing values classify as secrets.
+func TestIsSecretLike_NameHeuristicWithShape(t *testing.T) {
+	if !IsSecretLike("MY_AUTH_TOKEN", "abcdef123456") {
+		t.Fatal("expected secret-named key with shape-passing value to be secret-like")
 	}
 }
 
-// TestDetectWithReason_Entropy verifies the length+entropy+distinct gate
-// surfaces as Reason{ReasonEntropy, ""}.
-func TestDetectWithReason_Entropy(t *testing.T) {
-	ok, r := DetectWithReason("UNKNOWN", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8")
-	if !ok {
-		t.Fatal("expected ok=true for high-entropy long string")
-	}
-	if r.Kind != ReasonEntropy {
-		t.Errorf("Kind = %v, want ReasonEntropy", r.Kind)
+// TestIsSecretLike_EntropyGate exercises the length+entropy+distinct gate
+// when neither provider nor name match fires.
+func TestIsSecretLike_EntropyGate(t *testing.T) {
+	if !IsSecretLike("UNKNOWN", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8") {
+		t.Fatal("expected high-entropy long string to be secret-like")
 	}
 }
 
-// TestDetectWithReason_None covers non-secret inputs and the three pre-gates
-// (public prefix, stub value).
-func TestDetectWithReason_None(t *testing.T) {
+// TestIsSecretLike_NegativeCases covers non-secret inputs and the two
+// short-circuit pre-gates (public-prefix name, stub value).
+func TestIsSecretLike_NegativeCases(t *testing.T) {
 	cases := []struct{ name, value string }{
 		{"HOSTNAME", "myserver"},
 		{"GREETING", "hello"},
@@ -344,76 +327,10 @@ func TestDetectWithReason_None(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, r := DetectWithReason(tc.name, tc.value)
-			if ok {
-				t.Errorf("expected ok=false for %s=%q", tc.name, tc.value)
-			}
-			if r.Kind != ReasonNone {
-				t.Errorf("Kind = %v, want ReasonNone", r.Kind)
+			if IsSecretLike(tc.name, tc.value) {
+				t.Errorf("expected false for %s=%q", tc.name, tc.value)
 			}
 		})
-	}
-}
-
-// TestDetectWithReason_GateOrder verifies provider beats key-name beats
-// entropy when multiple gates would otherwise match — preserves
-// IsSecretLike's resolution order.
-func TestDetectWithReason_GateOrder(t *testing.T) {
-	// Provider beats key-name.
-	_, r := DetectWithReason("MY_KEY", "sk-proj-abc123def456ghijklmn")
-	if r.Kind != ReasonProvider {
-		t.Errorf("provider should beat key-name; got %v", r.Kind)
-	}
-
-	// Key-name beats entropy.
-	_, r = DetectWithReason("API_KEY", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8")
-	if r.Kind != ReasonKeyName {
-		t.Errorf("key-name should beat entropy; got %v", r.Kind)
-	}
-}
-
-// TestIsSecretLike_StillDelegates verifies IsSecretLike and DetectWithReason
-// agree on every case — IsSecretLike is the thin wrapper.
-func TestIsSecretLike_StillDelegates(t *testing.T) {
-	cases := []struct {
-		name, value string
-		want        bool
-	}{
-		{"OPENAI_API_KEY", "sk-proj-abc123def456ghi", true},
-		{"API_KEY", "abcdef123456", true},
-		{"UNKNOWN", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8", true},
-		{"HOSTNAME", "myserver", false},
-		{"GREETING", "hello", false},
-		{"NEXT_PUBLIC_API_KEY", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8", false},
-	}
-	for _, tc := range cases {
-		gotOK := IsSecretLike(tc.name, tc.value)
-		detectOK, _ := DetectWithReason(tc.name, tc.value)
-		if gotOK != tc.want {
-			t.Errorf("IsSecretLike(%q, %q) = %v, want %v", tc.name, tc.value, gotOK, tc.want)
-		}
-		if detectOK != gotOK {
-			t.Errorf("DetectWithReason(%q, %q) = %v, IsSecretLike = %v — must agree",
-				tc.name, tc.value, detectOK, gotOK)
-		}
-	}
-}
-
-// TestReason_Confidence verifies the HIGH/LOW bands.
-func TestReason_Confidence(t *testing.T) {
-	cases := []struct {
-		r    Reason
-		want Confidence
-	}{
-		{Reason{Kind: ReasonProvider, Detail: "openai"}, ConfidenceHigh},
-		{Reason{Kind: ReasonKeyName, Detail: "key"}, ConfidenceLow},
-		{Reason{Kind: ReasonEntropy}, ConfidenceLow},
-		{Reason{Kind: ReasonNone}, ConfidenceNone},
-	}
-	for _, tc := range cases {
-		if got := tc.r.Confidence(); got != tc.want {
-			t.Errorf("Reason{%v}.Confidence() = %v, want %v", tc.r.Kind, got, tc.want)
-		}
 	}
 }
 

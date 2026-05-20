@@ -670,8 +670,12 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 	}
 	envPath := filepath.Join(tmpDir, ".env")
 	// "Current" .env is what a stale prior init left: a placeholder, not the
-	// real secret. The orphan backup carries the true pre-Veil bytes.
-	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n"), 0644); err != nil {
+	// real secret. The orphan backup carries the true pre-Veil bytes. The
+	// placeholder carries the "VEIL" sentinel inside a ghp_-shaped payload
+	// — what a prior Generate would have produced — without the literal
+	// substring "placeholder" (which would trip the stub-value pre-gate in
+	// placeholder.IsSecretLike and skip the orphan signal).
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_aBcD9876aBcD9876aBcD9876aBcD9876ABCD9876\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	original := []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")

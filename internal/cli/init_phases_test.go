@@ -90,18 +90,6 @@ func TestProcessEnvFileVaultWriteFailure(t *testing.T) {
 		}
 	}
 
-	// vault.meta has no entry for envPath.
-	files, ferr := vault.ReadVaultedFiles(root)
-	if ferr != nil {
-		t.Fatalf("ReadVaultedFiles: %v", ferr)
-	}
-	abs, _ := filepath.Abs(envPath)
-	for _, f := range files {
-		if f.Path == abs {
-			t.Errorf("vault.meta should not register %s after vault failure", envPath)
-		}
-	}
-
 	// Vault contains zero credentials (rollback after Save failure).
 	if got := len(v.List()); got != 0 {
 		t.Errorf("vault should have 0 credentials after rollback, got %d", got)
@@ -109,13 +97,23 @@ func TestProcessEnvFileVaultWriteFailure(t *testing.T) {
 }
 
 // TestProcessEnvFileRecoversAfterBackupBeforeVault simulates a crash AFTER
-// writing the backup but BEFORE updating vault state: the backup exists, but
-// no meta entry. This is the orphaned-backup recovery path. Init must
-// reclaim the backup as the source of truth and re-vault from it.
+// writing the backup but BEFORE updating vault state: the backup exists,
+// the .env carries a Veil-shaped placeholder, and the current vault does
+// not own that placeholder (it's the artefact of a prior install whose
+// state is gone). Init must reclaim the backup as the source of truth and
+// re-vault from it. With the vault.meta vaulted-files registry dropped in
+// the launch cuts, the orphan signal is now content-based: a sentinel-
+// bearing value the current vault doesn't own.
 func TestProcessEnvFileRecoversAfterBackupBeforeVault(t *testing.T) {
 	original := "GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"
-	root, envPath := initEnvFixture(t, "GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n")
-	// Plant the orphan backup (no matching vault.meta entry).
+	// The .env's value carries the "VEIL" sentinel inside a ghp_-shaped
+	// payload — exactly what a prior Veil install's Generate would have
+	// produced. Avoid the literal substring "placeholder" because the
+	// stub-value pre-gate in placeholder.IsSecretLike short-circuits on it.
+	root, envPath := initEnvFixture(t, "GITHUB_TOKEN=ghp_VEIL_aBcD9876aBcD9876aBcD9876aBcD9876ABCD9876\n")
+	// Plant the orphan backup; the .env's sentinel-bearing value is not in
+	// the current vault, so isOrphanByContent treats it as a stale prior
+	// install's output.
 	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -152,10 +150,10 @@ func TestProcessEnvFileRecoversAfterBackupBeforeVault(t *testing.T) {
 }
 
 // TestProcessEnvFileRecoversAfterMetaBeforeRewrite simulates a crash AFTER
-// vault commit AND meta-register but BEFORE the atomic .env rewrite. The
-// backup is in place, vault.meta is registered, and the credential is in
-// the vault, but .env still has cleartext. Init must detect this and replay
-// only the rewrite step.
+// vault commit but BEFORE the atomic .env rewrite. The backup is in place,
+// the credential is in the vault, but .env still has cleartext. Init must
+// detect this (vault has a matching cred, .env value matches Real) and
+// replay only the rewrite step.
 func TestProcessEnvFileRecoversAfterMetaBeforeRewrite(t *testing.T) {
 	original := "API_TOKEN=tok_1234567890abcdefghij\n"
 	root, envPath := initEnvFixture(t, original)
@@ -166,12 +164,10 @@ func TestProcessEnvFileRecoversAfterMetaBeforeRewrite(t *testing.T) {
 		t.Fatalf("CreateVault: %v", err)
 	}
 
-	// Hand-build the half-finished state.
+	// Hand-build the half-finished state: backup + cred-in-vault, but the
+	// .env never got rewritten with the placeholder.
 	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if err := vault.AddVaultedFile(root, envPath); err != nil {
-		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{
 		ID:          vault.NewID(),
@@ -220,82 +216,6 @@ func TestProcessEnvFileRecoversAfterMetaBeforeRewrite(t *testing.T) {
 	}
 }
 
-// TestProcessEnvFileOrphanReclaimCleansStaleVaultCreds simulates a crash
-// between writeBackup and registerVaultedFile: the backup exists, the
-// vault already has credentials with names matching .env keys (from the
-// crashed run), but vault.meta has no entry. The next init must reclaim
-// the orphaned backup AND remove the stale vault credentials so the re-run
-// can re-vault from scratch without a duplicate-credential error.
-func TestProcessEnvFileOrphanReclaimCleansStaleVaultCreds(t *testing.T) {
-	original := "GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"
-	// Current .env content holds the OLD placeholder from the crashed run,
-	// so the cleartext is only in the backup.
-	root, envPath := initEnvFixture(t, "GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n")
-	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ks := vault.NewMemKeystore()
-	v, err := vault.CreateVault(root, "proj-orphan-stale", ks)
-	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	// Pre-populate the vault with a STALE credential matching the .env key
-	// — simulates credentials that AddBatch persisted before the crash.
-	staleReal := "ghp_STALE_value_from_crashed_run_98765432109"
-	if err := v.Add(&vault.Credential{
-		ID:          vault.NewID(),
-		Name:        "GITHUB_TOKEN",
-		Real:        staleReal,
-		Placeholder: "ghp_VEIL_oldplaceholder",
-		Source:      "init",
-		CreatedAt:   time.Now(),
-	}); err != nil {
-		t.Fatalf("v.Add stale: %v", err)
-	}
-
-	out := &bytes.Buffer{}
-	errBuf := &bytes.Buffer{}
-	cmd := newPhasesTestCmd(out, errBuf, strings.NewReader(""))
-
-	seen := make(placeholder.Set)
-	vaulted, _, err := processEnvFile(cmd, strings.NewReader(""), v, seen, root, envPath, false, false, false)
-	if err != nil {
-		t.Fatalf("processEnvFile: %v", err)
-	}
-	if vaulted != 1 {
-		t.Errorf("vaulted = %d, want 1", vaulted)
-	}
-
-	// The vault must now hold the FRESH credential, not the stale one.
-	cred, ok := v.Get("GITHUB_TOKEN")
-	if !ok {
-		t.Fatal("GITHUB_TOKEN not present in vault after re-vault")
-	}
-	if cred.Real == staleReal {
-		t.Errorf("vault still holds stale credential; expected fresh value from backup, got %q", cred.Real)
-	}
-	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
-		t.Errorf("vault Real should equal restored cleartext; got %q", cred.Real)
-	}
-	if got := len(v.List()); got != 1 {
-		t.Errorf("vault should have exactly 1 credential after cleanup + re-vault, got %d", got)
-	}
-
-	// The .env must now contain the new placeholder, not cleartext or the
-	// stale placeholder.
-	gotEnv, rerr := os.ReadFile(envPath)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if !strings.Contains(string(gotEnv), cred.Placeholder) {
-		t.Errorf(".env should contain new placeholder %q, got: %q", cred.Placeholder, gotEnv)
-	}
-	if strings.Contains(string(gotEnv), "ghp_real1234567890abcdef1234567890abcdef") {
-		t.Errorf("cleartext should be gone from .env, got: %q", gotEnv)
-	}
-}
-
 // TestRecoverPendingEnvRewriteDetectsUserEdits simulates the recovery state
 // where the user has edited the .env file between the crash and the re-run.
 // In that case, the value in the .env no longer matches the credential's
@@ -312,14 +232,11 @@ func TestRecoverPendingEnvRewriteDetectsUserEdits(t *testing.T) {
 		t.Fatalf("CreateVault: %v", err)
 	}
 
-	// Hand-build the crash-3-4 state: backup written, vault credential
-	// committed, meta registered — but .env was never rewritten and was
-	// since edited by the user.
+	// Hand-build the crash state: backup written, vault credential
+	// committed — but .env was never rewritten and was since edited
+	// by the user.
 	if err := os.WriteFile(envPath+".veil-backup", []byte("API_TOKEN="+originalReal+"\n"), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if err := vault.AddVaultedFile(root, envPath); err != nil {
-		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{
 		ID:          vault.NewID(),
@@ -372,9 +289,6 @@ func TestRecoverPendingEnvRewriteHappyPath(t *testing.T) {
 
 	if err := os.WriteFile(envPath+".veil-backup", []byte(envContent), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if err := vault.AddVaultedFile(root, envPath); err != nil {
-		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{
 		ID:          vault.NewID(),
@@ -556,13 +470,6 @@ func TestProcessEnvFileDryRunNoSideEffects(t *testing.T) {
 	if _, sterr := os.Stat(envPath + ".veil-backup"); !os.IsNotExist(sterr) {
 		t.Errorf(".veil-backup must not exist after dry-run, got err: %v", sterr)
 	}
-	files, ferr := vault.ReadVaultedFiles(root)
-	if ferr != nil {
-		t.Fatalf("ReadVaultedFiles: %v", ferr)
-	}
-	if len(files) != 0 {
-		t.Errorf("vault.meta must be empty after dry-run, got: %v", files)
-	}
 	if got := len(v.List()); got != 0 {
 		t.Errorf("in-memory vault must be empty after dry-run, got: %d", got)
 	}
@@ -590,13 +497,13 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
 
-	// Only GITHUB_TOKEN may be vaulted; both AWS_* are unrecognized post-cut
-	// (the AWS provider was removed in the v1 launch cut).
+	// Only GITHUB_TOKEN may be vaulted; both AWS_* land in Skipped (the AWS
+	// provider was removed in the v1 launch cut so no provider claims them).
 	if len(res.Creds) != 1 || res.Creds[0].Name != "GITHUB_TOKEN" {
 		t.Fatalf("Creds = %+v, want exactly GITHUB_TOKEN", res.Creds)
 	}
-	if len(res.Unrecognized) != 2 {
-		t.Fatalf("Unrecognized len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.Unrecognized))
+	if len(res.Skipped) != 2 {
+		t.Fatalf("Skipped len = %d, want 2 (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)", len(res.Skipped))
 	}
 }
 
@@ -631,11 +538,8 @@ func TestBuildEnvFileCredentials_PostgresURLNotVaulted(t *testing.T) {
 	if len(res.Creds) != 0 {
 		t.Fatalf("Creds = %+v, want empty (postgres:// has no provider and TCP can't be proxied)", res.Creds)
 	}
-	if len(res.NotManaged) != 0 {
-		t.Fatalf("NotManaged = %+v, want empty", res.NotManaged)
-	}
-	if len(res.Unrecognized) != 1 || res.Unrecognized[0].key != "DB_PASSWORD" {
-		t.Fatalf("Unrecognized = %+v, want exactly DB_PASSWORD", res.Unrecognized)
+	if len(res.Skipped) != 1 || res.Skipped[0].key != "DB_PASSWORD" {
+		t.Fatalf("Skipped = %+v, want exactly DB_PASSWORD", res.Skipped)
 	}
 }
 
@@ -657,44 +561,8 @@ func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 	if len(res.Creds) != 1 || res.Creds[0].Name != "OPENAI_API_KEY" {
 		t.Fatalf("Creds = %+v, want exactly OPENAI_API_KEY", res.Creds)
 	}
-	if len(res.Unrecognized) != 1 || res.Unrecognized[0].key != "WEIRD_SECRET" {
-		t.Fatalf("Unrecognized = %+v, want exactly WEIRD_SECRET", res.Unrecognized)
-	}
-}
-
-// TestBuildEnvFileCredentials_PopulatesCredReasons verifies that each entry
-// in res.Creds has a parallel entry in res.CredReasons describing which
-// detection gate fired.
-func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
-	envFile := scanner.ParseBytes([]byte(
-		"OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n"))
-
-	var secrets []secretLine
-	for i, line := range envFile.Lines {
-		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
-			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
-		}
-	}
-
-	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
-	if err != nil {
-		t.Fatalf("buildEnvFileCredentials: %v", err)
-	}
-	if len(res.Creds) != 1 {
-		t.Fatalf("Creds len = %d, want 1", len(res.Creds))
-	}
-	if len(res.CredReasons) != len(res.Creds) {
-		t.Fatalf("CredReasons len = %d, want %d (same as Creds)", len(res.CredReasons), len(res.Creds))
-	}
-	// OPENAI_API_KEY → provider:openai.
-	if res.Creds[0].Name != "OPENAI_API_KEY" {
-		t.Fatalf("Creds[0].Name = %q, want OPENAI_API_KEY", res.Creds[0].Name)
-	}
-	if res.CredReasons[0].Kind != placeholder.ReasonProvider {
-		t.Errorf("OPENAI reason kind = %v, want ReasonProvider", res.CredReasons[0].Kind)
-	}
-	if res.CredReasons[0].Detail != "openai" {
-		t.Errorf("OPENAI reason detail = %q, want %q", res.CredReasons[0].Detail, "openai")
+	if len(res.Skipped) != 1 || res.Skipped[0].key != "WEIRD_SECRET" {
+		t.Fatalf("Skipped = %+v, want exactly WEIRD_SECRET", res.Skipped)
 	}
 }
 
@@ -730,26 +598,25 @@ func TestPrintDryRunVaultLines_SkipsNonEligibleByName(t *testing.T) {
 	}
 }
 
-// TestPrintVaultSummary_AnnotatesManagedReason verifies that each Managed
-// line in the summary carries a parenthesized annotation describing why
-// the value was classified as a secret. The annotation is transparent
-// info — it does not gate which credentials get vaulted.
-func TestPrintVaultSummary_AnnotatesManagedReason(t *testing.T) {
+// TestPrintVaultSummary_RendersVaultedSection verifies the simplified
+// post-launch-cut summary: a single Vaulted line per credential, with no
+// per-line Reason annotation (the Reason machinery was removed in Phase 9).
+func TestPrintVaultSummary_RendersVaultedSection(t *testing.T) {
 	res := vaultBuildResult{
 		Creds: []*vault.Credential{
 			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
-		},
-		CredReasons: []placeholder.Reason{
-			{Kind: placeholder.ReasonProvider, Detail: "openai"},
 		},
 	}
 	var buf bytes.Buffer
 	printVaultSummary(&buf, res, false)
 	out := buf.String()
+	if !strings.Contains(out, "Vaulted (1)") {
+		t.Errorf("output missing 'Vaulted (1)' header:\n%s", out)
+	}
 	if !strings.Contains(out, "OPENAI_API_KEY") {
 		t.Errorf("output missing OPENAI_API_KEY:\n%s", out)
 	}
-	if !strings.Contains(out, "(provider:openai)") {
-		t.Errorf("output missing (provider:openai) annotation:\n%s", out)
+	if !strings.Contains(out, "veilph-openai-XX") {
+		t.Errorf("output missing placeholder:\n%s", out)
 	}
 }

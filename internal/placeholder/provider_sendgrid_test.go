@@ -89,12 +89,12 @@ func TestSendgridNameMatchRequiresValueShape(t *testing.T) {
 	}
 }
 
-func TestProviderSendgrid_AuthSchemeIsBearer(t *testing.T) {
+func TestProviderSendgrid_IsVaultEligible(t *testing.T) {
 	p, ok := DefaultRegistry().Get("sendgrid")
 	if !ok {
 		t.Fatal("sendgrid provider not registered")
 	}
-	if p.AuthScheme != AuthBearer {
-		t.Fatalf("sendgrid AuthScheme = %v, want AuthBearer", p.AuthScheme)
+	if !p.VaultEligible {
+		t.Fatal("sendgrid provider must declare VaultEligible: true")
 	}
 }

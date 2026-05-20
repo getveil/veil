@@ -513,14 +513,22 @@ func TestAddPersistsOnReopen(t *testing.T) {
 	}
 }
 
-func TestSkipUnsupportedSchemes_FiltersAWSGitHubAppAndBasic(t *testing.T) {
-	creds := []*Credential{
-		{ID: NewID(), Name: "bearer-1", Placeholder: "ph1"},
-		{ID: NewID(), Name: "aws-prod", Scheme: "aws", Placeholder: "ph2"},
-		{ID: NewID(), Name: "gh-app", Scheme: "github_app", Placeholder: "ph3"},
-		{ID: NewID(), Name: "basic-1", Scheme: "basic", Placeholder: "ph4"},
+// TestDecodeCredentials_FiltersStaleSchemeRecords pins the contract behind
+// the raw-JSON pre-filter chosen for the on-disk compat path (Phase 9,
+// item 5): pre-v1 records carrying `"scheme":"aws"` / `"github_app"` /
+// `"basic"` are dropped BEFORE unmarshaling, so the Scheme-less Credential
+// struct never loads them as Bearer placeholders the proxy would inject.
+func TestDecodeCredentials_FiltersStaleSchemeRecords(t *testing.T) {
+	plaintext := []byte(`[
+		{"id":"a","name":"bearer-1","real":"r1","placeholder":"ph1","source":"env","created_at":"2024-01-01T00:00:00Z"},
+		{"id":"b","name":"aws-prod","scheme":"aws","real":"r2","placeholder":"ph2","source":"env","created_at":"2024-01-01T00:00:00Z","aws_access_key_id":"AKIAEXAMPLE"},
+		{"id":"c","name":"gh-app","scheme":"github_app","real":"r3","placeholder":"ph3","source":"env","created_at":"2024-01-01T00:00:00Z"},
+		{"id":"d","name":"basic-1","scheme":"basic","real":"r4","placeholder":"ph4","source":"env","created_at":"2024-01-01T00:00:00Z","username":"alice"}
+	]`)
+	got, err := decodeCredentials(plaintext)
+	if err != nil {
+		t.Fatalf("decodeCredentials: %v", err)
 	}
-	got := skipUnsupportedSchemes(creds)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 survivor after filtering aws/github_app/basic, got %d (%v)", len(got), got)
 	}

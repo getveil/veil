@@ -10,13 +10,11 @@ import (
 )
 
 // vaultMetaShape mirrors internal/vault.vaultMeta enough to inspect the
-// registry from a black-box test. Field tags match the production JSON.
+// stored project_id from a black-box test. Field tags match the production
+// JSON.
 type vaultMetaShape struct {
-	ProjectID    string `json:"project_id"`
-	Version      int    `json:"version"`
-	VaultedFiles []struct {
-		Path string `json:"path"`
-	} `json:"vaulted_files"`
+	ProjectID string `json:"project_id"`
+	Version   int    `json:"version"`
 }
 
 func readVaultMeta(t *testing.T, projDir string) vaultMetaShape {
@@ -75,7 +73,12 @@ func TestE2E_InitOrphanBackupFromPriorInstall(t *testing.T) {
 	// v0.1.x init.
 	originalSecret := "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"
 	original := "GITHUB_TOKEN=" + originalSecret + "\n"
-	priorPlaceholder := "GITHUB_TOKEN=ghp_VEIL_prior_placeholder_xxxxxxxxxx\n"
+	// Prior placeholder carries the VEIL sentinel inside a ghp_-shaped body
+	// — what Generate would have produced — without the literal substring
+	// "placeholder", which would trip the stub-value pre-gate in
+	// placeholder.IsSecretLike and hide the orphan signal from the new
+	// content-based detector.
+	priorPlaceholder := "GITHUB_TOKEN=ghp_VEILpriorAaBbCcDd1122334455AaBbCcDd1122\n"
 
 	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0600); err != nil {
 		t.Fatalf("seed backup: %v", err)
@@ -182,15 +185,13 @@ func TestE2E_InitMultipleEnvFiles(t *testing.T) {
 		}
 	}
 
+	// vault.meta must still load cleanly (sanity: project_id present). The
+	// pre-v1 vaulted-files registry that this test used to assert against
+	// was dropped in the launch cuts — the .veil-backup sidecars on disk
+	// are now the source of truth for which files init touched.
 	m := readVaultMeta(t, projDir)
-	registered := map[string]bool{}
-	for _, entry := range m.VaultedFiles {
-		registered[filepath.Base(entry.Path)] = true
-	}
-	for _, f := range fixtures {
-		if !registered[f.name] {
-			t.Errorf("vault.meta missing entry for %s; got: %+v", f.name, m.VaultedFiles)
-		}
+	if m.ProjectID == "" {
+		t.Errorf("vault.meta missing project_id after multi-file init")
 	}
 
 	listCmd := exec.Command(veilBin, "list", "--path", projDir)

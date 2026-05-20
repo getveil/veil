@@ -10,13 +10,15 @@ import (
 
 // Credential holds a single secret and its proxy placeholder.
 //
-// Note: tolerant JSON unmarshaling. Older vaults written by v0.1.x may
-// contain Scheme="aws"/"github_app"/"basic" records with extra fields
-// (e.g. aws_access_key_id, github_app_id, username). Go's encoding/json
-// silently ignores unknown fields on a struct, so those records still
-// load — they will be rendered with whatever subset of the surviving
-// fields they happen to have. See `Vault.skipUnsupportedSchemes` for the
-// runtime filter that removes them before the proxy can act on them.
+// On-disk compat: older v0.1.x vaults may contain records with extra
+// fields (Scheme="aws"/"github_app"/"basic", aws_access_key_id,
+// github_app_id, username, etc.). Go's encoding/json silently ignores
+// unknown fields on a struct so those records still load, but the
+// raw-JSON pre-filter inside `decodeCredentials` drops aws /
+// github_app / basic records BEFORE unmarshal — otherwise their `real`
+// values would silently load as Bearer placeholders and the proxy would
+// inject them into outbound requests against whatever host scope they
+// happen to carry.
 type Credential struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
@@ -25,11 +27,6 @@ type Credential struct {
 	Source       string    `json:"source"`
 	AllowedHosts []string  `json:"allowed_hosts,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
-
-	// Scheme is a discriminator: "" (bearer). Older vaults may have
-	// "aws"/"github_app"/"basic" records which are filtered out at Open
-	// time (see Vault.skipUnsupportedSchemes).
-	Scheme string `json:"scheme,omitempty"`
 }
 
 // String returns a redacted representation that never leaks secret material.
@@ -42,7 +39,6 @@ func (c *Credential) String() string {
 func (c *Credential) Zero() {
 	c.Real = ""
 	c.Placeholder = ""
-	c.Scheme = ""
 }
 
 // NewID generates a ULID suitable for use as a credential identifier.

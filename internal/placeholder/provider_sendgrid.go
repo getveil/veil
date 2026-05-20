@@ -4,9 +4,9 @@ import "strings"
 
 func init() {
 	register(ProviderPattern{
-		Name:       "sendgrid",
-		AuthScheme: AuthBearer,
-		Priority:   PriorityHandwritten,
+		Name:          "sendgrid",
+		VaultEligible: true,
+		Hosts:         []string{"api.sendgrid.com"},
 		Match: func(name, value string) bool {
 			if strings.HasPrefix(value, "SG.") {
 				return true
@@ -25,6 +25,5 @@ func init() {
 			// offset 3 (start of the first base64 block).
 			return sentinelize("SG."+randBase64ish(22)+"."+randBase64ish(43), 3)
 		},
-		Hosts: []string{"api.sendgrid.com"},
 	})
 }
