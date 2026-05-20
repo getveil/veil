@@ -8,8 +8,6 @@ import (
 	"strings"
 
 	gitignore "github.com/sabhiram/go-gitignore"
-
-	"github.com/getveil/veil/internal/mcpconfig"
 )
 
 // baselineExcludeDirs is the set of directory basenames the walker always
@@ -57,12 +55,6 @@ func matchesEnvBasename(name string) bool {
 		}
 	}
 	return true
-}
-
-// walkResult collects everything the walker discovered in one pass.
-type walkResult struct {
-	envPaths   []string
-	mcpConfigs []mcpconfig.DiscoveredConfig
 }
 
 // gitignoreStack tracks the .gitignore matchers active for the directory
@@ -160,24 +152,6 @@ func (s gitignoreStack) matchesFile(path string) bool {
 	return false
 }
 
-// projectMCPMatch reports whether path's tail matches a project-relative
-// MCP config pattern from mcpconfig.ProjectFilenames(). Returns the matched
-// client and true on hit.
-func projectMCPMatch(root, path string) (mcpconfig.Client, bool) {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return "", false
-	}
-	relSlash := filepath.ToSlash(rel)
-	for _, pf := range mcpconfig.ProjectFilenames() {
-		suffix := strings.Join(pf.Path, "/")
-		if relSlash == suffix || strings.HasSuffix(relSlash, "/"+suffix) {
-			return pf.Client, true
-		}
-	}
-	return "", false
-}
-
 // walkProject performs the recursive walk from root, returning every .env-
 // shaped file (basename match) found beneath, sorted alphabetically.
 //
@@ -187,8 +161,8 @@ func projectMCPMatch(root, path string) (mcpconfig.Client, bool) {
 //
 // Symlinked files are returned in the result set so the existing leaf-
 // symlink refusal gate surfaces an explicit error to the user.
-func walkProject(root string) (walkResult, error) {
-	var res walkResult
+func walkProject(root string) ([]string, error) {
+	var envPaths []string
 	stack := gitignoreStack{}
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -228,33 +202,18 @@ func walkProject(root string) (walkResult, error) {
 		// action layer surfaces an explicit error.
 		//
 		// Apply .gitignore to files — a user can ignore a specific file by
-		// name. Checked before any pattern match so it applies uniformly to
-		// .env files AND project-local MCP configs.
+		// name.
 		if stack.matchesFile(path) {
 			return nil
 		}
-		// Env file?
 		if matchesEnvBasename(d.Name()) {
-			res.envPaths = append(res.envPaths, path)
-			return nil
-		}
-		// Project-local MCP config?
-		if client, ok := projectMCPMatch(root, path); ok {
-			res.mcpConfigs = append(res.mcpConfigs, mcpconfig.DiscoveredConfig{
-				Path:   path,
-				Client: client,
-				Scope:  mcpconfig.ProjectScope,
-			})
-			return nil
+			envPaths = append(envPaths, path)
 		}
 		return nil
 	})
 	if err != nil {
-		return walkResult{}, err
+		return nil, err
 	}
-	sort.Strings(res.envPaths)
-	sort.Slice(res.mcpConfigs, func(i, j int) bool {
-		return res.mcpConfigs[i].Path < res.mcpConfigs[j].Path
-	})
-	return res, nil
+	sort.Strings(envPaths)
+	return envPaths, nil
 }

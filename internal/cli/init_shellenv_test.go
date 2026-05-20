@@ -155,9 +155,9 @@ func TestInit_CapturesShellEnvSecrets(t *testing.T) {
 }
 
 // TestInit_ShellOnlyProject verifies that `veil init` still runs the shell-env
-// capture phase when a project has NO .env files and NO MCP config. The prior
-// early-exit gate returned before reaching that phase, silently defeating SEC-1
-// coverage for users whose credentials live exclusively in their shell.
+// capture phase when a project has NO .env files. The prior early-exit gate
+// returned before reaching that phase, silently defeating SEC-1 coverage for
+// users whose credentials live exclusively in their shell.
 func TestInit_ShellOnlyProject(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	clearShellEnvTestNoise(t)
@@ -167,8 +167,7 @@ func TestInit_ShellOnlyProject(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmp, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	// Deliberately no .env files and no MCP config — this project has only
-	// the shell-exported secret.
+	// Deliberately no .env files — this project has only the shell-exported secret.
 
 	cmd := NewRoot("test")
 	out := new(bytes.Buffer)
@@ -196,4 +195,3 @@ func TestInit_ShellOnlyProject(t *testing.T) {
 		t.Errorf("vaulted value = %q, want sk-abc-highentropy-1234567890", c.Real)
 	}
 }
-

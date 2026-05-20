@@ -37,21 +37,10 @@ func writeBackup(src string) error {
 	return nil
 }
 
-// registerVaultedFile records src in the project's vault.meta registry
-// (under the given kind). It does not touch the .veil-backup sidecar.
-func registerVaultedFile(root, src string, kind vault.FileKind) error {
-	return vault.AddVaultedFile(root, src, kind)
-}
-
-// recordVaultedBackup writes src's backup AND registers src's absolute path
-// in vault.meta so uninstall can locate it even when src is outside root.
-// The kind is stored so uninstall picks the right classifier without
-// re-deriving from the basename.
-func recordVaultedBackup(root, src string, kind vault.FileKind) error {
-	if err := writeBackup(src); err != nil {
-		return err
-	}
-	return registerVaultedFile(root, src, kind)
+// registerVaultedFile records src in the project's vault.meta registry.
+// It does not touch the .veil-backup sidecar.
+func registerVaultedFile(root, src string) error {
+	return vault.AddVaultedFile(root, src)
 }
 
 // isOrphanedBackup reports whether src has a .veil-backup that is NOT

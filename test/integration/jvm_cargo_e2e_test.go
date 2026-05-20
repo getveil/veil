@@ -45,11 +45,10 @@ func TestE2E_CargoThroughVeil(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
-	// Without source material (.env / MCP config / shell secrets) init
-	// early-exits and never creates .veil/. The probe we're really testing
-	// is the runtime TLS-injection path, not vaulting; a dummy .env is the
-	// cheapest way to make init proceed to vault creation on a CI runner
-	// that has no MCP config.
+	// Without source material (.env / shell secrets) init early-exits and
+	// never creates .veil/. The probe we're really testing is the runtime
+	// TLS-injection path, not vaulting; a dummy .env is the cheapest way
+	// to make init proceed to vault creation on a CI runner.
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte("DUMMY_API_KEY=sk-test-1234567890abcdef\n"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
@@ -111,11 +110,10 @@ func TestE2E_JavaThroughVeil(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(projDir, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
-	// Without source material (.env / MCP config / shell secrets) init
-	// early-exits and never creates .veil/. The probe we're really testing
-	// is the runtime TLS-injection path, not vaulting; a dummy .env is the
-	// cheapest way to make init proceed to vault creation on a CI runner
-	// that has no MCP config.
+	// Without source material (.env / shell secrets) init early-exits and
+	// never creates .veil/. The probe we're really testing is the runtime
+	// TLS-injection path, not vaulting; a dummy .env is the cheapest way
+	// to make init proceed to vault creation on a CI runner.
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte("DUMMY_API_KEY=sk-test-1234567890abcdef\n"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}

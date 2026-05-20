@@ -16,25 +16,13 @@ import (
 	"github.com/getveil/veil/internal/skiphost"
 )
 
-// TestMain defaults VEIL_MCP_DISABLE_DISCOVERY=1 for every test in this
-// package so the init/uninstall code paths cannot accidentally walk into
-// the developer's real ~/.claude.json, ~/.cursor/mcp.json, or Claude
-// Desktop config when a test forgets to override HOME. Tests that
-// explicitly exercise discovery opt back in with
-// t.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "") at their top — that override
-// is scoped to the test and gets reverted when it returns, so other tests
-// in the package remain hermetic.
+// TestMain probes the test-keystore seam: tests in this package set
+// VEIL_TEST_KEYSTORE=mem expecting writes to route to an in-memory
+// keystore, but the seam is gated behind -tags testkeystore. Without
+// that tag the env var is silently ignored and tests fall through to
+// the real OS keychain — polluting it (and producing exit-154 errors
+// once enough entries accumulate). Fail loud here.
 func TestMain(m *testing.M) {
-	if err := os.Setenv("VEIL_MCP_DISABLE_DISCOVERY", "1"); err != nil {
-		panic(err)
-	}
-
-	// Probe the test-keystore seam: tests in this package set
-	// VEIL_TEST_KEYSTORE=mem expecting writes to route to an in-memory
-	// keystore, but the seam is gated behind -tags testkeystore. Without
-	// that tag the env var is silently ignored and tests fall through to
-	// the real OS keychain — polluting it (and producing exit-154 errors
-	// once enough entries accumulate). Fail loud here.
 	prev, hadPrev := os.LookupEnv(envkeys.TestKeystoreToggle)
 	if err := os.Setenv(envkeys.TestKeystoreToggle, "mem"); err != nil {
 		panic(err)
@@ -1150,7 +1138,6 @@ func TestRemoveCancelled(t *testing.T) {
 
 func TestInitEmptyEnvFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {

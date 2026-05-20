@@ -12,16 +12,6 @@ import "slices"
 // the tag) never read this variable — see internal/cli/helpers_prodkeystore.go.
 const TestKeystoreToggle = "VEIL_TEST_KEYSTORE"
 
-// MCPConfigOverride, when set, replaces the auto-discovered Claude Desktop
-// MCP config path. Intended for test hermeticity; production callers rarely
-// set it.
-const MCPConfigOverride = "VEIL_MCP_CONFIG_PATH"
-
-// MCPDisableDiscovery, when set to a truthy value, causes Veil to skip all
-// auto-discovery of MCP configs (user-global and project-local). Tests use
-// it for full hermeticity; production callers should not set it.
-const MCPDisableDiscovery = "VEIL_MCP_DISABLE_DISCOVERY"
-
 // Passphrase is the env var Veil reads to decrypt the age-encrypted master
 // key file on Linux when no Secret Service is available
 // (internal/vault/keystore_file.go). Knowing this passphrase plus read
@@ -33,14 +23,12 @@ const Passphrase = "VEIL_PASSPHRASE"
 // must be stripped from the agent's environment. The agent has no
 // legitimate use for any of these, and leaving them would let an agent
 // process either decrypt the vault (Passphrase) or redirect Veil's own
-// behavior (TestKeystoreToggle, MCPConfigOverride, MCPDisableDiscovery)
-// if it shells out to "veil". No placeholder is reinjected — these are
-// control variables, not user secrets.
+// behavior (TestKeystoreToggle) if it shells out to "veil". No
+// placeholder is reinjected — these are control variables, not user
+// secrets.
 var VeilInternalKeys = []string{
 	Passphrase,
 	TestKeystoreToggle,
-	MCPConfigOverride,
-	MCPDisableDiscovery,
 }
 
 // HTTPProxyKeys lists the proxy-URL env var name variants (upper and lower

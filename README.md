@@ -25,11 +25,11 @@ Veil is a local CLI that sits between your AI coding agents and the network via 
 
 ## Why this exists
 
-Your AI agent can read every secret in your project — every `.env`, every MCP config, every key it stumbles across in your code. `.gitignore` stopped this at the git boundary years ago. Nothing has stopped it at the AI boundary. Veil is that gap-filler.
+Your AI agent can read every secret in your project — every `.env`, every key it stumbles across in your code. `.gitignore` stopped this at the git boundary years ago. Nothing has stopped it at the AI boundary. Veil is that gap-filler.
 
 ## How it works
 
-1. `veil init` scans your `.env` files (and, with `--scan-mcp`, your MCP configs), moves secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
+1. `veil init` scans your `.env` files, moves secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
 2. `veil run <agent>` starts a local HTTPS proxy and launches your agent with `HTTP_PROXY` / `HTTPS_PROXY` set. The proxy swaps placeholders for real credentials on outbound requests.
 3. Every credential injection and agent action is logged to local SQLite. Query with `veil log`.
 
@@ -124,7 +124,7 @@ veil add GITHUB_TOKEN --value ghp_abc123
 veil log
 veil log --since 1h
 
-# Reverse it — restore original .env/MCP files, wipe vault and state
+# Reverse it — restore original .env files, wipe vault and state
 veil uninstall              # prompts with diff before touching anything
 veil uninstall --dry-run    # preview the plan without changes
 ```
@@ -135,7 +135,6 @@ veil uninstall --dry-run    # preview the plan without changes
 |---|---|
 | **Bearer providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab |
 | **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
-| **MCP configs** | Opt-in via `veil init --scan-mcp` (Claude Desktop, Claude Code, Cursor, project-local `.mcp.json`) |
 | **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |
 | **Roadmap** | Google service-accounts · HMAC webhooks · gRPC · Windows |
 
@@ -212,7 +211,6 @@ internal/
   audit/        SQLite audit logging
   config/       Project config management
   envkeys/      Canonical env-var key list (proxy + CA bundle)
-  mcpconfig/    MCP config file parsing
   runner/       Agent process management
   skiphost/     Persistent skip-host list
   ui/           Terminal output

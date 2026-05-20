@@ -132,15 +132,15 @@ func TestRegisterVaultedFileRecordsInMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := registerVaultedFile(root, src, vault.KindEnv); err != nil {
+	if err := registerVaultedFile(root, src); err != nil {
 		t.Fatalf("registerVaultedFile: %v", err)
 	}
 	entries, err := vault.ReadVaultedFiles(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Kind != vault.KindEnv {
-		t.Errorf("expected 1 vaulted-file entry of KindEnv, got %+v", entries)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 vaulted-file entry, got %+v", entries)
 	}
 	// The function records ABSOLUTE paths.
 	abs, _ := filepath.Abs(src)
@@ -150,54 +150,5 @@ func TestRegisterVaultedFileRecordsInMeta(t *testing.T) {
 	// And does NOT create a backup sidecar.
 	if backupExists(src) {
 		t.Error("registerVaultedFile should not create a backup sidecar")
-	}
-}
-
-func TestWriteBackupPlusRegisterEqualsRecordVaultedBackup(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	root := t.TempDir()
-	if _, err := vault.CreateVault(root, "proj-combo", vault.NewMemKeystore()); err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	src := filepath.Join(root, "config.json")
-	if err := os.WriteFile(src, []byte(`{"k":"v"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := writeBackup(src); err != nil {
-		t.Fatalf("writeBackup: %v", err)
-	}
-	if err := registerVaultedFile(root, src, vault.KindMCP); err != nil {
-		t.Fatalf("registerVaultedFile: %v", err)
-	}
-	if !backupExists(src) {
-		t.Error("backup missing")
-	}
-	entries, _ := vault.ReadVaultedFiles(root)
-	if len(entries) != 1 || entries[0].Kind != vault.KindMCP {
-		t.Errorf("registry: got %+v", entries)
-	}
-}
-
-func TestRecordVaultedBackupWrapperUnchanged(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	root := t.TempDir()
-	if _, err := vault.CreateVault(root, "proj-wrapper", vault.NewMemKeystore()); err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	src := filepath.Join(root, ".env")
-	if err := os.WriteFile(src, []byte("X=1"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := recordVaultedBackup(root, src, vault.KindEnv); err != nil {
-		t.Fatalf("recordVaultedBackup: %v", err)
-	}
-	if !backupExists(src) {
-		t.Error("backup missing after recordVaultedBackup")
-	}
-	entries, _ := vault.ReadVaultedFiles(root)
-	if len(entries) != 1 {
-		t.Errorf("registry: expected 1 entry, got %+v", entries)
 	}
 }

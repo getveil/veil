@@ -119,11 +119,11 @@ func TestScanEnviron_DeduplicatesByName(t *testing.T) {
 // TestScanEnviron_SkipsAllVeilInternalKeys pins the source-of-truth contract:
 // every entry in envkeys.VeilInternalKeys MUST be filtered out by
 // ScanEnviron, regardless of how secret-like its value is. Previously the
-// denylist hardcoded a partial subset (VEIL_TEST_KEYSTORE, VEIL_MCP_CONFIG_PATH)
-// and omitted VEIL_PASSPHRASE — so a real high-entropy passphrase tripped the
-// value heuristic and was routed into the vault as a credential. The fix
-// iterates envkeys.VeilInternalKeys at the call site; this test makes that
-// contract a build-time fact (the loop below covers any future addition).
+// denylist hardcoded a partial subset and omitted VEIL_PASSPHRASE — so a real
+// high-entropy passphrase tripped the value heuristic and was routed into the
+// vault as a credential. The fix iterates envkeys.VeilInternalKeys at the
+// call site; this test makes that contract a build-time fact (the loop below
+// covers any future addition).
 func TestScanEnviron_SkipsAllVeilInternalKeys(t *testing.T) {
 	// A long, high-entropy, fully-distinct value — easily passes
 	// placeholder.IsSecretLike's name-independent value heuristic
@@ -171,4 +171,3 @@ func TestScanEnviron_SkipsMalformedEntries(t *testing.T) {
 		t.Fatalf("ScanEnviron = %+v, want only OPENAI_API_KEY", got)
 	}
 }
-

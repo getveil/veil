@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
@@ -73,20 +72,12 @@ func formatPIDList(pids []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// backupKind classifies a backup pair by the kind of file it covers.
-type backupKind int
-
-const (
-	backupKindEnv backupKind = iota
-	backupKindMCP
-)
-
-// backupPair pairs an original file path with its backup. Either may be
-// missing on disk at discovery time; classification runs later.
+// backupPair pairs an original .env file path with its backup sidecar.
+// Either may be missing on disk at discovery time; classification runs
+// later.
 type backupPair struct {
 	original string
 	backup   string
-	kind     backupKind
 }
 
 // envCuratedNames mirrors the names a legacy curated-probe install would
@@ -105,10 +96,9 @@ var envCuratedNames = []string{
 }
 
 // discoverBackups returns every (original, backup) pair uninstall should
-// consider. Source of truth is vault.meta's vaulted-files registry (which
-// records both path and kind, so non-canonical MCP paths route correctly).
-// Falls back to the legacy curated-name scan plus mcpconfig.Discover() for
-// vaults written before the registry existed; duplicates are deduped.
+// consider. Source of truth is vault.meta's vaulted-files registry. Falls
+// back to the legacy curated-name scan for vaults written before the
+// registry existed; duplicates are deduped.
 func discoverBackups(root string) ([]backupPair, error) {
 	var pairs []backupPair
 	seen := make(map[string]bool)
@@ -122,7 +112,7 @@ func discoverBackups(root string) ([]backupPair, error) {
 		if _, err := os.Stat(backup); err != nil {
 			continue
 		}
-		pairs = append(pairs, backupPair{original: entry.Path, backup: backup, kind: kindFromVault(entry.Kind)})
+		pairs = append(pairs, backupPair{original: entry.Path, backup: backup})
 		seen[entry.Path] = true
 	}
 
@@ -135,48 +125,10 @@ func discoverBackups(root string) ([]backupPair, error) {
 		if _, err := os.Stat(backup); err != nil {
 			continue
 		}
-		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
+		pairs = append(pairs, backupPair{original: orig, backup: backup})
 		seen[orig] = true
 	}
 
-	mcpConfigs, err := mcpconfigDiscover()
-	if err != nil {
-		return nil, fmt.Errorf("discovering MCP config: %w", err)
-	}
-	for _, cfg := range mcpConfigs {
-		if seen[cfg.Path] {
-			continue
-		}
-		if _, err := os.Stat(cfg.Path + backupSuffix); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{
-			original: cfg.Path,
-			backup:   cfg.Path + backupSuffix,
-			kind:     backupKindMCP,
-		})
-		seen[cfg.Path] = true
-	}
-
-	// Project-local MCP fallback: check known per-client paths at the project
-	// root, in case the registry lost a project-scoped backup (e.g., crashed
-	// init before registry write). Sub-tree project MCP configs cannot be
-	// covered without re-walking, so this only catches the common root case.
-	for _, pf := range mcpconfig.ProjectFilenames() {
-		full := filepath.Join(append([]string{root}, pf.Path...)...)
-		if seen[full] {
-			continue
-		}
-		if _, err := os.Stat(full + backupSuffix); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{
-			original: full,
-			backup:   full + backupSuffix,
-			kind:     backupKindMCP,
-		})
-		seen[full] = true
-	}
 	return pairs, nil
 }
 
@@ -207,20 +159,6 @@ func refuseSymlinkedBackupPairs(root string, pairs []backupPair) error {
 		"Remove the symlink (or replace it with a regular file via `cp -L`) and re-run. If you did not create this symlink, investigate before proceeding — it may indicate tampering.",
 	)
 }
-
-// kindFromVault maps a vault.FileKind to the local backupKind. Unknown kinds
-// (e.g. registry entries from a future schema) fall back to env so the
-// classifier path is at least byte-stable.
-func kindFromVault(k vault.FileKind) backupKind {
-	if k == vault.KindMCP {
-		return backupKindMCP
-	}
-	return backupKindEnv
-}
-
-// mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
-// without importing the package into the uninstall_test package.
-var mcpconfigDiscover = func() ([]mcpconfig.DiscoveredConfig, error) { return mcpconfig.Discover() }
 
 // classification enumerates how a (current, backup) pair relates.
 type classification int
@@ -301,7 +239,7 @@ func expectedOriginalEnv(current []byte, resolver placeholderResolver) []byte {
 // is prefixed with '-' (present in a, missing from b) or '+' (present in b,
 // missing from a). Context lines are prefixed with a single space.
 // Implementation uses a line-by-line LCS — fine for files of typical
-// .env/MCP size (tens to hundreds of lines).
+// .env size (tens to hundreds of lines).
 func renderUnifiedDiff(a, b []byte) string {
 	if bytes.Equal(a, b) {
 		return ""
@@ -365,49 +303,6 @@ func emitDiff(sb *strings.Builder, a, b []string, t [][]int, i, j int) {
 		sb.WriteString(a[i-1])
 		sb.WriteString("\n")
 	}
-}
-
-// classifyMCPPair compares the current MCP config file to its backup after
-// reverse-substituting placeholders with real values. Semantics mirror
-// classifyEnvPair but operate on the MCP JSON shape via mcpconfig.
-func classifyMCPPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
-	currentBytes, backupBytes, status, err := readPairBytes(original, backup)
-	if err != nil || status == classOriginalMissing {
-		return status, "", err
-	}
-
-	expected, expErr := expectedOriginalMCP(currentBytes, resolver)
-	if expErr != nil || !bytes.Equal(expected, backupBytes) {
-		return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
-	}
-	return classUnmodified, "", nil
-}
-
-// expectedOriginalMCP parses the current MCP config bytes, substitutes
-// placeholders with real values in every server's env map and args slice,
-// and re-serializes using mcpconfig's canonical formatting. Args are
-// substituted alongside env so a config that was vaulted with secrets in
-// either location classifies as classUnmodified against its backup.
-func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, error) {
-	cfg, err := mcpconfig.ParseBytes(current)
-	if err != nil {
-		return nil, err
-	}
-	if resolver != nil {
-		for serverName, server := range cfg.Servers() {
-			for key, value := range server.Env {
-				if real, ok := resolver[value]; ok {
-					cfg.SetEnvValue(serverName, key, real)
-				}
-			}
-			for i, value := range server.Args {
-				if real, ok := resolver[value]; ok {
-					cfg.SetArg(serverName, i, real)
-				}
-			}
-		}
-	}
-	return cfg.Bytes()
 }
 
 // resolverFromVault returns a placeholderResolver mapping each credential's
@@ -511,11 +406,7 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 	plan := make([]planned, 0, len(pairs))
 	for _, p := range pairs {
-		classify := classifyEnvPair
-		if p.kind == backupKindMCP {
-			classify = classifyMCPPair
-		}
-		status, diff, cerr := classify(p.original, p.backup, resolver)
+		status, diff, cerr := classifyEnvPair(p.original, p.backup, resolver)
 		if cerr != nil {
 			return wrapErr(fmt.Sprintf("classifying %s", p.original), cerr)
 		}

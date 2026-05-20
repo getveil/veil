@@ -1,7 +1,6 @@
 package envkeys
 
 import (
-	"slices"
 	"testing"
 )
 
@@ -58,23 +57,8 @@ func TestToggleConstants(t *testing.T) {
 	if TestKeystoreToggle != "VEIL_TEST_KEYSTORE" {
 		t.Errorf("TestKeystoreToggle = %q, want VEIL_TEST_KEYSTORE", TestKeystoreToggle)
 	}
-	if MCPConfigOverride != "VEIL_MCP_CONFIG_PATH" {
-		t.Errorf("MCPConfigOverride = %q, want VEIL_MCP_CONFIG_PATH", MCPConfigOverride)
-	}
 	if Passphrase != "VEIL_PASSPHRASE" {
 		t.Errorf("Passphrase = %q, want VEIL_PASSPHRASE", Passphrase)
-	}
-}
-
-func TestMCPDisableDiscoveryConstant(t *testing.T) {
-	if MCPDisableDiscovery != "VEIL_MCP_DISABLE_DISCOVERY" {
-		t.Errorf("MCPDisableDiscovery = %q, want VEIL_MCP_DISABLE_DISCOVERY", MCPDisableDiscovery)
-	}
-}
-
-func TestVeilInternalKeysContainsDisableDiscovery(t *testing.T) {
-	if !slices.Contains(VeilInternalKeys, MCPDisableDiscovery) {
-		t.Errorf("VeilInternalKeys missing %q — agent could re-enable discovery via inherited env", MCPDisableDiscovery)
 	}
 }
 
@@ -86,10 +70,8 @@ func TestVeilInternalKeysContainsDisableDiscovery(t *testing.T) {
 // attack.
 func TestVeilInternalKeysCoverage(t *testing.T) {
 	want := map[string]bool{
-		"VEIL_PASSPHRASE":            true,
-		"VEIL_TEST_KEYSTORE":         true,
-		"VEIL_MCP_CONFIG_PATH":       true,
-		"VEIL_MCP_DISABLE_DISCOVERY": true,
+		"VEIL_PASSPHRASE":    true,
+		"VEIL_TEST_KEYSTORE": true,
 	}
 	got := make(map[string]bool, len(VeilInternalKeys))
 	for _, k := range VeilInternalKeys {

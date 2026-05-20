@@ -170,7 +170,7 @@ func TestProcessEnvFileRecoversAfterMetaBeforeRewrite(t *testing.T) {
 	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := vault.AddVaultedFile(root, envPath, vault.KindEnv); err != nil {
+	if err := vault.AddVaultedFile(root, envPath); err != nil {
 		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{
@@ -318,7 +318,7 @@ func TestRecoverPendingEnvRewriteDetectsUserEdits(t *testing.T) {
 	if err := os.WriteFile(envPath+".veil-backup", []byte("API_TOKEN="+originalReal+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := vault.AddVaultedFile(root, envPath, vault.KindEnv); err != nil {
+	if err := vault.AddVaultedFile(root, envPath); err != nil {
 		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{
@@ -373,7 +373,7 @@ func TestRecoverPendingEnvRewriteHappyPath(t *testing.T) {
 	if err := os.WriteFile(envPath+".veil-backup", []byte(envContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := vault.AddVaultedFile(root, envPath, vault.KindEnv); err != nil {
+	if err := vault.AddVaultedFile(root, envPath); err != nil {
 		t.Fatalf("AddVaultedFile: %v", err)
 	}
 	if err := v.Add(&vault.Credential{

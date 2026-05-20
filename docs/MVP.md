@@ -16,7 +16,7 @@ The MVP free tier is this binary. Everything below is what that binary does toda
 
 Mapped to the four outcomes Veil targets.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files (and, with `--scan-mcp`, MCP configs) into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer is mediated end-to-end (Authorization headers, `git push` over HTTPS with a Bearer token). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — and HTTP Basic credentials are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer is mediated end-to-end (Authorization headers, `git push` over HTTPS with a Bearer token). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — and HTTP Basic credentials are not silently dropped; the transform-mismatch detector flags them (see §5).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -32,7 +32,7 @@ The public contract. Names and flags below are stable for the MVP series.
 
 | Command | Behavior |
 |---|---|
-| `veil init` | Scan the project for `.env` files (and, with `--scan-mcp`, MCP configs), vault any secrets found, write placeholders back, install the local CA. |
+| `veil init` | Scan the project for `.env` files, vault any secrets found, write placeholders back, install the local CA. |
 | `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
 | `veil add <name>` | Add a Bearer credential to the vault. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
@@ -40,7 +40,7 @@ The public contract. Names and flags below are stable for the MVP series.
 | `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`. |
 | `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. `--list` shows the current list; `--remove <host>` deletes an entry. |
 | `veil remove <name>` | Delete a credential from the vault. |
-| `veil uninstall` | Reverse `veil init`: restore original `.env` and MCP files from backups, wipe vault and audit state. `--dry-run` previews the plan. |
+| `veil uninstall` | Reverse `veil init`: restore original `.env` files from backups, wipe vault and audit state. `--dry-run` previews the plan. |
 
 ---
 

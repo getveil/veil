@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/scanner"
@@ -135,22 +134,11 @@ func firstSymlinkInChain(anchor string, subpath []string) string {
 // project while cleartext lands at the link target — strictly worse exposure
 // than not running Veil. Aggregates every violation so the user fixes them
 // in one pass.
-func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigs []mcpconfig.DiscoveredConfig) error {
+func refuseSymlinkedInputs(root string, envPaths []string) error {
 	var hits []string
 
 	for _, p := range envPaths {
 		hits = appendIfSymlink(hits, p, displayRel(root, p))
-	}
-	for _, cfg := range mcpConfigs {
-		hits = appendIfSymlink(hits, cfg.Path, displayRel(root, cfg.Path))
-	}
-
-	checkChain := func(anchor string, subpath []string, leafDisplay string) {
-		hit := firstSymlinkInChain(anchor, subpath)
-		if hit == "" {
-			return
-		}
-		hits = append(hits, fmt.Sprintf("%s (parent %s)", leafDisplay, describeSymlink(hit, hit)))
 	}
 
 	// .env anchor is the project root. Scanner only looks at root itself
@@ -161,15 +149,11 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigs []mcpconfi
 		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
 			continue
 		}
-		checkChain(root, strings.Split(filepath.ToSlash(rel), "/"), displayRel(root, p))
-	}
-
-	anchors, err := mcpconfig.ParentAnchors()
-	if err != nil {
-		return wrapErr("resolving MCP parent anchors", err)
-	}
-	for _, pa := range anchors {
-		checkChain(pa.Anchor, pa.Subpath, fmt.Sprintf("%s (%s, user)", filepath.Join(append([]string{pa.Anchor}, pa.Subpath...)...), pa.Client))
+		hit := firstSymlinkInChain(root, strings.Split(filepath.ToSlash(rel), "/"))
+		if hit == "" {
+			continue
+		}
+		hits = append(hits, fmt.Sprintf("%s (parent %s)", displayRel(root, p), describeSymlink(hit, hit)))
 	}
 
 	if len(hits) == 0 {
@@ -185,32 +169,6 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigs []mcpconfi
 	)
 }
 
-// mcpSentinelHits returns "<rel>: <server>.<key>" entries for every value in
-// the MCP config at mcpConfigPath that already carries the placeholder
-// sentinel. Both env values and positional args are inspected. Parse errors
-// are non-fatal — downstream code surfaces them with better context.
-func mcpSentinelHits(root, mcpConfigPath string) []string {
-	cfg, err := mcpconfig.Parse(mcpConfigPath)
-	if err != nil {
-		return nil
-	}
-	rel := displayRel(root, mcpConfigPath)
-	var hits []string
-	for serverName, server := range cfg.Servers() {
-		for k, v := range server.Env {
-			if placeholder.IsSecretLike(k, v) && placeholder.ContainsSentinel(v) {
-				hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
-			}
-		}
-		for i, v := range server.Args {
-			if placeholder.IsSecretLike("", v) && placeholder.ContainsSentinel(v) {
-				hits = append(hits, fmt.Sprintf("%s: %s.args[%d]", rel, serverName, i))
-			}
-		}
-	}
-	return hits
-}
-
 // refusePlaceholderInputs scans the files init is about to vault and refuses
 // to proceed if any contains a value bearing the placeholder sentinel. Those
 // values were produced by a prior Generate call — re-running init over them
@@ -218,7 +176,7 @@ func mcpSentinelHits(root, mcpConfigPath string) []string {
 // destroying every copy of the original secret Veil controls. Files with an
 // existing sibling .veil-backup are skipped unless --force is set, since the
 // downstream "already has a backup" short-circuit makes them safe.
-func refusePlaceholderInputs(root string, envPaths []string, mcpConfigs []mcpconfig.DiscoveredConfig, force bool) error {
+func refusePlaceholderInputs(root string, envPaths []string, force bool) error {
 	var hits []string
 
 	for _, p := range envPaths {
@@ -240,13 +198,6 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigs []mcpcon
 		}
 	}
 
-	for _, cfg := range mcpConfigs {
-		if !force && backupExists(cfg.Path) {
-			continue
-		}
-		hits = append(hits, mcpSentinelHits(root, cfg.Path)...)
-	}
-
 	if len(hits) == 0 {
 		return nil
 	}
@@ -261,87 +212,49 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigs []mcpcon
 	)
 }
 
-// filterInputs asks the user to narrow the combined set of .env files and
-// MCP configs to scan when there is more than one. In non-interactive mode,
-// or when only a single input was discovered, the inputs pass through
-// unchanged. A "Y" answer keeps everything; "n" drops everything; "s" lets
-// the user multi-select across both kinds in one list. Per-secret prompts
-// inside each config still run during processing.
+// filterInputs asks the user to narrow the set of .env files to scan when
+// more than one was discovered. In non-interactive mode, or when only a
+// single input was found, the inputs pass through unchanged. A "Y" answer
+// keeps everything; "n" drops everything; "s" lets the user multi-select.
+// Per-secret prompts inside each file still run during processing.
 func filterInputs(
 	in io.Reader,
 	w io.Writer,
 	root string,
 	envPaths []string,
-	mcpConfigs []mcpconfig.DiscoveredConfig,
 	interactive bool,
-) ([]string, []mcpconfig.DiscoveredConfig) {
-	total := len(envPaths) + len(mcpConfigs)
-	if !interactive || total <= 1 {
-		return envPaths, mcpConfigs
+) []string {
+	if !interactive || len(envPaths) <= 1 {
+		return envPaths
 	}
 
-	type entry struct {
-		display string
-		envIdx  int // >= 0 means index into envPaths
-		mcpIdx  int // >= 0 means index into mcpConfigs
-	}
-	var entries []entry
-	_, _ = fmt.Fprintf(w, "\nFound %d %s to process:\n", total, plural(total, "input", "inputs"))
+	_, _ = fmt.Fprintf(w, "\nFound %d %s to process:\n", len(envPaths), plural(len(envPaths), "input", "inputs"))
+	displays := make([]string, len(envPaths))
 	for i, p := range envPaths {
-		rel := displayRel(root, p)
-		_, _ = fmt.Fprintf(w, "  %s\n", rel)
-		entries = append(entries, entry{display: rel, envIdx: i, mcpIdx: -1})
-	}
-	for i, cfg := range mcpConfigs {
-		display := mcpDisplayLabel(root, cfg)
-		_, _ = fmt.Fprintf(w, "  %s\n", display)
-		entries = append(entries, entry{display: display, envIdx: -1, mcpIdx: i})
+		displays[i] = displayRel(root, p)
+		_, _ = fmt.Fprintf(w, "  %s\n", displays[i])
 	}
 	_, _ = fmt.Fprintln(w)
 
 	switch promptYNS(in, w, "Scan all?") {
 	case choiceYes:
-		return envPaths, mcpConfigs
+		return envPaths
 	case choiceNo:
-		return nil, nil
+		return nil
 	case choiceSelect:
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.display
-		}
-		picked := make(map[string]bool, len(entries))
-		for _, n := range promptMultiSelect(in, w, names) {
+		picked := make(map[string]bool, len(envPaths))
+		for _, n := range promptMultiSelect(in, w, displays) {
 			picked[n] = true
 		}
 		var selEnvs []string
-		var selMCPs []mcpconfig.DiscoveredConfig
-		for _, e := range entries {
-			if !picked[e.display] {
-				continue
-			}
-			if e.envIdx >= 0 {
-				selEnvs = append(selEnvs, envPaths[e.envIdx])
-			} else {
-				selMCPs = append(selMCPs, mcpConfigs[e.mcpIdx])
+		for i, p := range envPaths {
+			if i < len(displays) && picked[displays[i]] {
+				selEnvs = append(selEnvs, p)
 			}
 		}
-		return selEnvs, selMCPs
+		return selEnvs
 	}
-	return envPaths, mcpConfigs
-}
-
-// mcpDisplayLabel formats an MCP config for user-visible lists. User-scope
-// configs under the home dir collapse to "~/..."; project-scope show a
-// path relative to root. Both append "[client, scope]" to disambiguate.
-func mcpDisplayLabel(root string, cfg mcpconfig.DiscoveredConfig) string {
-	if cfg.Scope == mcpconfig.ProjectScope {
-		return fmt.Sprintf("%s  [%s, %s]", displayRel(root, cfg.Path), cfg.Client, cfg.Scope)
-	}
-	display := cfg.Path
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(cfg.Path, home+string(os.PathSeparator)) {
-		display = "~" + strings.TrimPrefix(cfg.Path, home)
-	}
-	return fmt.Sprintf("%s  [%s, %s]", display, cfg.Client, cfg.Scope)
+	return envPaths
 }
 
 // secretLine is one vaultable key/value pair discovered in a .env file.
@@ -361,7 +274,7 @@ type secretLine struct {
 //  2. build .env bytes in memory
 //  3. writeBackup(envPath)
 //  4. v.AddBatch(creds)
-//  5. registerVaultedFile(root, envPath, KindEnv)
+//  5. registerVaultedFile(root, envPath)
 //  6. atomicWriteFile(envPath, bytes)
 //
 // If we crash between 5 and 6 the next run detects the registered-but-
@@ -469,7 +382,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err := v.AddBatch(res.Creds); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", envPath), err)
 	}
-	if err := registerVaultedFile(root, envPath, vault.KindEnv); err != nil {
+	if err := registerVaultedFile(root, envPath); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("registering %s", envPath), err)
 	}
 	if err := atomicWriteFile(envPath, newBytes); err != nil {
@@ -588,16 +501,11 @@ const (
 	bucketEligible
 )
 
-// classifyCredential mirrors the provider / URL / not-managed gate order
-// used by both buildEnvFileCredentials and processMCPConfig so the two
-// paths bucket a (name, value) pair identically AND produce the same
-// (provider:X) annotation on the Managed-by-Veil line. Without this
-// helper the two paths drifted: env emitted annotations, MCP did not.
-//
-// Returns the bucket plus, for bucketEligible, the Reason that should
-// annotate the Managed line; for bucketNotManaged, the AuthScheme the
-// caller renders via placeholder.AuthSchemeReason. The Reason / scheme
-// values are zero for buckets that don't use them.
+// classifyCredential is the disposition gate used by buildEnvFileCredentials.
+// It returns the bucket plus, for bucketEligible, the Reason that should
+// annotate the Managed line; for bucketNotManaged, the AuthScheme the caller
+// renders via placeholder.AuthSchemeReason. The Reason / scheme values are
+// zero for buckets that don't use them.
 func classifyCredential(name, value string) (credBucket, placeholder.Reason, placeholder.AuthScheme) {
 	p := placeholder.DefaultRegistry().Match(name, value)
 	if p == nil {

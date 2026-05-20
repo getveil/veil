@@ -169,4 +169,3 @@ func ScanEnviron(environ []string) []EnvironCandidate {
 	}
 	return out
 }
-

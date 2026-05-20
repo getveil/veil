@@ -42,9 +42,8 @@ func ReadVaultedFiles(root string) ([]VaultedFile, error) {
 
 // AddVaultedFile appends an entry to vault.meta's vaulted-files registry if
 // the path is not already present. Path is converted to an absolute path
-// before storage so uninstall works regardless of the caller's cwd. Kind is
-// recorded so uninstall can dispatch the right classifier.
-func AddVaultedFile(root, path string, kind FileKind) error {
+// before storage so uninstall works regardless of the caller's cwd.
+func AddVaultedFile(root, path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("vault.meta: abs path: %w", err)
@@ -58,7 +57,7 @@ func AddVaultedFile(root, path string, kind FileKind) error {
 			return nil
 		}
 	}
-	meta.VaultedFiles = append(meta.VaultedFiles, VaultedFile{Path: abs, Kind: kind})
+	meta.VaultedFiles = append(meta.VaultedFiles, VaultedFile{Path: abs})
 	return writeMeta(root, meta)
 }
 
