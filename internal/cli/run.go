@@ -38,10 +38,10 @@ secrets; pass --allow-env-secret NAME to allow a specific var through.
 
 The proxy and its audit logging are torn down when <command> exits.`,
 		Example: `  # Run a command with vault secrets injected
-  veil run -- npm test
+  veil run npm test
 
   # Bypass the proxy for a specific host (e.g. IMDS, internal services)
-  veil run --skip 169.254.169.254 -- aws s3 ls`,
+  veil run --skip 169.254.169.254 aws s3 ls`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRun(cmd, args, ephemeralSkip, allowEnvSecrets)

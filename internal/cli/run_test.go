@@ -115,3 +115,21 @@ func TestRun_LongDescriptionNamesInjectedEnvAndFailClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestRun_ExamplesDoNotUseBareDoubleDashSeparator guards against
+// drift back to the older `veil run -- <cmd>` example form. The README
+// and every other user-facing doc renders invocations without the bare
+// `--` separator (e.g. `veil run claude`), and the inconsistency was
+// jarring enough to flag as polish. The bare separator is only needed
+// when the child command takes a flag that collides with veil's — none
+// of the examples here do, and SetInterspersed(false) handles flag/arg
+// boundaries for the rest. The Usage line `run [flags] -- <command>`
+// is intentionally left intact: it is the formal signature that
+// documents the separator's availability, not example text.
+func TestRun_ExamplesDoNotUseBareDoubleDashSeparator(t *testing.T) {
+	output := runHelpOutput(t)
+	const bad = "veil run -- "
+	if strings.Contains(output, bad) {
+		t.Errorf("run --help examples must not use the bare %q separator (use `veil run <cmd>` to match README), got:\n%s", bad, output)
+	}
+}
