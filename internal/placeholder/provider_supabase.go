@@ -51,7 +51,12 @@ func isJWTWithAlg(name, value string) bool {
 		return true
 	}
 	if strings.Contains(strings.ToUpper(name), "SUPABASE") {
-		return true
+		// Name-hint alone is too broad: SUPABASE_PROJECT_URL, SUPABASE_DB_URL,
+		// etc. are not credentials. Require the value to at least look like a
+		// JWT (3 dot-separated base64url segments) so URLs and plain config
+		// strings are rejected. The sbp_ prefix path above already catches PATs.
+		parts := strings.Split(value, ".")
+		return len(parts) == 3 && isBase64URL(parts[0]) && isBase64URL(parts[1]) && isBase64URL(parts[2])
 	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
@@ -61,12 +66,28 @@ func isJWTWithAlg(name, value string) bool {
 	if err != nil {
 		return false
 	}
-	var payload map[string]interface{}
+	var payload map[string]any
 	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return false
 	}
 	iss, _ := payload["iss"].(string)
 	return strings.Contains(iss, "supabase.co")
+}
+
+// isBase64URL reports whether s is non-empty and contains only characters from
+// the base64url alphabet (RFC 4648 §5): [A-Za-z0-9_-]. Padding ('=') is
+// accepted. This is used to distinguish JWT segments from URL/path fragments
+// that happen to be dot-separated.
+func isBase64URL(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // generateSupabaseJWT creates a structurally valid JWT with Supabase-style

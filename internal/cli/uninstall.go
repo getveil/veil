@@ -101,13 +101,10 @@ func discoverBackups(root string) ([]backupPair, error) {
 			return nil
 		}
 		if d.IsDir() {
-			// Prune source-tree noise + .veil itself; matches the env-file
-			// walker's baselineExcludeDirs so the two scans agree on scope.
+			// Prune source-tree noise + .veil itself; uses the scanner's
+			// canonical exclude set so the two walkers stay in sync.
 			if path != root {
-				switch d.Name() {
-				case ".git", ".veil", "node_modules", "vendor", "target",
-					"dist", "build", ".next", ".nuxt", ".turbo", ".cache",
-					".pnpm-store", ".yarn":
+				if _, skip := scanner.BaselineExcludeDirs[d.Name()]; skip {
 					return fs.SkipDir
 				}
 			}
@@ -540,7 +537,7 @@ func gitignoreIsVeilOnly(data []byte) bool {
 		"*.veil-backup": true,
 	}
 	seen := make(map[string]bool, 2)
-	for _, raw := range strings.Split(string(data), "\n") {
+	for raw := range strings.SplitSeq(string(data), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue

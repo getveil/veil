@@ -20,19 +20,15 @@ func TestProviderSupabase(t *testing.T) {
 		"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
 
 	t.Run("match_name_anon", func(t *testing.T) {
-		// Exercises isJWTWithAlg's name-hint path directly via prov.Match;
-		// shape-gate enforcement is covered separately by
-		// TestSupabaseNameMatchGatedAtRegistry, so this test uses a
-		// credential-shaped varied value rather than a low-distinct
-		// Repeat("a", 40).
-		if !prov.Match("SUPABASE_ANON_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
-			t.Fatal("should match SUPABASE in name for credential-shaped value")
+		// Name-hint path requires value to look like a JWT (3 dot segments).
+		if !prov.Match("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.dGVzdHNpZ25hdHVyZWFiY2RlZmdoaWprbG1ub3Bx") {
+			t.Fatal("should match SUPABASE in name with JWT-shaped value")
 		}
 	})
 
 	t.Run("match_name_service_role", func(t *testing.T) {
-		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
-			t.Fatal("should match SUPABASE in name for credential-shaped value")
+		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.dGVzdHNpZ25hdHVyZWFiY2RlZmdoaWprbG1ub3Bx") {
+			t.Fatal("should match SUPABASE in name with JWT-shaped value")
 		}
 	})
 
@@ -75,7 +71,7 @@ func TestProviderSupabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("header not valid base64url: %v", err)
 		}
-		var header map[string]interface{}
+		var header map[string]any
 		if err := json.Unmarshal(headerJSON, &header); err != nil {
 			t.Fatalf("header not valid JSON: %v", err)
 		}
@@ -91,7 +87,7 @@ func TestProviderSupabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("payload not valid base64url: %v", err)
 		}
-		var payload map[string]interface{}
+		var payload map[string]any
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			t.Fatalf("payload not valid JSON: %v", err)
 		}
@@ -118,7 +114,7 @@ func TestProviderSupabase(t *testing.T) {
 		result := prov.Generate("", anonKey)
 		parts := strings.Split(result, ".")
 		payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
-		var payload map[string]interface{}
+		var payload map[string]any
 		_ = json.Unmarshal(payloadJSON, &payload)
 
 		role, ok := payload["role"].(string)
@@ -161,6 +157,9 @@ func TestSupabaseNameMatchGatedAtRegistry(t *testing.T) {
 	cases := []struct{ name, value string }{
 		{"SUPABASE_REGION", "us-east-1"},
 		{"SUPABASE_PROJECT_REF", "abcd1234"},
+		// Long non-JWT values that clear the shape gate but lack JWT structure.
+		{"SUPABASE_PROJECT_URL", "https://xyzabcdef.supabase.co"},
+		{"SUPABASE_DB_URL", "postgresql://postgres:password@db.xyzabcdef.supabase.co:5432/postgres"},
 	}
 	for _, c := range cases {
 		if p := reg.Match(c.name, c.value); p != nil {

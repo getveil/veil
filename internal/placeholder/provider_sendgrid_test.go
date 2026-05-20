@@ -14,12 +14,12 @@ func TestProviderSendGrid(t *testing.T) {
 		}
 	})
 
-	t.Run("match_name", func(t *testing.T) {
-		// Name-only fallback requires a credential-shaped value length so
-		// SENDGRID_FROM_EMAIL=foo@bar.com and similar config vars aren't
-		// misclassified.
-		if !prov.Match("SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
-			t.Fatal("should match SENDGRID in name for credential-shaped value")
+	t.Run("no_match_name_only", func(t *testing.T) {
+		// Name-only matching was removed to prevent FPs like
+		// SENDGRID_FROM_EMAIL=team@example.somewhere.com being vaulted.
+		// SendGrid API keys always start with "SG." — prefix is sufficient.
+		if prov.Match("SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
+			t.Fatal("should not match on name alone without SG. prefix")
 		}
 	})
 
@@ -71,20 +71,19 @@ func TestProviderSendGrid(t *testing.T) {
 	})
 }
 
-// TestSendgridNameMatchGatedAtRegistry ensures the name-only fallback
-// path won't flag config metadata vars whose name happens to contain
-// "SENDGRID" but whose value is clearly not a credential. The check
-// now lives at Registry.Match (passesValueShapeGate) rather than
-// inside the provider's own Match.
 func TestSendgridNameMatchGatedAtRegistry(t *testing.T) {
 	reg := DefaultRegistry()
 	cases := []struct{ name, value string }{
 		{"SENDGRID_FROM_EMAIL", "foo@bar.com"},
 		{"SENDGRID_REGION", "us"},
+		// Long credential-shaped values without SG. prefix are also rejected
+		// now that the name-hint path is removed.
+		{"SENDGRID_FROM_EMAIL", "team@example.somewhere.com"},
+		{"SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01"},
 	}
 	for _, c := range cases {
 		if p := reg.Match(c.name, c.value); p != nil {
-			t.Errorf("Registry.Match should not match SendGrid metadata %s=%q; got %s", c.name, c.value, p.Name)
+			t.Errorf("Registry.Match should not match SendGrid for %s=%q; got %s", c.name, c.value, p.Name)
 		}
 	}
 }

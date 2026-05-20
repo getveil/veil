@@ -10,10 +10,11 @@ import (
 	gitignore "github.com/sabhiram/go-gitignore"
 )
 
-// baselineExcludeDirs is the set of directory basenames the walker always
+// BaselineExcludeDirs is the set of directory basenames the walker always
 // skips, regardless of .gitignore presence. Source-tree noise that never
-// holds project secrets.
-var baselineExcludeDirs = map[string]struct{}{
+// holds project secrets. Exported so other walkers (e.g. uninstall) can
+// share the same list.
+var BaselineExcludeDirs = map[string]struct{}{
 	".git":         {},
 	".veil":        {},
 	"node_modules": {},
@@ -180,7 +181,7 @@ func walkProject(root string) ([]string, error) {
 			}
 			// Baseline pruning takes precedence over .gitignore negation —
 			// these dirs are never scanned, period.
-			if _, skip := baselineExcludeDirs[d.Name()]; skip {
+			if _, skip := BaselineExcludeDirs[d.Name()]; skip {
 				return fs.SkipDir
 			}
 			// .gitignore-pruned directories are skipped before descent.

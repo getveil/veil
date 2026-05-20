@@ -173,7 +173,6 @@ func TestAdd_RejectsURLShapedHost(t *testing.T) {
 		{"with path", "api.com/v1/things"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := NewRoot("test")
 			cmd.SetOut(io.Discard)
@@ -220,7 +219,6 @@ func TestAdd_AcceptsHostPlainAndWildcard(t *testing.T) {
 		{"PORT_TOKEN", "api.example.com:8443"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.credName, func(t *testing.T) {
 			root := initProject(t)
 			cmd := NewRoot("test")
@@ -246,6 +244,31 @@ func TestAdd_AcceptsHostPlainAndWildcard(t *testing.T) {
 				t.Errorf("AllowedHosts = %v, want exactly [%q]", cred.AllowedHosts, tc.host)
 			}
 		})
+	}
+}
+
+// TestAdd_NoHost_WarnsAllOutbound verifies that adding a credential without
+// --host warns the user that the secret will be injected into every outbound
+// request — not just a generic "no hosts detected" message.
+func TestAdd_NoHost_WarnsAllOutbound(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(strings.NewReader("unscoped-secret-1234567890ab"))
+	cmd.SetArgs([]string{"add", "--path", root, "--value-stdin", "UNSCOPED_KEY"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "ALL outbound requests") {
+		t.Errorf("expected warning about ALL outbound requests, got: %q", output)
+	}
+	if !strings.Contains(output, "--host") {
+		t.Errorf("expected remediation hint mentioning --host, got: %q", output)
 	}
 }
 

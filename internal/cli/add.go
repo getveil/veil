@@ -150,8 +150,8 @@ func runAddInVault(cmd *cobra.Command, root string, v *vault.Vault, name string,
 	if len(allowedHosts) > 0 {
 		_, _ = fmt.Fprintf(w, "    %s %s\n", ui.Muted.Sprint("Hosts:"), strings.Join(allowedHosts, ", "))
 	} else {
-		ui.Warn(w, fmt.Sprintf("No target hosts detected for %s", name))
-		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Use veil add --host to scope it"))
+		ui.Warn(w, fmt.Sprintf("No target hosts detected for %s — it will be injected into ALL outbound requests", name))
+		_, _ = fmt.Fprintf(w, "    %s\n", ui.Muted.Sprint("Re-run with --host to restrict it (e.g. veil add "+name+" --host api.example.com)"))
 	}
 
 	return nil
