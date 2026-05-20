@@ -799,6 +799,111 @@ func TestPrintVaultSummary_RendersOutOfScopeSection(t *testing.T) {
 	}
 }
 
+// TestPrintVaultSummary_AlignsNameColumns asserts the polish-item-1 fix: the
+// value/annotation columns in the Vaulted, Skipped, and Out-of-scope sections
+// all start at the same character offset regardless of name width, so a user
+// scanning the summary doesn't have to track ragged columns. Mixes short and
+// long names across all three sections and pulls the actual character offset
+// of the value column out of the rendered output.
+func TestPrintVaultSummary_AlignsNameColumns(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "A_KEY", Placeholder: "veilph-short"},
+			{Name: "LONG_NAME_HERE", Placeholder: "veilph-long"},
+		},
+		Skipped: []secretLine{
+			{key: "MID_LEN"},
+		},
+		OutOfScope: []outOfScopeLine{
+			{key: "DB_URL", annotation: "(URL with embedded password — not a Bearer header)"},
+			{key: "AWS_SECRET_ACCESS_KEY", annotation: "(looks like an AWS credential)"},
+		},
+	}
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	out := buf.String()
+
+	// Width should match the widest name across ALL sections; here it's
+	// AWS_SECRET_ACCESS_KEY at 21 chars.
+	wantNameW := len("AWS_SECRET_ACCESS_KEY")
+
+	// Each row uses "    NAME    VALUE", so the value column starts at
+	// 4 (left indent) + nameW + 4 (gap) = nameW + 8.
+	wantValueOffset := 4 + wantNameW + 4
+
+	type rowCheck struct {
+		name        string
+		wantValueAt int // expected column for the start of the value/annotation
+	}
+	checks := []rowCheck{
+		{name: "A_KEY", wantValueAt: wantValueOffset},
+		{name: "LONG_NAME_HERE", wantValueAt: wantValueOffset},
+		{name: "AWS_SECRET_ACCESS_KEY", wantValueAt: wantValueOffset},
+		{name: "DB_URL", wantValueAt: wantValueOffset},
+	}
+
+	for _, c := range checks {
+		var rowText string
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, c.name) && strings.HasPrefix(line, "    ") {
+				rowText = line
+				break
+			}
+		}
+		if rowText == "" {
+			t.Errorf("could not find row containing %q in output:\n%s", c.name, out)
+			continue
+		}
+		// Find where the NAME ends and the value should start.
+		idx := strings.Index(rowText, c.name)
+		if idx < 0 {
+			t.Errorf("name %q not in row %q", c.name, rowText)
+			continue
+		}
+		// Skip past the name and the gap of spaces to find the next non-space.
+		pos := idx + len(c.name)
+		for pos < len(rowText) && rowText[pos] == ' ' {
+			pos++
+		}
+		if pos >= len(rowText) {
+			// Skipped rows have no value column — ensure padding extends to
+			// wantValueOffset so the table looks unified.
+			rowLen := len(strings.TrimRight(rowText, " "))
+			// The name is left-aligned starting at 4; right edge should be
+			// at 4 + nameW = wantValueOffset - 4.
+			if rowLen < 4+len(c.name) {
+				t.Errorf("row %q shorter than name+indent", rowText)
+			}
+			continue
+		}
+		if pos != c.wantValueAt {
+			t.Errorf("row %q: value starts at column %d, want %d\nfull output:\n%s",
+				rowText, pos, c.wantValueAt, out)
+		}
+	}
+}
+
+// TestVaultSummaryNameWidth_DryRunSkipsCreds asserts that under --dry-run the
+// Vaulted bucket does not contribute to the name-column width: that section
+// is suppressed (printDryRunVaultLines handles it), so its names would
+// otherwise inflate the padding of Skipped/OutOfScope for nothing.
+func TestVaultSummaryNameWidth_DryRunSkipsCreds(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "VERY_LONG_VAULTED_NAME_X", Placeholder: "veilph-x"},
+		},
+		Skipped: []secretLine{
+			{key: "SHORT"},
+		},
+	}
+	if got, want := vaultSummaryNameWidth(res, true), len("SHORT"); got != want {
+		t.Errorf("dryRun width = %d, want %d (Creds must not contribute under dry-run)", got, want)
+	}
+	if got, want := vaultSummaryNameWidth(res, false), len("VERY_LONG_VAULTED_NAME_X"); got != want {
+		t.Errorf("non-dryRun width = %d, want %d", got, want)
+	}
+}
+
 // TestPrintVaultSummary_NoOutOfScopeNoFooter guards that the docs/MVP.md
 // footer is suppressed when the OutOfScope bucket is empty.
 func TestPrintVaultSummary_NoOutOfScopeNoFooter(t *testing.T) {

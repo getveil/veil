@@ -549,17 +549,23 @@ func isVaultEligible(name, value string) bool {
 // footer). The split matters because the `veil add` hint can rescue a Bearer
 // value with an unknown provider, but it cannot help with the schemes routed
 // to Out of scope (URL-with-password, AWS SigV4, HTTP Basic).
+//
+// Name columns are padded to the widest name across ALL three sections so the
+// value/annotation columns line up when the user scans top-to-bottom.
+// Skipped's name-only rows pad to the same width so the visual table reads as
+// a single block.
 func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
+	nameW := vaultSummaryNameWidth(res, dryRun)
 	if !dryRun && len(res.Creds) > 0 {
 		_, _ = fmt.Fprintf(w, "\nVaulted (%d):\n", len(res.Creds))
 		for _, c := range res.Creds {
-			_, _ = fmt.Fprintf(w, "    %s    %s\n", c.Name, c.Placeholder)
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", padRight(c.Name, nameW), c.Placeholder)
 		}
 	}
 	if len(res.Skipped) > 0 {
 		_, _ = fmt.Fprintf(w, "\nSkipped — no recognized provider or host scope (%d):\n", len(res.Skipped))
 		for _, s := range res.Skipped {
-			_, _ = fmt.Fprintf(w, "    %s\n", s.key)
+			_, _ = fmt.Fprintf(w, "    %s\n", padRight(s.key, nameW))
 		}
 		// One hint per Skipped block tells the user how to vault these
 		// values manually without forcing them to figure out the right flag
@@ -570,10 +576,34 @@ func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 	if len(res.OutOfScope) > 0 {
 		_, _ = fmt.Fprintf(w, "\nOut of scope — Veil cannot mediate these in v1 (%d):\n", len(res.OutOfScope))
 		for _, s := range res.OutOfScope {
-			_, _ = fmt.Fprintf(w, "    %s    %s\n", s.key, ui.Muted.Sprint(s.annotation))
+			// Pad the plain name first, then apply ANSI styling — escape codes
+			// in the annotation must come after padding so column widths stay
+			// based on visible characters.
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", padRight(s.key, nameW), ui.Muted.Sprint(s.annotation))
 		}
 		ui.Dim(w, "  These remain in your .env. See docs/MVP.md for the v1 scope contract.")
 	}
+}
+
+// vaultSummaryNameWidth returns the widest name across every section
+// printVaultSummary will render, so all three sections share the same
+// name-column width. Sections suppressed by dryRun (Vaulted) don't contribute
+// to the width — otherwise a dry-run with no Skipped/OutOfScope entries
+// could pad nothing.
+func vaultSummaryNameWidth(res vaultBuildResult, dryRun bool) int {
+	width := 0
+	if !dryRun {
+		for _, c := range res.Creds {
+			width = maxInt(width, len(c.Name))
+		}
+	}
+	for _, s := range res.Skipped {
+		width = maxInt(width, len(s.key))
+	}
+	for _, s := range res.OutOfScope {
+		width = maxInt(width, len(s.key))
+	}
+	return width
 }
 
 // needsEnvRewrite reports whether envPath still has cleartext for any cred
