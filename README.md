@@ -49,8 +49,10 @@ veil run claude
 ```
 
 That's the whole flow. `veil init` migrates secrets out of `.env` and
-installs the local CA; `veil run claude` (or `cursor`, `curl`, anything that
-honours `HTTPS_PROXY`) routes outbound traffic through the proxy.
+generates a local CA on disk; `veil run claude` (or `cursor`, `curl`,
+anything that honours `HTTPS_PROXY`) routes outbound traffic through the
+proxy and injects the CA into that child process only — your system trust
+store is left untouched.
 
 ## Install
 
@@ -63,6 +65,14 @@ brew install getveil/tap/veil
 This is the recommended path — installs are auto-deduplicated and the
 binary is placed by a trusted local process, so macOS Gatekeeper does
 not flag it.
+
+> **Linux without a system keyring** (CI, headless servers, minimal
+> containers): Veil cannot reach a Secret Service daemon, so it falls
+> back to an age-encrypted key file under `~/.local/state/veil/`. You
+> must set `VEIL_PASSPHRASE` in your environment before every `veil init`
+> / `veil run` invocation — Veil exits with an error if it is missing.
+> See [docs/MVP.md §4](docs/MVP.md#4-operating-requirements) for the full
+> contract.
 
 <details>
 <summary><strong>Other install methods</strong> (direct download with signature verification, <code>go install</code>)</summary>
@@ -78,7 +88,11 @@ then verify and install:
 PLAT=darwin_arm64   # or darwin_amd64, linux_amd64, linux_arm64
 TAG=v0.1.0          # latest release tag
 
-# Verify SHA-256 checksum
+# Verify SHA-256 checksum (run from the directory where you downloaded
+# the tarball and checksums.txt — verification silently degrades to
+# nothing if the file isn't in the current directory)
+ls "veil_${TAG#v}_${PLAT}.tar.gz" checksums.txt >/dev/null \
+  || { echo "tarball or checksums.txt not in current directory"; exit 1; }
 grep "veil_${TAG#v}_${PLAT}.tar.gz" checksums.txt | shasum -a 256 -c -
 
 # Verify Sigstore signature on checksums.txt
@@ -140,6 +154,7 @@ veil add INTERNAL_TOKEN --value-stdin --host api.mycompany.com
 # View audit logs
 veil log
 veil log --since 1h
+veil log --blocked   # see what veil prevented from leaving
 
 # Reverse it — restore original .env files, wipe vault and state
 veil uninstall              # prompts with diff before touching anything
@@ -197,7 +212,9 @@ No. That's the design. Any HTTP client that respects `HTTP_PROXY` / `HTTPS_PROXY
 <details>
 <summary><strong>Veil MITMs TLS. Is that safe?</strong></summary>
 
-Yes, with caveats. Veil installs a CA cert in your **user-scoped** trust store (not system-wide) and only uses it for the proxy on `localhost`. The CA's private key is generated locally and never leaves your machine. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full assumptions.
+Yes, and the trust scope is narrower than typical "install a root CA" tooling. `veil init` generates a CA on disk under Veil's state directory — it is **not** added to your OS, browser, or system trust store. At `veil run` time, Veil builds a per-session CA bundle and injects it into the child process via the standard `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE` environment variables. Only that child process and its subprocesses trust the CA; the rest of your system continues to ignore it.
+
+The trade-off is honest: clients that bypass those env vars will not trust Veil's CA — Java's `cacerts` keystore, Firefox's NSS store, native macOS apps that pin via SecureTransport, some Go binaries that compile in their own roots. We treat this as a security positive — the CA's blast radius is bounded to processes Veil launched, not your whole user account. The CA's private key is generated locally and never leaves your machine. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full assumptions.
 </details>
 
 <details>

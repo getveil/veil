@@ -58,9 +58,30 @@ protect against, and the deployment choices that change those boundaries.
   learns nothing about the real secret. This is consistent with the
   *cooperative-but-curious* model — guaranteed detectability of a
   leaked placeholder is a stronger property than indistinguishability.
-- **System CA trust store compromise.** Veil installs its root CA into
-  the user's trust store. Any process (not just the agent) running as
-  that user will trust certificates signed by Veil's CA.
+- **Same-session CA misuse.** Veil's CA is not installed in any OS or
+  browser trust store. At `veil run` time, the CA is exposed to the child
+  process only — via `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
+  `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`. Anything launched by that
+  child (subprocesses, shell-outs) inherits those vars and therefore
+  trusts the CA for the duration of the session. Veil does not protect
+  against a compromised agent abusing its own session-scoped trust to
+  intercept TLS within its own process tree. This is a deliberately
+  narrower scope than a system-installed root would have.
+
+## What's not covered by the CA bundle injection
+
+Some HTTPS clients ignore the standard `SSL_CERT_FILE` /
+`NODE_EXTRA_CA_CERTS` / `CURL_CA_BUNDLE` / `REQUESTS_CA_BUNDLE`
+environment variables and therefore will *not* trust Veil's CA when
+launched under `veil run`. These include the JVM (which reads
+`$JAVA_HOME/lib/security/cacerts`), Firefox (which uses its own NSS
+store), native macOS apps that go through Apple's SecureTransport /
+Network.framework APIs directly, and Go binaries that compile in their
+own root pool via `crypto/x509`. Requests from these clients will fail
+TLS verification at Veil's proxy. We accept this as an intentional limit
+on blast radius: a CA that's only trusted by processes Veil itself
+launched cannot be silently abused by anything else on the user's
+machine.
 
 ## Deployment notes for hardened setups
 

@@ -41,7 +41,8 @@ registry or set manually via `veil add --host`.
 **Audit.** Every credential swap and blocked event is written to a local
 SQLite database. The DB is chmod'd `0600`, parent directory `0700`, on
 every `veil run`. Queryable via `veil log` with `--since`, `--host`,
-`--credential`, `--limit`, `--json`.
+`--credential`, `--limit`, `--json`, `--blocked` (blocked and
+sentinel-leaked events are hidden by default; `--blocked` includes them).
 
 **Substrate.** macOS and Linux. Any tool that respects `HTTP_PROXY` /
 `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`,
@@ -55,12 +56,12 @@ The public contract. Names and flags below are stable for the v1 series.
 
 | Command | Behavior |
 |---|---|
-| `veil init` | Scan the project for `.env` files, vault any Bearer secrets found, write placeholders back, install the local CA. Flags: `--force`, `--yes`, `--dry-run`, `--path`. |
+| `veil init` | Scan the project for `.env` files, vault any Bearer secrets found, write placeholders back, generate the local CA on disk (no system-trust install — the CA is injected per session at `veil run` time). Flags: `--force`, `--yes`, `--dry-run`, `--path`. |
 | `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. Flag: `--skip <host>` (repeatable, ephemeral). |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
 | `veil add <name>` | Add a Bearer credential to the vault. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. `--force` overwrites an existing entry. |
 | `veil list` | List managed credentials by name. Values are never printed. |
-| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--limit`, `--json`. |
+| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--limit`, `--json`, `--blocked` (include host-blocked and sentinel-leaked events; hidden by default). |
 | `veil remove <name>` | Delete a credential from the vault. `--force` / `--yes` to skip confirmation. |
 | `veil uninstall` | Reverse `veil init`: restore original `.env` files from backups, wipe vault and audit state. `--dry-run` previews the plan; `--yes` / `--force` skip confirmation. |
 
@@ -71,7 +72,7 @@ The public contract. Names and flags below are stable for the v1 series.
 - **macOS** — uses the system Keychain for the vault master key. No additional setup.
 - **Linux with Secret Service** (GNOME Keyring, KWallet) — probed at startup. If available, used transparently.
 - **Linux without Secret Service** — vault master key is held in an age-encrypted file under `~/.local/state/veil/`, scrypt-protected. Every vault operation requires `VEIL_PASSPHRASE` in the environment.
-- **CA trust** — `veil init` installs Veil's root CA into the user's trust store. Required for HTTPS interception.
+- **CA trust** — `veil init` generates Veil's root CA and writes it to disk under Veil's state directory. It is **not** added to the OS, browser, or system trust store. At `veil run` time, Veil assembles a per-session CA bundle and injects it into the child process via `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`. Trust is session-scoped: only the child and its subprocesses honour the CA. Clients that bypass these env vars (Java `cacerts`, Firefox NSS, native macOS apps using SecureTransport, statically-linked Go binaries with embedded roots) will not trust Veil and their requests will fail TLS verification through the proxy. This is intentional — it bounds the CA's blast radius to processes Veil launched.
 
 The vault is **per project**, keyed by project root path. Switching
 projects switches vaults.
