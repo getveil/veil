@@ -60,11 +60,11 @@ func TestREADMEProviderTableMatchesRegistry(t *testing.T) {
 		normalized := strings.ToLower(strings.TrimSpace(display))
 		key, ok := readmeDisplayToKey[normalized]
 		if !ok {
-			t.Errorf("README lists provider %q but readmeDisplayToKey has no mapping for it — add the mapping or remove the entry from README.md:136", display)
+			t.Errorf("README lists provider %q but readmeDisplayToKey has no mapping for it — add the mapping or remove the entry from README.md", display)
 			continue
 		}
 		if _, found := registered[key]; !found {
-			t.Errorf("README lists provider %q (key=%q) but it is NOT registered in DefaultRegistry() — remove it from README.md:136 or restore the provider", display, key)
+			t.Errorf("README lists provider %q (key=%q) but it is NOT registered in DefaultRegistry() — remove it from README.md or restore the provider", display, key)
 		}
 	}
 }

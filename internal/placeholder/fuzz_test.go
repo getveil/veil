@@ -22,7 +22,7 @@ func FuzzPlaceholderReplace(f *testing.F) {
 		{"SLACK_BOT_TOKEN", "xoxb-123-456-abc789def"},
 		{"SENDGRID_API_KEY", "SG.abcdefghij0123456789._-abcdefghijklmnopqrstuvwxyz0123456789abcd"},
 		{"SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def"},
-		{"TWILIO_AUTH_TOKEN", "abcdef01234567890abcdef0123456789"},
+		{"INTERNAL_API_KEY", "abcdef01234567890abcdef0123456789"},
 		{"FALLBACK", "just-some-opaque-value-that-hits-charclass"},
 		{"", ""},
 		{"", "only-value"},
