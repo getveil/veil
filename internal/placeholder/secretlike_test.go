@@ -8,12 +8,6 @@ func TestIsSecretLike_ProviderMatch(t *testing.T) {
 	}
 }
 
-func TestIsSecretLike_URLWithPassword(t *testing.T) {
-	if !IsSecretLike("DATABASE_URL", "postgres://user:secret@host:5432/db") {
-		t.Fatal("expected true for URL with password")
-	}
-}
-
 func TestIsSecretLike_SecretKeyName_GatedByValueShape(t *testing.T) {
 	// Name pattern alone is no longer enough — a trivial value must not
 	// trigger vaulting. These all match the secret regex but have
@@ -312,18 +306,6 @@ func TestDetectWithReason_Provider(t *testing.T) {
 	}
 }
 
-// TestDetectWithReason_URLUserinfo verifies URL-with-password matches surface
-// as Reason{ReasonURLUserinfo, ""}.
-func TestDetectWithReason_URLUserinfo(t *testing.T) {
-	ok, r := DetectWithReason("DATABASE_URL", "postgres://user:secret@db.prod.internal:5432/db")
-	if !ok {
-		t.Fatal("expected ok=true for URL with password")
-	}
-	if r.Kind != ReasonURLUserinfo {
-		t.Errorf("Kind = %v, want ReasonURLUserinfo", r.Kind)
-	}
-}
-
 // TestDetectWithReason_KeyName verifies the name-heuristic gate surfaces
 // the matched hint substring.
 func TestDetectWithReason_KeyName(t *testing.T) {
@@ -398,7 +380,6 @@ func TestIsSecretLike_StillDelegates(t *testing.T) {
 		want        bool
 	}{
 		{"OPENAI_API_KEY", "sk-proj-abc123def456ghi", true},
-		{"DATABASE_URL", "postgres://u:p@h/d", true},
 		{"API_KEY", "abcdef123456", true},
 		{"UNKNOWN", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8", true},
 		{"HOSTNAME", "myserver", false},
@@ -425,7 +406,6 @@ func TestReason_Confidence(t *testing.T) {
 		want Confidence
 	}{
 		{Reason{Kind: ReasonProvider, Detail: "openai"}, ConfidenceHigh},
-		{Reason{Kind: ReasonURLUserinfo}, ConfidenceHigh},
 		{Reason{Kind: ReasonKeyName, Detail: "key"}, ConfidenceLow},
 		{Reason{Kind: ReasonEntropy}, ConfidenceLow},
 		{Reason{Kind: ReasonNone}, ConfidenceNone},

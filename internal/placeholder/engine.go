@@ -1,8 +1,8 @@
 // Package placeholder generates structurally-valid fake values for secrets.
 //
 // It supports provider-specific patterns (OpenAI, Anthropic, GitHub, Stripe,
-// Slack), URL-aware password replacement, and a character-class fallback
-// that preserves the structural shape of any secret value.
+// Slack) and a character-class fallback that preserves the structural shape
+// of any secret value.
 package placeholder
 
 import (
@@ -98,13 +98,9 @@ func Generate(name, value string, existing Set) (string, error) {
 }
 
 // generateOnce produces a single candidate placeholder without collision
-// checks. The URL and provider branches embed Sentinel at a
-// branch-appropriate offset; the charclass fallback has no provider prefix,
-// so we sentinelize at offset 0.
+// checks. The provider branch embeds Sentinel at a branch-appropriate offset;
+// the charclass fallback has no provider prefix, so we sentinelize at offset 0.
 func generateOnce(name, value string) (string, error) {
-	if ph, ok := tryURL(value); ok {
-		return ph, nil
-	}
 	if p := DefaultRegistry().Match(name, value); p != nil {
 		return p.Generate(name, value), nil
 	}

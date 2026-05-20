@@ -509,13 +509,9 @@ const (
 func classifyCredential(name, value string) (credBucket, placeholder.Reason, placeholder.AuthScheme) {
 	p := placeholder.DefaultRegistry().Match(name, value)
 	if p == nil {
-		// A nil match means no named provider claimed this secret.
-		// URL-with-password values (postgres://, mysql://, etc.) are
-		// vault-eligible via the URL rewrite path even without a named
-		// provider. Pure charclass fallbacks are unrecognized.
-		if placeholder.IsURLWithPassword(value) {
-			return bucketEligible, placeholder.Reason{Kind: placeholder.ReasonURLUserinfo}, 0
-		}
+		// No named provider claimed this secret; the charclass fallback
+		// can shape a placeholder, but without a provider it lacks a
+		// known auth scheme and host scope, so it's not vault-eligible.
 		return bucketUnrecognized, placeholder.Reason{}, 0
 	}
 	if !placeholder.VaultEligible(p) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// FuzzPlaceholderReplace fuzzes the full Generate() path (url → provider →
+// FuzzPlaceholderReplace fuzzes the full Generate() path (provider →
 // charclass fallback) with adversarial names and values. Asserts:
 //  1. No panic.
 //  2. Non-empty value → non-empty placeholder (or defined error).
@@ -23,8 +23,6 @@ func FuzzPlaceholderReplace(f *testing.F) {
 		{"SENDGRID_API_KEY", "SG.abcdefghij0123456789._-abcdefghijklmnopqrstuvwxyz0123456789abcd"},
 		{"SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def"},
 		{"TWILIO_AUTH_TOKEN", "abcdef01234567890abcdef0123456789"},
-		{"DATABASE_URL", "postgres://user:supersecretpassword@localhost:5432/db"},
-		{"REDIS_URL", "redis://:secret123@redis.example.com:6379/0"},
 		{"FALLBACK", "just-some-opaque-value-that-hits-charclass"},
 		{"", ""},
 		{"", "only-value"},

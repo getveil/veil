@@ -14,9 +14,6 @@ const (
 	// ReasonProvider means a registered provider pattern matched. The
 	// Reason's Detail field carries the provider name (e.g. "openai").
 	ReasonProvider
-	// ReasonURLUserinfo means the value is a URL with a password in a
-	// supported scheme.
-	ReasonURLUserinfo
 	// ReasonKeyName means the key-name heuristic matched. The Reason's
 	// Detail field carries the matched hint substring (e.g. "key",
 	// "token"); the same value also cleared the value-shape floor.
@@ -31,8 +28,6 @@ func (k ReasonKind) String() string {
 	switch k {
 	case ReasonProvider:
 		return "provider"
-	case ReasonURLUserinfo:
-		return "url"
 	case ReasonKeyName:
 		return "name"
 	case ReasonEntropy:
@@ -51,8 +46,8 @@ type Reason struct {
 
 // Annotation returns a parenthesized tag suitable for appending to a
 // Managed-by-Veil summary line — e.g. "(provider:openai)", "(name:token)",
-// "(url)", "(entropy)". Returns "" for ReasonNone so callers can skip the
-// trailing tag for non-detections.
+// "(entropy)". Returns "" for ReasonNone so callers can skip the trailing
+// tag for non-detections.
 func (r Reason) Annotation() string {
 	if r.Kind == ReasonNone {
 		return ""
@@ -63,18 +58,17 @@ func (r Reason) Annotation() string {
 	return "(" + r.Kind.String() + ")"
 }
 
-// Confidence groups detection reasons into HIGH/LOW bands. Provider and
-// URL-userinfo matches are structural — they identify a credential by
-// shape or placement — so they sit in the HIGH band. Key-name and entropy
-// gates are heuristic; the value could plausibly be something other than
-// a real credential, so they sit in the LOW band.
+// Confidence groups detection reasons into HIGH/LOW bands. Provider matches
+// are structural — they identify a credential by shape — so they sit in the
+// HIGH band. Key-name and entropy gates are heuristic; the value could
+// plausibly be something other than a real credential, so they sit in the
+// LOW band.
 type Confidence int
 
 const (
 	// ConfidenceNone is the zero value for non-detections.
 	ConfidenceNone Confidence = iota
-	// ConfidenceHigh: structural match (provider pattern or URL with
-	// password).
+	// ConfidenceHigh: structural match (provider pattern).
 	ConfidenceHigh
 	// ConfidenceLow: heuristic match (key name or value entropy).
 	ConfidenceLow
@@ -83,7 +77,7 @@ const (
 // Confidence classifies the reason into HIGH/LOW bands.
 func (r Reason) Confidence() Confidence {
 	switch r.Kind {
-	case ReasonProvider, ReasonURLUserinfo:
+	case ReasonProvider:
 		return ConfidenceHigh
 	case ReasonKeyName, ReasonEntropy:
 		return ConfidenceLow
@@ -133,19 +127,14 @@ func DetectWithReason(name, value string) (bool, Reason) {
 		}
 	}
 
-	// 2. URL with password.
-	if isURLWithPassword(value) {
-		return true, Reason{Kind: ReasonURLUserinfo}
-	}
-
-	// 3. Key name heuristic, gated by value shape.
+	// 2. Key name heuristic, gated by value shape.
 	if secretNamePattern.MatchString(name) {
 		if len(value) >= nameMatchMinLength && distinctBytes(value) >= nameMatchMinDistinct {
 			return true, Reason{Kind: ReasonKeyName, Detail: matchedKeyHint(name)}
 		}
 	}
 
-	// 4. Length + entropy + distinct-byte check.
+	// 3. Length + entropy + distinct-byte check.
 	if len(value) >= secretMinLength &&
 		shannonEntropy(value) >= secretMinEntropy &&
 		distinctBytes(value) >= secretMinDistinct {

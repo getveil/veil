@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+// allowedSchemes lists URL schemes that ExtractURLHost will accept. Only
+// http/https are included: TCP-protocol schemes like postgres:// and redis://
+// bypass Veil's HTTP proxy entirely, so scoping a credential to a host derived
+// from them would never narrow a match. The allowlist also closes SEC-8: a
+// crafted env var like "javascript://evil.com" must not widen the proxy's
+// allow-host set via HostsForCredential.
+var allowedSchemes = map[string]bool{
+	"http":  true,
+	"https": true,
+}
+
 // HostMatches checks whether the given request host is authorized by the
 // allowed hosts list. The host may include a port (e.g. "api.github.com:443")
 // which is stripped before comparison. Allowed hosts entries are either exact
@@ -43,9 +54,7 @@ func stripPort(host string) string {
 
 // ExtractURLHost attempts to parse value as a URL and return the hostname
 // (without port). Returns "" if value is not a parseable URL with a host,
-// or if the URL scheme is outside the allowlist (see url.go). The
-// allowlist gate prevents crafted env-var values like "javascript://evil.com"
-// from widening the proxy's allow-host set via HostsForCredential.
+// or if the URL scheme is outside allowedSchemes (http/https only).
 func ExtractURLHost(value string) string {
 	u, err := url.Parse(value)
 	if err != nil {

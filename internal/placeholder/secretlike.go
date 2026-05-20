@@ -99,7 +99,6 @@ const (
 // IsSecretLike determines whether a name/value pair likely represents a secret.
 // It returns true if:
 //   - The value matches any registered provider pattern.
-//   - The value is a URL with a password in a supported scheme.
 //   - The key name matches common secret-related patterns.
 //   - The value is long, has high Shannon entropy, AND has enough distinct
 //     bytes to rule out repetitive strings and typical file paths.

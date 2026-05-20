@@ -600,28 +600,42 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 	}
 }
 
-func TestBuildEnvFileCredentials_URLWithPasswordIsVaulted(t *testing.T) {
+// TestBuildEnvFileCredentials_PostgresURLNotVaulted locks in the Phase-5
+// cut: postgres://, mysql://, redis:// and the other TCP-protocol URL
+// schemes bypass Veil's HTTP proxy entirely, so DATABASE_URL=postgres://...
+// no longer reaches the Managed bucket. If a postgres URL is still surfaced
+// to buildEnvFileCredentials (e.g. via a name-hint gate match like
+// DB_PASSWORD or via the entropy gate on a long value), it lands in
+// Unrecognized rather than Managed because no provider claims it.
+func TestBuildEnvFileCredentials_PostgresURLNotVaulted(t *testing.T) {
+	// IsSecretLike no longer recognizes a postgres URL by name alone, so
+	// DATABASE_URL=postgres://... is not surfaced at all. The DB_PASSWORD
+	// name hint, however, will trip the value-shape gate and surface the
+	// line — that's the path we want to lock in here.
 	envFile := scanner.ParseBytes([]byte(
-		"DATABASE_URL=postgres://user:secret@db.prod.internal/app\n"))
+		"DB_PASSWORD=postgres://user:secret@db.prod.internal/app\n"))
 	var secrets []secretLine
 	for i, line := range envFile.Lines {
 		if line.Kind == scanner.KVLine && placeholder.IsSecretLike(line.Key, line.Value) {
 			secrets = append(secrets, secretLine{key: line.Key, value: line.Value, index: i})
 		}
 	}
+	if len(secrets) != 1 {
+		t.Fatalf("secrets len = %d, want 1 (DB_PASSWORD name-hint gate fires)", len(secrets))
+	}
 
 	res, err := buildEnvFileCredentials(envFile, secrets, placeholder.Set{})
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
-	if len(res.Creds) != 1 || res.Creds[0].Name != "DATABASE_URL" {
-		t.Fatalf("Creds = %+v, want exactly DATABASE_URL", res.Creds)
-	}
-	if len(res.Unrecognized) != 0 {
-		t.Fatalf("Unrecognized = %+v, want empty (URL-with-password should be vaulted)", res.Unrecognized)
+	if len(res.Creds) != 0 {
+		t.Fatalf("Creds = %+v, want empty (postgres:// has no provider and TCP can't be proxied)", res.Creds)
 	}
 	if len(res.NotManaged) != 0 {
 		t.Fatalf("NotManaged = %+v, want empty", res.NotManaged)
+	}
+	if len(res.Unrecognized) != 1 || res.Unrecognized[0].key != "DB_PASSWORD" {
+		t.Fatalf("Unrecognized = %+v, want exactly DB_PASSWORD", res.Unrecognized)
 	}
 }
 
@@ -653,8 +667,7 @@ func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 // detection gate fired.
 func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
 	envFile := scanner.ParseBytes([]byte(
-		"OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n" +
-			"DATABASE_URL=postgres://u:longerpassword@db.prod.internal/app\n"))
+		"OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef\n"))
 
 	var secrets []secretLine
 	for i, line := range envFile.Lines {
@@ -667,40 +680,21 @@ func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildEnvFileCredentials: %v", err)
 	}
-	if len(res.Creds) != 2 {
-		t.Fatalf("Creds len = %d, want 2", len(res.Creds))
+	if len(res.Creds) != 1 {
+		t.Fatalf("Creds len = %d, want 1", len(res.Creds))
 	}
 	if len(res.CredReasons) != len(res.Creds) {
 		t.Fatalf("CredReasons len = %d, want %d (same as Creds)", len(res.CredReasons), len(res.Creds))
 	}
 	// OPENAI_API_KEY → provider:openai.
-	openaiIdx := -1
-	for i, c := range res.Creds {
-		if c.Name == "OPENAI_API_KEY" {
-			openaiIdx = i
-		}
+	if res.Creds[0].Name != "OPENAI_API_KEY" {
+		t.Fatalf("Creds[0].Name = %q, want OPENAI_API_KEY", res.Creds[0].Name)
 	}
-	if openaiIdx == -1 {
-		t.Fatal("OPENAI_API_KEY not in Creds")
+	if res.CredReasons[0].Kind != placeholder.ReasonProvider {
+		t.Errorf("OPENAI reason kind = %v, want ReasonProvider", res.CredReasons[0].Kind)
 	}
-	if res.CredReasons[openaiIdx].Kind != placeholder.ReasonProvider {
-		t.Errorf("OPENAI reason kind = %v, want ReasonProvider", res.CredReasons[openaiIdx].Kind)
-	}
-	if res.CredReasons[openaiIdx].Detail != "openai" {
-		t.Errorf("OPENAI reason detail = %q, want %q", res.CredReasons[openaiIdx].Detail, "openai")
-	}
-	// DATABASE_URL → url userinfo.
-	dbIdx := -1
-	for i, c := range res.Creds {
-		if c.Name == "DATABASE_URL" {
-			dbIdx = i
-		}
-	}
-	if dbIdx == -1 {
-		t.Fatal("DATABASE_URL not in Creds")
-	}
-	if res.CredReasons[dbIdx].Kind != placeholder.ReasonURLUserinfo {
-		t.Errorf("DATABASE_URL reason kind = %v, want ReasonURLUserinfo", res.CredReasons[dbIdx].Kind)
+	if res.CredReasons[0].Detail != "openai" {
+		t.Errorf("OPENAI reason detail = %q, want %q", res.CredReasons[0].Detail, "openai")
 	}
 }
 
@@ -744,11 +738,9 @@ func TestPrintVaultSummary_AnnotatesManagedReason(t *testing.T) {
 	res := vaultBuildResult{
 		Creds: []*vault.Credential{
 			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
-			{Name: "DATABASE_URL", Placeholder: "veilph-url-XX"},
 		},
 		CredReasons: []placeholder.Reason{
 			{Kind: placeholder.ReasonProvider, Detail: "openai"},
-			{Kind: placeholder.ReasonURLUserinfo},
 		},
 	}
 	var buf bytes.Buffer
@@ -759,8 +751,5 @@ func TestPrintVaultSummary_AnnotatesManagedReason(t *testing.T) {
 	}
 	if !strings.Contains(out, "(provider:openai)") {
 		t.Errorf("output missing (provider:openai) annotation:\n%s", out)
-	}
-	if !strings.Contains(out, "(url)") {
-		t.Errorf("output missing (url) annotation:\n%s", out)
 	}
 }

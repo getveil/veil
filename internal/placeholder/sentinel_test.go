@@ -35,7 +35,6 @@ func TestGenerateAlwaysContainsSentinel(t *testing.T) {
 		{"vercel_prefix", "SOME_KEY", "vercel_" + strings.Repeat("a", 16)},
 		{"gitlab_prefix", "SOME_KEY", "glpat-" + strings.Repeat("a", 20)},
 		{"resend_prefix", "SOME_KEY", "re_" + strings.Repeat("a", 20)},
-		{"url_postgres", "DATABASE_URL", "postgres://user:longerpassword@host:5432/db"},
 		{"charclass_fallback", "UNKNOWN_KEY", "arbitrarySecret12345_value"},
 	}
 

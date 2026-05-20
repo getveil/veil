@@ -846,16 +846,12 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 	}
 }
 
-// TestInit_CorrelatesAWSTripleInEnvFile verifies that a full AWS triple
-// (access key ID + secret + session token) in a .env file is recognized
-// as a correlated group but NOT vaulted — AWS SigV4 is out of scope for
-// v0.1.x. The .env values must be left unchanged, the vault must not
-// contain any AWS credential, and DATABASE_URL (a non-AWS secret) is
-// still vaulted normally.
 // TestInit_LeavesAWSValuesAlone verifies that AWS credentials in a .env
 // file are not vaulted and their cleartext values remain unchanged on
 // disk. AWS SigV4 was cut in the v1 launch; AWS_* names get classified as
-// unrecognized and skipped.
+// unrecognized and skipped. A vaultable provider key (GITHUB_TOKEN) is
+// included to prove init still ran end-to-end and produced a non-empty
+// vault — without it, an init that does nothing at all would pass.
 func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 
@@ -867,7 +863,7 @@ func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
 		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPexample\n" +
-		"DATABASE_URL=postgres://u:pw@h/db\n"
+		"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n"
 	envPath := filepath.Join(tmpDir, ".env")
 	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
@@ -895,9 +891,9 @@ func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 		}
 	}
 
-	// DATABASE_URL (postgres) must still be vaulted.
-	if _, ok := v.Get("DATABASE_URL"); !ok {
-		t.Error("vault missing DATABASE_URL")
+	// GITHUB_TOKEN proves init actually ran and the vault is non-empty.
+	if _, ok := v.Get("GITHUB_TOKEN"); !ok {
+		t.Error("vault missing GITHUB_TOKEN (init did not vault any provider key)")
 	}
 
 	// AWS values in .env must be unchanged (not replaced with placeholders).
