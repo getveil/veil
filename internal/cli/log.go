@@ -128,7 +128,10 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 			_, _ = fmt.Fprintln(w, "No `veil run` has been executed yet — try `veil run <agent>`.")
 			return nil
 		}
-		_, _ = fmt.Fprintln(w, "No credential injections during this period.")
+		// Mirror the non-empty footer's `(last %s)` window suffix so the
+		// user always knows the scope they're looking at, regardless of
+		// whether anything matched.
+		_, _ = fmt.Fprintf(w, "No credential injections in the last %s.\n", since)
 		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("The proxy was active but no managed credentials were used in outbound requests"))
 		if hidden > 0 {
 			// I1: an operator investigating a suspected leak would

@@ -75,8 +75,8 @@ func TestLogCmd_ZeroState_AfterRun(t *testing.T) {
 		t.Fatalf("log: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "No credential injections during this period") {
-		t.Errorf("expected period-bounded zero-state, got:\n%s", s)
+	if !strings.Contains(s, "No credential injections in the last 24h") {
+		t.Errorf("expected window-bounded zero-state, got:\n%s", s)
 	}
 	if strings.Contains(s, "No `veil run` has been executed yet") {
 		t.Errorf("must not show 'never-run' hint when DB has prior rows:\n%s", s)
@@ -457,7 +457,7 @@ func TestLog_HiddenCountFooter(t *testing.T) {
 
 // TestLog_NoEventsButHiddenExist covers the empty-shown variant of I1:
 // when nothing matches the default filter but blocked/leaked rows DO exist
-// in the window, the "No credential injections during this period" message
+// in the window, the "No credential injections in the last ..." message
 // must point the user at --blocked instead of leaving them to wonder.
 func TestLog_NoEventsButHiddenExist(t *testing.T) {
 	root := initProject(t)
@@ -487,14 +487,75 @@ func TestLog_NoEventsButHiddenExist(t *testing.T) {
 	}
 	s := out.String()
 
-	if !strings.Contains(s, "No credential injections during this period") {
-		t.Errorf("expected period-bounded zero-state, got:\n%s", s)
+	if !strings.Contains(s, "No credential injections in the last 24h") {
+		t.Errorf("expected window-bounded zero-state, got:\n%s", s)
 	}
 	if !strings.Contains(s, "1 event") || !strings.Contains(s, "hidden") {
 		t.Errorf("expected '1 event hidden' disclosure, got:\n%s", s)
 	}
 	if !strings.Contains(s, "--blocked") {
 		t.Errorf("expected --blocked pointer in zero-state, got:\n%s", s)
+	}
+}
+
+// TestLog_ZeroEventsZeroHiddenFooterShowsWindow covers the consistency
+// gap exposed by polish item #3: the non-empty render footer reads
+// "%d events (last %s)" but the zero-events-AND-zero-hidden path used to
+// say "during this period" with no window reference, leaving the user
+// guessing what scope they were looking at. Verify the explicit window
+// surfaces in the zero-state line, including for a non-default --since.
+func TestLog_ZeroEventsZeroHiddenFooterShowsWindow(t *testing.T) {
+	root := initProject(t)
+
+	// Seed an old regular injection well outside both the default 24h
+	// and the custom 1h windows used below, so `ever` is true (no
+	// "never-run" branch) but neither query yields shown OR hidden rows.
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:      time.Now().Add(-72 * time.Hour),
+		RequestID:      "req-old-regular",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "header",
+		CredentialName: "old",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	// Default --since=24h: zero shown, zero hidden, must mention "24h".
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "last 24h") {
+		t.Errorf("default zero-state must surface the 24h window:\n%s", s)
+	}
+	// The hidden-disclosure footer must NOT appear when nothing is hidden.
+	if strings.Contains(s, "hidden") {
+		t.Errorf("zero-hidden case must not emit a 'hidden' disclosure:\n%s", s)
+	}
+
+	// Custom --since=1h: window string must propagate so the user sees
+	// the scope they actually requested.
+	cmd = NewRoot("test")
+	out = new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--since", "1h"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --since=1h: %v", err)
+	}
+	s = out.String()
+	if !strings.Contains(s, "last 1h") {
+		t.Errorf("custom --since=1h must surface in zero-state:\n%s", s)
 	}
 }
 
