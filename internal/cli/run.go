@@ -20,6 +20,23 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [flags] -- <command> [args...]",
 		Short: "Run a command with secrets injected via proxy",
+		Long: `Start a local HTTPS proxy and launch <command> with HTTP_PROXY,
+HTTPS_PROXY, and ALL_PROXY (plus their lowercase variants) pointed at
+the loopback proxy, and per-session CA-bundle env vars
+(SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE,
+HTTPLIB2_CA_CERTS, CARGO_HTTP_CAINFO) pointed at a temp-dir bundle that
+trusts Veil's local root. These vars are injected into the child process
+only; the parent shell is not modified. Outbound Authorization: Bearer
+requests from <command> are matched against the vault and rewritten with
+real credentials at the network boundary.
+
+NO_PROXY is composed of localhost,127.0.0.1,::1 plus any hosts listed in
+.veil/skip_hosts plus each --skip flag passed at this invocation.
+
+veil run refuses to launch when shell env vars look like unvaulted
+secrets; pass --allow-env-secret NAME to allow a specific var through.
+
+The proxy and its audit logging are torn down when <command> exits.`,
 		Example: `  # Run a command with vault secrets injected
   veil run -- npm test
 
