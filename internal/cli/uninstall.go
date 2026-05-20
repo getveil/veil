@@ -411,16 +411,16 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 
 	_, _ = fmt.Fprintln(w, "Uninstall plan:")
 	for _, pl := range plan {
-		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), pl.pair.original)
+		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), ui.RedactPath(pl.pair.original))
 		if pl.status == classModified && pl.diff != "" {
 			_, _ = fmt.Fprintln(w, pl.diff)
 		}
 	}
 	if stateExists {
-		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", stateDir)
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", ui.RedactPath(stateDir))
 	}
 	if caPresent {
-		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", caPaths.dir)
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", ui.RedactPath(caPaths.dir))
 	}
 
 	if dryRun {

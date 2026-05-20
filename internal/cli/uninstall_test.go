@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/ui"
 )
 
 func TestActiveProxyPIDsIgnoresDeadPIDs(t *testing.T) {
@@ -1373,11 +1374,88 @@ func TestUninstallDryRunDoesNotRemoveCAFiles(t *testing.T) {
 		}
 	}
 	// Plan output must mention the CA dir so the user knows it'll be wiped.
-	if !strings.Contains(stdout.String(), caDir) {
-		t.Errorf("expected dry-run plan to include CA dir %s; got:\n%s", caDir, stdout.String())
+	// The path is rendered through ui.RedactPath, so compare against the
+	// tilde-redacted form rather than the raw $HOME-rooted absolute path.
+	wantCaDir := ui.RedactPath(caDir)
+	if !strings.Contains(stdout.String(), wantCaDir) {
+		t.Errorf("expected dry-run plan to include CA dir %s; got:\n%s", wantCaDir, stdout.String())
 	}
 	// And of course the reminder must NOT fire on a dry-run.
 	if strings.Contains(stdout.String(), "Veil CA to your system trust store") {
 		t.Errorf("trust-store reminder must not appear on --dry-run; got:\n%s", stdout.String())
+	}
+}
+
+// TestUninstallPlanTildeRedactsHomePaths asserts the dry-run "Uninstall plan"
+// output renders state and CA paths through ui.RedactPath so the user's
+// home-directory layout (and username) does not leak into terminal scrollback.
+// Pins HOME to a tempdir, then asserts the plan contains "~/" for both the
+// project state dir and the CA dir and never the literal "<home>/..." form.
+func TestUninstallPlanTildeRedactsHomePaths(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Use a tempdir directly so HOME, the project root, AND the CA dir all
+	// live under HOME — RedactPath's home prefix replacement then collapses
+	// every $HOME-rooted absolute path to a "~/..." form.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := filepath.Join(home, "proj")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+
+	out := stdout.String()
+
+	// The plan must contain "~/" — at minimum for the state dir and CA dir,
+	// both of which live under HOME.
+	if !strings.Contains(out, "~/") {
+		t.Errorf("expected plan output to contain tilde-redacted paths; got:\n%s", out)
+	}
+
+	// Every [wipe] line must use the tilde form, never the raw home prefix.
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "[wipe]") {
+			continue
+		}
+		if strings.Contains(line, home+string(os.PathSeparator)) {
+			t.Errorf("plan [wipe] line leaks raw HOME path; line: %q", line)
+		}
+	}
+
+	// Sanity: the state dir and CA dir should both appear in tilde form.
+	stateDir := config.ProjectStateDir(root)
+	caDir, err := config.CADir()
+	if err != nil {
+		t.Fatalf("CADir: %v", err)
+	}
+	for _, want := range []string{ui.RedactPath(stateDir), ui.RedactPath(caDir)} {
+		if !strings.HasPrefix(want, "~/") {
+			t.Fatalf("precondition: expected RedactPath to produce ~/ form, got %q", want)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("expected plan to contain redacted path %q; got:\n%s", want, out)
+		}
 	}
 }
