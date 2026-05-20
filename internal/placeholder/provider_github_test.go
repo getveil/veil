@@ -32,17 +32,21 @@ func TestProviderGitHub(t *testing.T) {
 			t.Fatal("should match GITHUB in name for credential-shaped value")
 		}
 	})
-	t.Run("no_match_short_value_with_github_in_name", func(t *testing.T) {
-		// GitHub Actions injects GITHUB_REF_NAME=main and similar metadata.
-		// These must not be classified as secrets.
+	t.Run("no_match_short_value_via_registry", func(t *testing.T) {
+		// CI-metadata names like GITHUB_REF_NAME=main are injected by
+		// GitHub Actions on every job. They must not be classified as
+		// credentials. The check now lives at Registry.Match
+		// (passesValueShapeGate) rather than inside this provider's own
+		// Match, so assert at that layer.
+		reg := DefaultRegistry()
 		for _, kv := range []struct{ name, value string }{
 			{"GITHUB_REF_NAME", "main"},
 			{"GITHUB_EVENT_NAME", "push"},
 			{"GITHUB_JOB", "test"},
 			{"GITHUB_REF_TYPE", "branch"},
 		} {
-			if prov.Match(kv.name, kv.value) {
-				t.Errorf("should not match CI metadata %s=%q", kv.name, kv.value)
+			if p := reg.Match(kv.name, kv.value); p != nil {
+				t.Errorf("Registry.Match should not match CI metadata %s=%q; got %s", kv.name, kv.value, p.Name)
 			}
 		}
 	})

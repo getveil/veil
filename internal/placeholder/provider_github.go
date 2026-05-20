@@ -18,13 +18,11 @@ func init() {
 				}
 			}
 			// Name-only fallback: catches custom/unprefixed tokens stored under
-			// a GITHUB_* name. Require a credential-shaped value length so we
-			// don't classify CI-injected metadata like GITHUB_REF_NAME=main or
-			// GITHUB_EVENT_NAME=push as secrets — those would otherwise reach
-			// Generate's empty-prefix branch and produce a deterministic
-			// sentinel-only output, collapsing the collision-retry budget.
-			return len(value) >= secretMinLength &&
-				strings.Contains(strings.ToUpper(name), "GITHUB")
+			// a GITHUB_* name. The credential-shape floor lives at
+			// Registry.Match (passesValueShapeGate); short non-credential CI
+			// metadata like GITHUB_REF_NAME=main is rejected there before
+			// this matcher is consulted.
+			return strings.Contains(strings.ToUpper(name), "GITHUB")
 		},
 		Generate: func(_, value string) string {
 			// Fine-grained PATs: github_pat_ + 22 alnum + _ + N alnum.
