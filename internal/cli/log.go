@@ -112,6 +112,14 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 				Location:   r.Location,
 			})
 		}
+		if len(rows) == 0 {
+			// A user piping `veil log --json | jq` against a quiet window
+			// would otherwise see only silent output and wonder whether the
+			// command worked or hung. Surface the explanation on stderr so
+			// the NDJSON stream on stdout stays valid (empty) for the
+			// downstream consumer.
+			ui.Dim(cmd.ErrOrStderr(), fmt.Sprintf("no events match these filters in the last %s (stdout is empty NDJSON)", since))
+		}
 		return nil
 	}
 

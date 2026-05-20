@@ -559,6 +559,68 @@ func TestLog_ZeroEventsZeroHiddenFooterShowsWindow(t *testing.T) {
 	}
 }
 
+// TestLog_JSONEmptyResultNotifiesOnStderr covers polish item #12: a user
+// piping `veil log --json | jq` against an empty window used to see only
+// silent stdout and couldn't tell whether the command worked or hung.
+// Stdout must stay a valid (empty) NDJSON stream so the pipe still parses,
+// but stderr must carry a notice explaining the empty stream.
+func TestLog_JSONEmptyResultNotifiesOnStderr(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	// Stdout must be empty (or whitespace-only) so the NDJSON pipe stays
+	// valid for downstream consumers like jq.
+	if got := strings.TrimSpace(stdout.String()); got != "" {
+		t.Errorf("--json with no events must leave stdout empty NDJSON; got:\n%q", stdout.String())
+	}
+
+	// Stderr must carry a human-readable explanation so the user knows
+	// the empty stdout was intentional, not a hang or a bug.
+	errS := stderr.String()
+	if !strings.Contains(errS, "no events match these filters") {
+		t.Errorf("stderr must announce empty-result reason; got:\n%s", errS)
+	}
+	if !strings.Contains(errS, "stdout is empty NDJSON") {
+		t.Errorf("stderr notice should clarify the empty-stdout contract; got:\n%s", errS)
+	}
+}
+
+// TestLog_JSONNonEmptyResultStaysQuietOnStderr verifies the inverse of
+// the empty-result advisory: when --json has rows to emit, the stderr
+// notice must NOT fire — otherwise every routine pipe through jq would
+// be polluted with spurious "empty stdout" advisories.
+func TestLog_JSONNonEmptyResultStaysQuietOnStderr(t *testing.T) {
+	root := initProject(t)
+	seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	if strings.Contains(stderr.String(), "no events match these filters") {
+		t.Errorf("stderr advisory must not fire when rows exist; got:\n%s", stderr.String())
+	}
+	// Sanity: stdout must contain at least one NDJSON line for this path.
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatalf("expected NDJSON rows on stdout; got empty")
+	}
+}
+
 // TestLogCmd_ShortDescriptionMentionsHidden verifies that `veil log --help`
 // announces that blocked/leaked events are hidden by default, so users do
 // not have to discover the --blocked flag by accident.
