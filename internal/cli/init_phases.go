@@ -65,7 +65,7 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 		return false, cliErrorWith(ErrAlreadyInitialized, "project already initialized", "Use --force to reinitialize")
 	}
 	if interactive && !promptYN(in, w, "This will replace your existing vault. Continue?", false) {
-		ui.Dim(w, "Aborted.")
+		ui.Dim(w, "Cancelled.")
 		return false, nil
 	}
 	return true, nil

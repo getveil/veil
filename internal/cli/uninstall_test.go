@@ -1459,3 +1459,56 @@ func TestUninstallPlanTildeRedactsHomePaths(t *testing.T) {
 		}
 	}
 }
+
+// TestUninstallCancelledMessage covers polish item #6: when the user answers
+// "n" to the uninstall confirmation, the CLI must print "Cancelled." (not
+// "Aborted.") so the wording matches `veil remove` and `veil init --force`.
+// Cancellation must not be a Cobra error — the user declined cleanly.
+func TestUninstallCancelledMessage(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First init the project so uninstall has something to plan against.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Run uninstall WITHOUT --yes; reply "n" to the confirmation prompt.
+	cmd = NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(strings.NewReader("n\n"))
+	cmd.SetArgs([]string{"uninstall", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall cancel should not error: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Cancelled.") {
+		t.Errorf("expected 'Cancelled.' on declined uninstall, got:\n%s", got)
+	}
+	if strings.Contains(got, "Aborted.") {
+		t.Errorf("must not emit legacy 'Aborted.' wording, got:\n%s", got)
+	}
+
+	// State must be untouched after cancel.
+	if _, err := os.Stat(config.ProjectStateDir(root)); err != nil {
+		t.Errorf(".veil/ should still exist after cancel: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".env.veil-backup")); err != nil {
+		t.Errorf(".env.veil-backup should still exist after cancel: %v", err)
+	}
+}

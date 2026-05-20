@@ -446,7 +446,7 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 
 	if !yes && !promptYN(newLineReader(cmd.InOrStdin()), w, "Proceed with uninstall?", false) {
-		_, _ = fmt.Fprintln(w, "Aborted.")
+		_, _ = fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
