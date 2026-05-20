@@ -12,12 +12,11 @@ func init() {
 				return true
 			}
 			// Name-only fallback: catches custom/unprefixed tokens stored
-			// under a SENDGRID_* name. Require a credential-shaped value
-			// length so we don't classify config metadata like
-			// SENDGRID_FROM_EMAIL=foo@bar.com or SENDGRID_REGION=us as
-			// secrets. Mirrors the floor applied in provider_github.go.
-			return len(value) >= secretMinLength &&
-				strings.Contains(strings.ToUpper(name), "SENDGRID")
+			// under a SENDGRID_* name. The credential-shape floor lives
+			// at Registry.Match (passesValueShapeGate); short config
+			// metadata like SENDGRID_FROM_EMAIL=foo@bar.com is rejected
+			// there before this matcher is consulted.
+			return strings.Contains(strings.ToUpper(name), "SENDGRID")
 		},
 		Generate: func(_, _ string) string {
 			// SendGrid API keys: SG. + 22 base64 chars + . + 43 base64 chars.

@@ -71,20 +71,20 @@ func TestProviderSendGrid(t *testing.T) {
 	})
 }
 
-// TestSendgridNameMatchRequiresValueShape ensures the name-only fallback in
-// the SendGrid Match function won't flag config metadata vars whose name
-// happens to contain "SENDGRID" but whose value is clearly not a credential.
-// Mirrors the secretMinLength floor used by the GitHub provider.
-func TestSendgridNameMatchRequiresValueShape(t *testing.T) {
-	prov := mustProvider(t, "sendgrid")
-
+// TestSendgridNameMatchGatedAtRegistry ensures the name-only fallback
+// path won't flag config metadata vars whose name happens to contain
+// "SENDGRID" but whose value is clearly not a credential. The check
+// now lives at Registry.Match (passesValueShapeGate) rather than
+// inside the provider's own Match.
+func TestSendgridNameMatchGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
 	cases := []struct{ name, value string }{
 		{"SENDGRID_FROM_EMAIL", "foo@bar.com"},
 		{"SENDGRID_REGION", "us"},
 	}
 	for _, c := range cases {
-		if prov.Match(c.name, c.value) {
-			t.Errorf("should not match SendGrid metadata %s=%q (value below secretMinLength)", c.name, c.value)
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("Registry.Match should not match SendGrid metadata %s=%q; got %s", c.name, c.value, p.Name)
 		}
 	}
 }
