@@ -57,23 +57,22 @@ func (l *lineReader) Read(p []byte) (int, error) {
 }
 
 func initCmd() *cobra.Command {
-	var force, dryRun, yes, scanShellEnv bool
+	var force, dryRun, yes bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize Veil for the current project",
 		Long:  "Scan .env files, vault secrets, and replace them with placeholders.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInit(cmd, force, dryRun, yes, scanShellEnv)
+			return runInit(cmd, force, dryRun, yes)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "reinitialize even if .veil/ exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be vaulted without making changes")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept all defaults non-interactively")
-	cmd.Flags().BoolVar(&scanShellEnv, "scan-shell-env", false, "scan os.Environ() for secret-like shell exports")
 	return cmd
 }
 
-func runInit(cmd *cobra.Command, force, dryRun, yes, scanShellEnv bool) error {
+func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	w := cmd.OutOrStdout()
 	stdin := cmd.InOrStdin()
 	interactive, announce := detectInteractive(stdin, yes)
@@ -105,16 +104,8 @@ func runInit(cmd *cobra.Command, force, dryRun, yes, scanShellEnv bool) error {
 		return wrapErr("scanning project", err)
 	}
 
-	// --scan-shell-env gates scanner.ScanEnviron(os.Environ()). When off,
-	// the candidate list stays empty so the early-exit gate, the shell-env
-	// phase header, and processShellEnv are all skipped silently.
-	var shellCandidates []scanner.EnvironCandidate
-	if scanShellEnv {
-		shellCandidates = scanner.ScanEnviron(os.Environ())
-		shellCandidates = nonEmptyShellCandidates(shellCandidates)
-	}
-	if len(envPaths) == 0 && len(shellCandidates) == 0 {
-		_, _ = fmt.Fprintf(w, "no .env files or shell-exported secrets found in %s\n", root)
+	if len(envPaths) == 0 {
+		_, _ = fmt.Fprintf(w, "no .env files found in %s\n", root)
 		return nil
 	}
 
@@ -175,21 +166,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes, scanShellEnv bool) error {
 		}
 		secretsVaulted += n
 		secretsScoped += s
-	}
-
-	// Shell-exported secrets that never made it into a .env file would
-	// otherwise pass through to the agent. processShellEnv re-filters
-	// candidates against the vault (skipping names captured in an earlier
-	// phase) and drops empty values.
-	if len(shellCandidates) > 0 {
-		ui.Phase(w, "Scanning shell environment...")
-		n, s, err := processShellEnv(w, in, v, shellCandidates, dryRun, interactive)
-		if err != nil {
-			return err
-		}
-		secretsVaulted += n
-		secretsScoped += s
-		_, _ = fmt.Fprintln(w)
 	}
 
 	unscoped := secretsVaulted - secretsScoped

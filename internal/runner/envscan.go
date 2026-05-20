@@ -22,9 +22,9 @@ import (
 //     tripping the fail-closed check on things like PATH.
 //  2. placeholder.IsSecretLike evaluates the remaining name/value pairs.
 //
-// Runs against os.Environ() at veil-run startup as a belt-and-suspenders
-// check: init should have captured these already, but a user may have
-// added a new export since init, or run veil in a shell that init never saw.
+// Runs against os.Environ() at veil-run startup as the sole shell-env
+// surface: init only scans .env files, so any secret-shaped name still
+// living in the shell needs to be flagged here before launch.
 func scanUnvaultedSecretLikes(environ, vaultNames []string, allow map[string]struct{}) []string {
 	vaulted := make(map[string]struct{}, len(vaultNames))
 	for _, n := range vaultNames {
@@ -75,9 +75,9 @@ func printUnvaultedWarning(w io.Writer, names []string) {
 		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
 	}
 	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("the agent will see their real values. run `veil init --force` to capture them,"))
+		ui.Muted.Sprint("the agent will see their real values. move them into your project's .env file and run"))
 	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("or pass --allow-env-secret NAME (repeatable) to confirm pass-through."))
+		ui.Muted.Sprint("`veil init --force` to capture them, or pass --allow-env-secret NAME to confirm pass-through."))
 }
 
 // plural is a local helper to avoid depending on the cli package.

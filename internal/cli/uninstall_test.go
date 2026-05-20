@@ -981,7 +981,6 @@ func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 // file is gone.
 func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -1024,7 +1023,6 @@ func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
 // must not delete a file with their own ignores in it.
 func TestUninstallPreservesUserGitignore(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)

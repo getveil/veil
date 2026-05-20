@@ -4,29 +4,22 @@ import (
 	"strings"
 
 	"github.com/getveil/veil/internal/envkeys"
-	"github.com/getveil/veil/internal/placeholder"
 )
-
-// EnvironCandidate is a shell-exported env var that looked secret-like.
-type EnvironCandidate struct {
-	Name  string
-	Value string
-}
 
 // environDenylistCurated is the hand-curated set of env-var names we consider
 // *obviously* non-secret and therefore skip before running the secret-like
-// heuristic. The goal is to reduce prompt noise during `veil init` shell-env
-// capture; it is NOT a security boundary — any name not on this list is still
-// evaluated by placeholder.IsSecretLike.
+// heuristic. The goal is to reduce noise in the runtime fail-closed scan
+// (runner.scanUnvaultedSecretLikes); it is NOT a security boundary — any
+// name not on this list is still evaluated by placeholder.IsSecretLike.
 //
 // Rules for additions:
 //   - The name is ubiquitous in POSIX / common shells.
 //   - Its value has no plausible reason to be a credential.
-//   - Omission would produce confusing / noisy prompts.
+//   - Omission would produce confusing / noisy warnings.
 //
-// When in doubt, leave it off. False positives in the prompt are annoying but
-// correctable by the user; false negatives here risk silently exempting a
-// real secret from capture, which is the exact gap this feature closes.
+// When in doubt, leave it off. False positives in the warning are annoying
+// but correctable by the user; false negatives here risk silently exempting
+// a real secret, which is the exact gap the runtime check closes.
 //
 // Proxy/CA/Veil-internal names are NOT listed here — they live in envkeys and
 // are folded into environDenylist by init(). That way, a future addition to
@@ -113,10 +106,9 @@ var environDenylistPrefixes = []string{
 
 // IsObviouslyNotSecret reports whether name is on the denylist of POSIX /
 // shell / system env-var names that can never plausibly be credentials.
-// Both the init-time scan (scanner.ScanEnviron) and the runtime scan
-// (runner.scanUnvaultedSecretLikes) use it as a pre-filter before the
-// IsSecretLike heuristic, so users don't get warnings about PATH or PWD
-// "looking like a secret."
+// The runtime scan (runner.scanUnvaultedSecretLikes) uses it as a pre-filter
+// before the IsSecretLike heuristic, so users don't get warnings about PATH
+// or PWD "looking like a secret."
 //
 // This is NOT a security boundary: absence from the denylist does not
 // mean the name is a secret, only that IsSecretLike will get a chance
@@ -133,39 +125,4 @@ func IsObviouslyNotSecret(name string) bool {
 		}
 	}
 	return false
-}
-
-// ScanEnviron returns the shell-exported env vars that look secret-like.
-// Names for which IsObviouslyNotSecret returns true are skipped up-front
-// as obvious non-secrets to avoid prompt noise. Remaining entries are
-// evaluated by placeholder.IsSecretLike. If the same name appears more
-// than once in environ, only the last occurrence is returned (matching
-// the shell's "last assignment wins" semantics; os.Environ() normally
-// yields unique names but we handle dupes defensively).
-func ScanEnviron(environ []string) []EnvironCandidate {
-	byName := make(map[string]string, len(environ))
-	order := make([]string, 0, len(environ))
-	for _, kv := range environ {
-		key, value, ok := strings.Cut(kv, "=")
-		if !ok || key == "" {
-			continue
-		}
-		if IsObviouslyNotSecret(key) {
-			continue
-		}
-		if _, seen := byName[key]; !seen {
-			order = append(order, key)
-		}
-		byName[key] = value
-	}
-
-	out := make([]EnvironCandidate, 0, len(order))
-	for _, name := range order {
-		value := byName[name]
-		if !placeholder.IsSecretLike(name, value) {
-			continue
-		}
-		out = append(out, EnvironCandidate{Name: name, Value: value})
-	}
-	return out
 }

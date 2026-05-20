@@ -92,10 +92,9 @@ func buildTestClient(t *testing.T, binDir string) string {
 // USE_STAGING_OAUTH, etc.) that a developer or CI runner may have exported
 // in their shell. These would otherwise trip the runtime fail-closed scan in
 // `veil run` (see internal/runner/envscan.go). This mirrors the unit-test
-// hygiene in internal/cli/init_shellenv_test.go (clearShellEnvTestNoise) and
-// internal/runner/runner_test.go (allowAllAmbientSecretLikes): the tests
-// simulate a clean shell, which is what they always meant to model. POSIX
-// names on the scanner denylist (PATH, PWD, etc.) are left alone.
+// hygiene in internal/runner/runner_test.go (allowAllAmbientSecretLikes):
+// the tests simulate a clean shell, which is what they always meant to
+// model. POSIX names on the scanner denylist (PATH, PWD, etc.) are left alone.
 func makeEnv(t *testing.T) []string {
 	t.Helper()
 	src := os.Environ()

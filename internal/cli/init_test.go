@@ -398,9 +398,6 @@ func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	t.Setenv("HOME", t.TempDir())
-	// Strip CI/dev-shell secret-like exports so the shell-env scan also finds
-	// nothing, ensuring the early-exit gate fires for the "no sources" case.
-	clearShellEnvTestNoise(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -418,7 +415,7 @@ func TestInitNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "no .env files or shell-exported secrets found") {
+	if !strings.Contains(outStr, "no .env files found") {
 		t.Errorf("expected no-sources message, got: %s", outStr)
 	}
 }
@@ -593,10 +590,6 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	// Clear known test-runner env noise so shell-env scan has nothing to
-	// prompt about — otherwise the stdin script below would feed its inputs
-	// into the shell-env prompt instead of the skip-hosts prompt.
-	clearShellEnvTestNoise(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
@@ -865,7 +858,6 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 // unrecognized and skipped.
 func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1360,13 +1352,13 @@ func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 	}
 }
 
-// TestInit_ScanShellEnvFlag_DefaultOffSkipsShellScan verifies that without
-// --scan-shell-env init does NOT call scanner.ScanEnviron(os.Environ()), so
-// a shell-exported secret remains uncaptured and the shell-env phase emits
-// no output.
-func TestInit_ScanShellEnvFlag_DefaultOffSkipsShellScan(t *testing.T) {
+// TestInit_DoesNotScanShellEnv verifies that init does NOT pull secret-like
+// names from os.Environ() into the vault. The shell-env scanning path was
+// cut in the v1 launch (see docs/LAUNCH_CUTS.md Phase 4) — the runner's
+// scanUnvaultedSecretLikes warning at `veil run` startup is the only
+// remaining surface for shell-exported secrets.
+func TestInit_DoesNotScanShellEnv(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
 	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
 
 	tmpDir := t.TempDir()
@@ -1395,23 +1387,21 @@ func TestInit_ScanShellEnvFlag_DefaultOffSkipsShellScan(t *testing.T) {
 		t.Fatalf("openVault: %v", err)
 	}
 	if _, ok := v.Get("OPENAI_API_KEY"); ok {
-		t.Errorf("vault has OPENAI_API_KEY despite --scan-shell-env being off; names=%v", v.Names())
+		t.Errorf("vault has OPENAI_API_KEY; shell-env scanning should be gone (names=%v)", v.Names())
 	}
 
 	outStr := out.String()
 	for _, forbidden := range []string{"Scanning shell environment", "shell-exported", "from shell"} {
 		if strings.Contains(outStr, forbidden) {
-			t.Errorf("output mentions %q despite --scan-shell-env being off:\n%s", forbidden, outStr)
+			t.Errorf("output mentions %q; shell-env phase should be gone:\n%s", forbidden, outStr)
 		}
 	}
 }
 
-// TestInit_ScanShellEnvFlag_OnCapturesSecret verifies that --scan-shell-env
-// opts in to the shell-environment scanning path.
-func TestInit_ScanShellEnvFlag_OnCapturesSecret(t *testing.T) {
+// TestInit_RejectsScanShellEnvFlag verifies the removed --scan-shell-env
+// flag is no longer accepted. Cobra returns an "unknown flag" error.
+func TestInit_RejectsScanShellEnvFlag(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
@@ -1419,23 +1409,10 @@ func TestInit_ScanShellEnvFlag_OnCapturesSecret(t *testing.T) {
 	}
 
 	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
+	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-shell-env"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v\n%s", err, out.String())
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	c, ok := v.Get("OPENAI_API_KEY")
-	if !ok {
-		t.Fatalf("vault missing OPENAI_API_KEY with --scan-shell-env on; names=%v", v.Names())
-	}
-	if c.Real != "sk-proj-shell-1234567890abcdef" {
-		t.Errorf("vaulted value=%q", c.Real)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error from removed --scan-shell-env flag, got nil")
 	}
 }
