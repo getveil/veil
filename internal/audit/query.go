@@ -12,7 +12,7 @@ type Filter struct {
 	Host           string    // empty = any
 	CredentialName string    // empty = any
 	Limit          int       // 0 = default 100
-	IncludeBlocked bool      // false = exclude blocked events
+	IncludeBlocked bool      // false = exclude blocked events. Kept on the Go API for the runner's session footer and tests after the CLI flag was removed in Phase 6.
 }
 
 // Row represents a single injection record returned by a query.

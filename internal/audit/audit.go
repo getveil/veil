@@ -479,11 +479,11 @@ func migrateToV4(db *sql.DB) error {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS injections`); err != nil {
 		return fmt.Errorf("drop injections: %w", err)
 	}
-	// Replace any stale schema_version row (1/2/3) with 4. Plain INSERT
-	// would create a duplicate row that breaks the COALESCE(MAX(v)) read
-	// later if the row count ever matters; INSERT OR REPLACE keeps the
-	// table at one row per version.
-	if _, err := db.Exec(`INSERT OR REPLACE INTO schema_version (v) VALUES (4)`); err != nil {
+	// Record that the schema is now at v4. The COALESCE(MAX(v)) read
+	// above is what gates future migrations, so a duplicate row from a
+	// repeat run is harmless; INSERT OR IGNORE avoids the duplicate
+	// rather than leaving both (n) and (4) rows behind.
+	if _, err := db.Exec(`INSERT OR IGNORE INTO schema_version (v) VALUES (4)`); err != nil {
 		return fmt.Errorf("mark v4: %w", err)
 	}
 	return nil
