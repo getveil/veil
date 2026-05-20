@@ -64,9 +64,18 @@ func (w *mitmFilterWriter) Write(p []byte) (int, error) {
 	return w.out.Write(p)
 }
 
-// bodyCap is the maximum request body size the proxy will read for
-// placeholder injection (10 MiB).
-const bodyCap = 10 * 1024 * 1024
+// maxInjectableBodyBytes is the maximum request body size the proxy will read
+// for placeholder injection (64 MiB). Real-world AI agent traffic (Claude
+// Code, Cursor) routinely POSTs large JSON contexts, so the cap is sized to
+// accommodate those while still preventing unbounded memory use. Requests
+// whose body exceeds this cap fail-closed with a 502 + X-Veil-Error:
+// body_too_large; truncating would corrupt the request and may also defeat
+// placeholder scanning if a sentinel sits past the cutoff.
+const maxInjectableBodyBytes = 64 << 20
+
+// bodyCap is kept as an alias for maxInjectableBodyBytes for the existing
+// in-tree call sites and tests that reference the historical name.
+const bodyCap = maxInjectableBodyBytes
 
 // Server is a local MITM proxy that intercepts HTTP/HTTPS traffic,
 // replacing placeholder strings with real secrets via the Injector.
@@ -159,10 +168,10 @@ func New(ca *CA, vlt *vault.Vault, auditStore *audit.Store, agentPID int, agentC
 			}
 			if len(body) > bodyCap {
 				ui.Warnf(os.Stderr,
-					"veil: refusing to forward request to %s — body exceeds 10 MiB inject limit; split the request",
+					"veil: refusing to forward request to %s — body exceeds 64 MiB inject limit; split the request",
 					req.Host)
 				resp := goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway,
-					"veil: request body exceeds 10 MiB inject limit; cannot scan for placeholders")
+					"veil: request body exceeds 64 MiB inject limit; cannot scan for placeholders")
 				resp.Header.Set("X-Veil-Error", "body_too_large")
 				return req, resp
 			}

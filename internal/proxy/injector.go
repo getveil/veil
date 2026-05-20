@@ -18,8 +18,11 @@ import (
 // literal placeholder substitution; outbound traffic whose authentication
 // requires re-signing or username/password pairing is out of scope.
 
-// defaultBodyCap is the maximum body size the injector will scan (10 MiB).
-const defaultBodyCap = 10 * 1024 * 1024
+// defaultBodyCap is the maximum body size the injector will scan (64 MiB).
+// Kept in sync with maxInjectableBodyBytes in proxy.go: the proxy reads at
+// most maxInjectableBodyBytes into memory, so scanning beyond that does
+// nothing.
+const defaultBodyCap = 64 << 20
 
 // Injector performs Aho-Corasick multi-pattern matching to replace placeholder
 // strings with real secret values in HTTP requests. All fields are set at
