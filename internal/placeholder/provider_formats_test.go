@@ -273,31 +273,35 @@ func TestStripe_PublishableKeyNotVaulted(t *testing.T) {
 	}
 }
 
-// TestResend_ShortPrefixedValueNotVaulted is a regression test for the Resend
-// false positive: REDIRECT_URI=re_login_callback_url matched the legacy "re_"
-// prefix and got auto-vaulted. The new hand-written matcher requires
-// len(value) >= 20 so short re_-prefixed strings (paths, config tokens,
-// callback identifiers) cannot match.
-func TestResend_ShortPrefixedValueNotVaulted(t *testing.T) {
-	prov := mustProvider(t, "resend")
+// TestResend_ShortPrefixedValueGatedAtRegistry is the regression test
+// for the Resend false positive: REDIRECT_URI=re_login_callback_url
+// matched the legacy "re_" prefix and got auto-vaulted. The shape gate
+// now lives at Registry.Match (passesValueShapeGate); assert the
+// contract at that layer. Per-provider Match still returns true for
+// re_-prefixed values — the gate's job is to keep short re_-prefixed
+// strings (paths, config tokens, callback identifiers) from reaching
+// the matcher at all.
+func TestResend_ShortPrefixedValueGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
 
-	// Under 20 chars — must not match even though prefix is present.
+	// Under 20 chars — must not match through Registry.Match even though
+	// the re_ prefix is present.
 	short := "re_login_callback"
 	if len(short) >= 20 {
-		t.Fatalf("test setup: value %q must be < 20 chars to exercise the floor", short)
+		t.Fatalf("test setup: value %q must be < 20 chars to exercise the gate", short)
 	}
-	if prov.Match("REDIRECT_URI", short) {
-		t.Fatalf("Resend provider should NOT match short re_ value REDIRECT_URI=%q", short)
+	if p := reg.Match("REDIRECT_URI", short); p != nil {
+		t.Fatalf("Registry.Match should NOT match short re_ value REDIRECT_URI=%q; got %s", short, p.Name)
 	}
-	// Same value under a RESEND-named key must also not match — the name
-	// hint never short-circuits the shape gate.
-	if prov.Match("RESEND_REDIRECT", short) {
-		t.Fatalf("Resend provider should NOT match short re_ value RESEND_REDIRECT=%q", short)
+	// Same value under a RESEND-named key must also not match.
+	if p := reg.Match("RESEND_REDIRECT", short); p != nil {
+		t.Fatalf("Registry.Match should NOT match short re_ value RESEND_REDIRECT=%q; got %s", short, p.Name)
 	}
-	// Sanity: a realistic-length re_ value still matches.
-	long := "re_" + strings.Repeat("a", 36)
-	if !prov.Match("REDIRECT_URI", long) {
-		t.Fatalf("Resend provider should match real-length value %q", long)
+	// Sanity: a realistic-length, varied-body re_ value still matches
+	// through Registry.Match (clears the shape gate).
+	long := "re_abcdef0123456789abcdef0123456789abcdef"
+	if p := reg.Match("REDIRECT_URI", long); p == nil || p.Name != "resend" {
+		t.Fatalf("Registry.Match should match real-length re_ value %q to resend; got %v", long, p)
 	}
 }
 

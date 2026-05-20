@@ -127,13 +127,15 @@ func init() {
 		VaultEligible: true,
 	})
 
-	// Resend is hand-written because the declarative "re_" prefix is too short
-	// (3 chars) and the OR-of-(prefix, name-hint) classifier vaults any value
-	// starting with "re_" — REDIRECT_URI=re_login_callback_url being the
-	// motivating false positive. Real Resend keys are "re_" + 36 alphanumeric
-	// (~39 chars); require len(value) >= 20 on both paths so short re_-prefixed
-	// strings (paths, config flags, etc.) don't match.
-	const resendMinLen = 20
+	// Resend is hand-written rather than declarative because the
+	// declarative OR-of-(prefix, name-hint) classifier would match any
+	// shape-passing value under a RESEND_* name — e.g.
+	// RESEND_FROM_EMAIL=team@example.somewhere.com (28 chars, clears the
+	// Registry.Match shape gate) would be vaulted as a Resend credential.
+	// The hand-written matcher constrains the name-hint path so it only
+	// fires when the value also carries the re_ prefix. The Registry-
+	// level shape gate handles the length floor; this matcher does not
+	// repeat it.
 	register(ProviderPattern{
 		Name:          "resend",
 		Prefixes:      []string{"re_"},
@@ -142,14 +144,14 @@ func init() {
 		Hosts:         []string{"api.resend.com"},
 		VaultEligible: true,
 		Match: func(name, value string) bool {
-			if strings.HasPrefix(value, "re_") && len(value) >= resendMinLen {
+			if strings.HasPrefix(value, "re_") {
 				return true
 			}
-			// Name-hint path: also requires the value to be a real
-			// Resend-shaped key — we never vault on the name alone, mirroring
-			// the gate applied to GitHub / SendGrid / Supabase.
+			// Name-hint path: requires the value to also carry the
+			// re_ prefix — mirroring the gate applied to Stripe's name
+			// hint, which only fires for secret-key-prefixed values.
 			if strings.Contains(strings.ToUpper(name), "RESEND") &&
-				strings.HasPrefix(value, "re_") && len(value) >= resendMinLen {
+				strings.HasPrefix(value, "re_") {
 				return true
 			}
 			return false
