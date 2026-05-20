@@ -28,7 +28,7 @@ func init() {
 
 	register(ProviderPattern{
 		Name:          "stripe",
-		Prefixes:      []string{"sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_"},
+		Prefixes:      []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_"},
 		KeyHints:      []string{"STRIPE"},
 		Length:        0,
 		Charset:       "alphanumeric",
