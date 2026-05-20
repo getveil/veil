@@ -814,4 +814,3 @@ func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
 		t.Fatalf("health sidecar should have been removed on clean close, stat err=%v", err)
 	}
 }
-

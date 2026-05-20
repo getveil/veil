@@ -1081,4 +1081,3 @@ func TestPrintSessionFooter_F9_RealStoreShortSession(t *testing.T) {
 		t.Fatalf("F-9 regression: footer should report %q for 4 buffered rows, got:\n%s", wantCount, out)
 	}
 }
-

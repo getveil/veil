@@ -91,4 +91,3 @@ func TestWriteBackupErrorsWhenSourceMissing(t *testing.T) {
 		t.Error("expected error when source file is missing")
 	}
 }
-

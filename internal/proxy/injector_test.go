@@ -412,4 +412,3 @@ func TestProcessRequestInjectsQueryString(t *testing.T) {
 		t.Fatalf("audit URLPath leaked query data: %q", injections[0].URLPath)
 	}
 }
-

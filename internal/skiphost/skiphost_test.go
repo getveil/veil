@@ -227,4 +227,3 @@ func TestAdd_Duplicate(t *testing.T) {
 		t.Errorf("expected 1 host, got %d", len(hosts))
 	}
 }
-
