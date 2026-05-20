@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/ui"
+	"github.com/getveil/veil/internal/vault"
 )
 
 func TestInitHappyPath(t *testing.T) {
@@ -1420,5 +1423,180 @@ func TestInit_RejectsScanShellEnvFlag(t *testing.T) {
 	// the test instead of passing on any "unknown flag" error.
 	if !strings.Contains(err.Error(), "scan-shell-env") {
 		t.Errorf("expected 'scan-shell-env' in error, got: %v", err)
+	}
+}
+
+// TestInit_WarnsWhenPathOutsideCWDProjectRoot verifies that when --path points
+// at a directory outside the cwd's project root, the user sees an advisory at
+// the end of init explaining how to roll back. Otherwise a user who typo'd a
+// path lands with a .veil/ they can't easily find or undo.
+func TestInit_WarnsWhenPathOutsideCWDProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	// The cwd's project root — what FindProjectRoot will land on for ".".
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	// The OUTSIDE project — has its own .git and .env so init succeeds.
+	outsideProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outsideProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(outsideProject, ".env")
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", outsideProject, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --path <outside> failed: %v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "outside the current project root") {
+		t.Errorf("expected 'outside the current project root' notice, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "veil uninstall --path") {
+		t.Errorf("expected uninstall hint, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, outsideProject) && !strings.Contains(outStr, ui.RedactPath(outsideProject)) {
+		t.Errorf("expected the outside path to be mentioned in the notice, got:\n%s", outStr)
+	}
+}
+
+// TestInit_DoesNotWarnWhenPathInsideCWDProjectRoot verifies that the new
+// advisory is suppressed when the --path is a subdirectory of the cwd
+// project root — that's a perfectly reasonable monorepo workflow and
+// emitting the notice would be noise.
+func TestInit_DoesNotWarnWhenPathInsideCWDProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	// Subdirectory inside the cwd project.
+	sub := filepath.Join(cwdProject, "apps", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".env"), []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", sub, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --path <subdir> failed: %v", err)
+	}
+	if strings.Contains(out.String(), "outside the current project root") {
+		t.Errorf("must not emit out-of-project notice for a subdirectory, got:\n%s", out.String())
+	}
+}
+
+// TestInit_DoesNotWarnWhenPathFlagOmitted verifies the advisory is gated on
+// the user actually passing --path. With no flag the path resolves from cwd
+// and the "outside" comparison would be a tautology.
+func TestInit_DoesNotWarnWhenPathFlagOmitted(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".env"), []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init without --path failed: %v", err)
+	}
+	if strings.Contains(out.String(), "outside the current project root") {
+		t.Errorf("must not emit out-of-project notice without --path, got:\n%s", out.String())
+	}
+}
+
+// TestAnnounceFileBackedKeystore_WithoutPassphraseErrors verifies that when
+// the keystore fell back to FileKeystore AND VEIL_PASSPHRASE is unset, the
+// announce helper surfaces a warning and returns a typed error so the caller
+// short-circuits before the first vault op (which would have produced an
+// opaque ErrKeystoreUnavailable instead).
+func TestAnnounceFileBackedKeystore_WithoutPassphraseErrors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_PASSPHRASE", "")
+
+	fallback := filepath.Join(t.TempDir(), "master.key.age")
+	ks := vault.NewFileKeystore(fallback)
+	var buf bytes.Buffer
+	err := announceFileBackedKeystore(&buf, ks)
+	if err == nil {
+		t.Fatal("expected announceFileBackedKeystore to error when passphrase is unset")
+	}
+	if !errors.Is(err, vault.ErrKeystoreUnavailable) {
+		t.Errorf("expected wrapped ErrKeystoreUnavailable, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "No system keyring found") {
+		t.Errorf("warning should mention 'No system keyring found', got:\n%s", out)
+	}
+	if !strings.Contains(out, "VEIL_PASSPHRASE") {
+		t.Errorf("warning should mention VEIL_PASSPHRASE, got:\n%s", out)
+	}
+}
+
+// TestAnnounceFileBackedKeystore_WithPassphraseInfoOnly verifies that when
+// the keystore is file-backed AND VEIL_PASSPHRASE is set, the helper prints
+// an informational note (so the user knows they're in file-backed mode) but
+// does not return an error.
+func TestAnnounceFileBackedKeystore_WithPassphraseInfoOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_PASSPHRASE", "hunter2")
+
+	fallback := filepath.Join(t.TempDir(), "master.key.age")
+	ks := vault.NewFileKeystore(fallback)
+	var buf bytes.Buffer
+	if err := announceFileBackedKeystore(&buf, ks); err != nil {
+		t.Fatalf("announceFileBackedKeystore with passphrase set: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Using file-backed keystore") {
+		t.Errorf("expected info note about file-backed mode, got:\n%s", out)
+	}
+	if strings.Contains(out, "No system keyring found") {
+		t.Errorf("must not surface the unset-passphrase warning when passphrase IS set, got:\n%s", out)
+	}
+}
+
+// TestAnnounceFileBackedKeystore_NonFileNoOp verifies that for the happy-path
+// system-keyring keystore the helper prints nothing and returns nil.
+func TestAnnounceFileBackedKeystore_NonFileNoOp(t *testing.T) {
+	ks := vault.NewMemKeystore()
+	var buf bytes.Buffer
+	if err := announceFileBackedKeystore(&buf, ks); err != nil {
+		t.Fatalf("announce should no-op for non-file keystore: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("announce should print nothing for non-file keystore, got: %q", buf.String())
 	}
 }

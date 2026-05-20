@@ -133,6 +133,13 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return wrapErr("keystore", err)
 	}
+	// On Linux without Secret Service the keystore silently falls back to
+	// an age-encrypted file gated by VEIL_PASSPHRASE. Surface that to the
+	// user up front rather than letting them hit an opaque
+	// ErrKeystoreUnavailable on the first vault write.
+	if err := announceFileBackedKeystore(w, ks); err != nil {
+		return err
+	}
 
 	var v *vault.Vault
 	if dryRun {
@@ -191,7 +198,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	promptSkipHostsPhase(in, w, root, interactive, dryRun)
 
 	ui.Phase(w, "Setting up proxy...")
-	if err := setupProxyCA(w); err != nil {
+	if err := setupProxyCA(w, dryRun); err != nil {
 		return err
 	}
 
@@ -215,8 +222,51 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		_, _ = fmt.Fprintf(w, "  veil run claude     %s\n", ui.Muted.Sprint("# or your agent of choice"))
 		_, _ = fmt.Fprintf(w, "  veil status         %s\n", ui.Muted.Sprint("# see what's protected"))
 		_, _ = fmt.Fprintln(w)
+		// If the user passed --path pointing OUTSIDE their current project,
+		// the .veil/ they just installed will be invisible to `veil run`
+		// from the cwd. Surface that asymmetry plus the uninstall escape
+		// hatch so they can roll back without manually deleting state.
+		warnIfRootOutsideCWD(w, root)
 	}
 	return nil
+}
+
+// warnIfRootOutsideCWD prints a yellow advisory when `veil init --path <dir>`
+// landed at a directory outside the current project root. No-op when --path
+// was not passed (the resolved root IS the cwd's project root by definition)
+// or when the resolved root is a descendant of the cwd's project root.
+func warnIfRootOutsideCWD(w io.Writer, resolvedRoot string) {
+	if flagPath == "" {
+		return
+	}
+	cwdRoot, err := config.FindProjectRoot(".")
+	if err != nil {
+		// No detectable cwd project root means the user is initializing
+		// fresh from somewhere with no marker — they explicitly picked
+		// where to install, and a "you went outside the project" notice
+		// here would be misleading. Stay silent.
+		return
+	}
+	absResolved, err := filepath.Abs(resolvedRoot)
+	if err != nil {
+		return
+	}
+	absCWD, err := filepath.Abs(cwdRoot)
+	if err != nil {
+		return
+	}
+	if absResolved == absCWD {
+		return
+	}
+	rel, err := filepath.Rel(absCWD, absResolved)
+	if err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+		// resolvedRoot is inside the cwd project — nothing to warn about.
+		return
+	}
+	ui.FormatWarning(w,
+		fmt.Sprintf("Initialized at %s, which is outside the current project root.", ui.RedactPath(absResolved)),
+		fmt.Sprintf("To reverse this, run: veil uninstall --path %s", ui.RedactPath(absResolved)),
+	)
 }
 
 // redactValue returns a redacted display of a secret value. For values shorter

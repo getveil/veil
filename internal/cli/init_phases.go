@@ -501,6 +501,11 @@ func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
 		for _, s := range res.Skipped {
 			_, _ = fmt.Fprintf(w, "    %s\n", s.key)
 		}
+		// One hint per Skipped block tells the user how to vault these
+		// values manually without forcing them to figure out the right flag
+		// names. Printed only once at the bottom so a file with N skipped
+		// rows doesn't repeat the line N times.
+		ui.Dim(w, "  To vault a custom credential manually: veil add <NAME> --value-stdin --host <host>")
 	}
 }
 
@@ -656,7 +661,23 @@ func promptSkipHostsPhase(in io.Reader, w io.Writer, root string, interactive, d
 }
 
 // setupProxyCA loads or creates the CA. Prints a success step on completion.
-func setupProxyCA(w io.Writer) error {
+// When dryRun is true, no CA is written to disk — we instead report whether
+// the CA already exists ("CA certificate already present") or what would be
+// created ("Would create CA certificate at <path>").
+func setupProxyCA(w io.Writer, dryRun bool) error {
+	if dryRun {
+		certPath, exists, err := proxy.CheckCA()
+		if err != nil {
+			return wrapErr("checking CA", err)
+		}
+		if exists {
+			ui.Step(w, "CA certificate already present")
+		} else {
+			ui.Step(w, fmt.Sprintf("Would create CA certificate at %s", ui.RedactPath(certPath)))
+		}
+		_, _ = fmt.Fprintln(w)
+		return nil
+	}
 	if _, err := proxy.LoadOrCreateCA(); err != nil {
 		return wrapErr("setting up CA", err)
 	}

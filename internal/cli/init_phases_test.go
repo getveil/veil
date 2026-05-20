@@ -620,3 +620,115 @@ func TestPrintVaultSummary_RendersVaultedSection(t *testing.T) {
 		t.Errorf("output missing placeholder:\n%s", out)
 	}
 }
+
+// TestPrintVaultSummary_SkippedShowsAddHintOnce verifies the Skipped section
+// prints a single `veil add` hint at the bottom rather than one per skipped
+// row. A user with multiple unrecognized values shouldn't read the same
+// suggestion repeated N times.
+func TestPrintVaultSummary_SkippedShowsAddHintOnce(t *testing.T) {
+	res := vaultBuildResult{
+		Skipped: []secretLine{
+			{key: "WEIRD_SECRET_A"},
+			{key: "WEIRD_SECRET_B"},
+			{key: "WEIRD_SECRET_C"},
+		},
+	}
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	out := buf.String()
+	// Each skipped key still appears.
+	for _, k := range []string{"WEIRD_SECRET_A", "WEIRD_SECRET_B", "WEIRD_SECRET_C"} {
+		if !strings.Contains(out, k) {
+			t.Errorf("Skipped section missing %s:\n%s", k, out)
+		}
+	}
+	// The hint must appear exactly once.
+	hintFragment := "veil add"
+	if got := strings.Count(out, hintFragment); got != 1 {
+		t.Errorf("expected exactly one 'veil add' hint, got %d:\n%s", got, out)
+	}
+	if !strings.Contains(out, "--value-stdin") {
+		t.Errorf("hint should mention --value-stdin, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--host") {
+		t.Errorf("hint should mention --host, got:\n%s", out)
+	}
+}
+
+// TestPrintVaultSummary_NoSkippedNoHint verifies the hint is only emitted
+// when there's something in the Skipped bucket. A clean file should not
+// trigger advice about a section that wasn't rendered.
+func TestPrintVaultSummary_NoSkippedNoHint(t *testing.T) {
+	res := vaultBuildResult{
+		Creds: []*vault.Credential{
+			{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai-XX"},
+		},
+	}
+	var buf bytes.Buffer
+	printVaultSummary(&buf, res, false)
+	if strings.Contains(buf.String(), "veil add") {
+		t.Errorf("hint must not appear without a Skipped section:\n%s", buf.String())
+	}
+}
+
+// TestSetupProxyCA_DryRunNoFilesystemSideEffects verifies that --dry-run
+// does not create the CA cert/key files on disk. Without this fix, dry-run
+// was creating ~/Library/Application Support/veil/ca/{root.pem,root.key}
+// on macOS (and ~/.local/share/veil/ca/* on Linux) the first time the
+// user ran init, even though the documented contract is no-side-effects.
+func TestSetupProxyCA_DryRunNoFilesystemSideEffects(t *testing.T) {
+	// Pin XDG_DATA_HOME inside the per-test HOME so we can assert no file
+	// landed under the user's real config locations either.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	var buf bytes.Buffer
+	if err := setupProxyCA(&buf, true); err != nil {
+		t.Fatalf("setupProxyCA(dryRun=true): %v", err)
+	}
+
+	// No files anywhere under HOME should have been created by the dry-run.
+	var found []string
+	_ = filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		// HOME starts empty; any regular file is a side effect.
+		found = append(found, path)
+		return nil
+	})
+	if len(found) != 0 {
+		t.Errorf("dry-run wrote files to disk: %v", found)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Would create CA certificate") {
+		t.Errorf("expected 'Would create CA certificate' notice, got: %s", out)
+	}
+}
+
+// TestSetupProxyCA_NonDryRunWritesCA verifies the happy path still actually
+// creates the CA when not in dry-run.
+func TestSetupProxyCA_NonDryRunWritesCA(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	var buf bytes.Buffer
+	if err := setupProxyCA(&buf, false); err != nil {
+		t.Fatalf("setupProxyCA(dryRun=false): %v", err)
+	}
+	// Some file must now exist under HOME (the CA cert + key).
+	var found []string
+	_ = filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		found = append(found, path)
+		return nil
+	})
+	if len(found) == 0 {
+		t.Errorf("non-dry-run should have written CA files; HOME is empty")
+	}
+}

@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/envkeys"
+	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
 	"github.com/spf13/cobra"
 )
@@ -28,6 +32,41 @@ func buildKeystore() (vault.Keystore, error) {
 		return nil, err
 	}
 	return vault.AutoKeystore(fallbackPath), nil
+}
+
+// announceFileBackedKeystore inspects ks and, when it is the FileKeystore
+// fallback, surfaces a user-visible notice before the first vault op. When
+// VEIL_PASSPHRASE is unset this returns a cliError so the caller short-circuits
+// with an actionable message — otherwise it prints an info note so the user
+// knows they are running in the file-backed mode and continues.
+func announceFileBackedKeystore(w io.Writer, ks vault.Keystore) error {
+	if !vault.IsFileBacked(ks) {
+		return nil
+	}
+	fallbackPath, perr := config.KeystoreFallbackFile()
+	if perr != nil {
+		// Best-effort: if we can't even resolve the fallback path, fall
+		// through so the underlying open/save error still surfaces.
+		fallbackPath = ""
+	}
+	dir := ui.RedactPath(filepath.Dir(fallbackPath))
+	if dir == "" {
+		dir = "~/.local/state/veil/"
+	}
+	if os.Getenv(envkeys.Passphrase) == "" {
+		msg := fmt.Sprintf(
+			"No system keyring found. Veil will use an age-encrypted key file at %s.",
+			dir,
+		)
+		hint := fmt.Sprintf(
+			"Set %s in your environment before running 'veil init' or 'veil run'.",
+			envkeys.Passphrase,
+		)
+		ui.FormatWarning(w, msg, hint)
+		return cliErrorWith(vault.ErrKeystoreUnavailable, msg, hint)
+	}
+	ui.Dim(w, fmt.Sprintf("Using file-backed keystore at %s", dir))
+	return nil
 }
 
 // openVault opens the vault at the given project root, using the appropriate
