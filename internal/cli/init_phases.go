@@ -141,9 +141,9 @@ func refuseSymlinkedInputs(root string, envPaths []string) error {
 		hits = appendIfSymlink(hits, p, displayRel(root, p))
 	}
 
-	// .env anchor is the project root. Scanner only looks at root itself
-	// today (no subdirs), so the walk is a no-op for current code; we keep
-	// it so a future nested scanner does not silently regress.
+	// .env anchor is the project root. We walk each file's parent chain
+	// so a .env discovered in a subdirectory with a symlinked ancestor is
+	// refused — not just leaf-symlinked files.
 	for _, p := range envPaths {
 		rel, err := filepath.Rel(root, filepath.Dir(p))
 		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {

@@ -16,7 +16,6 @@ type vaultMetaShape struct {
 	Version      int    `json:"version"`
 	VaultedFiles []struct {
 		Path string `json:"path"`
-		Kind string `json:"kind"`
 	} `json:"vaulted_files"`
 }
 
