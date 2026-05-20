@@ -510,10 +510,10 @@ func TestBuildEnvFileCredentials_SkipsAWS(t *testing.T) {
 // TestBuildEnvFileCredentials_PostgresURLNotVaulted locks in the Phase-5
 // cut: postgres://, mysql://, redis:// and the other TCP-protocol URL
 // schemes bypass Veil's HTTP proxy entirely, so DATABASE_URL=postgres://...
-// no longer reaches the Managed bucket. If a postgres URL is still surfaced
-// to buildEnvFileCredentials (e.g. via a name-hint gate match like
+// is not vaulted. If a postgres URL is still surfaced to
+// buildEnvFileCredentials (e.g. via a name-hint gate match like
 // DB_PASSWORD or via the entropy gate on a long value), it lands in
-// Unrecognized rather than Managed because no provider claims it.
+// Skipped rather than Creds because no provider claims it.
 func TestBuildEnvFileCredentials_PostgresURLNotVaulted(t *testing.T) {
 	// IsSecretLike no longer recognizes a postgres URL by name alone, so
 	// DATABASE_URL=postgres://... is not surfaced at all. The DB_PASSWORD
@@ -568,9 +568,9 @@ func TestBuildEnvFileCredentials_SkipsUnrecognized(t *testing.T) {
 
 // TestPrintDryRunVaultLines_SkipsNonEligibleByName guards against a
 // counter-pairing regression: when secrets contain entries that didn't
-// produce a Credential (not-managed / unrecognized), the dry-run output
-// must skip them rather than print the next eligible credential's
-// placeholder against the wrong key.
+// produce a Credential (skipped via the binary isVaultEligible gate),
+// the dry-run output must skip them rather than print the next eligible
+// credential's placeholder against the wrong key.
 func TestPrintDryRunVaultLines_SkipsNonEligibleByName(t *testing.T) {
 	secrets := []secretLine{
 		{key: "OPENAI_API_KEY", value: "sk-real"},

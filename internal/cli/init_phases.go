@@ -449,9 +449,9 @@ func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) 
 }
 
 // printDryRunVaultLines emits "would vault: KEY -> PLACEHOLDER" for each
-// vault-eligible credential, preserving the file's appearance order. Non-
-// eligible entries in secrets (not-managed, unrecognized) are skipped via
-// name lookup so the pairing stays correct when buckets are mixed.
+// vault-eligible credential, preserving the file's appearance order.
+// Skipped entries in secrets (no provider match) are filtered via name
+// lookup so the pairing stays correct when eligible and skipped lines mix.
 func printDryRunVaultLines(w io.Writer, secrets []secretLine, creds []*vault.Credential) {
 	byName := make(map[string]string, len(creds))
 	for _, c := range creds {
