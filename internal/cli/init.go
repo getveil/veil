@@ -105,8 +105,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	}
 
 	if len(envPaths) == 0 {
-		_, _ = fmt.Fprintf(w, "no .env files found in %s\n", root)
-		return nil
+		return runInitNoEnvFiles(w, root, dryRun)
 	}
 
 	envPaths = filterInputs(in, w, root, envPaths, interactive)
@@ -228,6 +227,64 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		// hatch so they can roll back without manually deleting state.
 		warnIfRootOutsideCWD(w, root)
 	}
+	return nil
+}
+
+// runInitNoEnvFiles handles the "scanner found nothing to vault" branch of
+// init. Users who manage secrets via shell profile, direnv, 1Password CLI, or
+// any tool that injects env vars outside .env files still need a working
+// project: a .veil/ state dir + master key so `veil add` works, plus a CA
+// cert so `veil run` can MITM HTTPS. We do the same setup the happy path
+// does (sans the per-secret loop) and end with a "Next:" block that points
+// at `veil add` with a concrete example.
+//
+// --dry-run preserves its no-side-effects contract: no vault, no CA, no
+// gitignore writes — only the message and the "Would create" notice from
+// setupProxyCA.
+func runInitNoEnvFiles(w io.Writer, root string, dryRun bool) error {
+	_, _ = fmt.Fprintf(w, "no .env files found in %s\n", root)
+	_, _ = fmt.Fprintln(w)
+
+	if !dryRun {
+		ks, err := buildKeystore()
+		if err != nil {
+			return wrapErr("keystore", err)
+		}
+		// Same passphrase preflight as the happy path; without this a
+		// user on Linux without Secret Service would hit an opaque
+		// ErrKeystoreUnavailable when CreateVault tries ks.Set().
+		if err := announceFileBackedKeystore(w, ks); err != nil {
+			return err
+		}
+		if _, err := vault.CreateVault(root, vault.NewID(), ks); err != nil {
+			return wrapErr("creating vault", err)
+		}
+	}
+
+	ui.Phase(w, "Setting up proxy...")
+	if err := setupProxyCA(w, dryRun); err != nil {
+		return err
+	}
+
+	if !dryRun {
+		appendGitignore(w, root)
+	}
+
+	if dryRun {
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Dry-run preview for %s — no changes made", root))
+		_, _ = fmt.Fprintln(w)
+		ui.Dim(w, "Re-run without --dry-run to apply these changes.")
+		_, _ = fmt.Fprintln(w)
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Bold.Sprint("Next:"))
+	_, _ = fmt.Fprintf(w, "  Use `veil add <NAME> --value-stdin --host <host>` to vault credentials not in .env files.\n")
+	_, _ = fmt.Fprintf(w, "  Then run your tool with `veil run <command>` to inject them into outbound HTTPS.\n")
+	_, _ = fmt.Fprintln(w)
+	warnIfRootOutsideCWD(w, root)
 	return nil
 }
 

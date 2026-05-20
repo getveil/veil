@@ -407,7 +407,12 @@ func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Linux uses XDG_DATA_HOME for the CA dir; pin it inside HOME so the
+	// CA-cert assertion below also works on Linux without leaking into the
+	// developer's real ~/.local/share.
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -428,10 +433,84 @@ func TestInitNoEnvFiles(t *testing.T) {
 	if !strings.Contains(outStr, "no .env files found") {
 		t.Errorf("expected no-sources message, got: %s", outStr)
 	}
+
+	// .veil/ state dir must exist so a subsequent `veil add` can open the
+	// vault. Without this the no-env path is a silent dead end.
+	stateDir := filepath.Join(tmpDir, ".veil")
+	if info, err := os.Stat(stateDir); err != nil || !info.IsDir() {
+		t.Error(".veil/ directory not created in no-env-files path")
+	}
+
+	// vault.bin must exist; otherwise withVault would fail on next command.
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.bin")); err != nil {
+		t.Error("vault.bin not created in no-env-files path")
+	}
+
+	// CA cert must exist so `veil run` works without re-running init.
+	caPath, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("config.CAFile: %v", err)
+	}
+	if _, err := os.Stat(caPath); err != nil {
+		t.Errorf("CA cert not created at %s: %v", caPath, err)
+	}
+
+	// "Next:" block must guide the user to `veil add`.
+	if !strings.Contains(outStr, "Next:") {
+		t.Errorf("expected Next: block, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil add") {
+		t.Errorf("expected `veil add` hint, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil run") {
+		t.Errorf("expected `veil run` hint, got: %s", outStr)
+	}
+}
+
+// TestInitNoEnvFiles_DryRun verifies --dry-run on the no-env-files branch
+// still prints the no-sources notice and the dry-run preview, but creates
+// no .veil/ state dir and no CA cert.
+func TestInitNoEnvFiles_DryRun(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--dry-run"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run init with no .env files should not error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, ".veil")); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create .veil/, got err=%v", err)
+	}
+	caPath, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("config.CAFile: %v", err)
+	}
+	if _, err := os.Stat(caPath); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create CA cert, got err=%v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Dry-run preview") {
+		t.Errorf("expected dry-run preview line, got: %s", outStr)
+	}
 }
 
 func TestInitAlreadyInitialized(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
