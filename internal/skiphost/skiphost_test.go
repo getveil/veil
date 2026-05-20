@@ -228,38 +228,3 @@ func TestAdd_Duplicate(t *testing.T) {
 	}
 }
 
-func TestRemove_Existing(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "skip_hosts")
-
-	_, _ = Add(path, "api.anthropic.com")
-	_, _ = Add(path, "*.internal.corp.com")
-
-	removed, err := Remove(path, "api.anthropic.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !removed {
-		t.Error("expected removed=true")
-	}
-
-	hosts, _ := Load(path)
-	if len(hosts) != 1 || hosts[0] != "*.internal.corp.com" {
-		t.Errorf("expected [*.internal.corp.com], got %v", hosts)
-	}
-}
-
-func TestRemove_NotFound(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "skip_hosts")
-
-	_, _ = Add(path, "api.anthropic.com")
-
-	removed, err := Remove(path, "not.there.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if removed {
-		t.Error("expected removed=false for nonexistent host")
-	}
-}

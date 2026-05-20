@@ -44,7 +44,7 @@ func openVault(root string) (*vault.Vault, error) {
 // project has been initialized. On success it returns the root. On failure
 // it returns a cliError/cliErrorWith that has already been printed — the
 // caller just propagates it. Use this in commands that operate on project
-// state but don't need the vault opened (e.g. `veil skip`, `veil run`).
+// state but don't need the vault opened (e.g. `veil run`).
 func requireInitializedProject(_ *cobra.Command) (string, error) {
 	root, err := resolveRoot()
 	if err != nil {

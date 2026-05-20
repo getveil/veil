@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -10,50 +9,27 @@ import (
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
-// stdoutIsTerminal is a test seam: tests replace it to simulate a
-// pipe/redirect without closing os.Stdout.
-var stdoutIsTerminal = func() bool {
-	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
-}
-
 func listCmd() *cobra.Command {
-	var reveal, showPlaceholder, assumeYes bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all credentials in the vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd, reveal, showPlaceholder, assumeYes)
+			return runList(cmd)
 		},
 	}
-	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only; printed with audit log)")
-	cmd.Flags().BoolVar(&showPlaceholder, "placeholder", false, "show placeholder values")
-	cmd.Flags().BoolVar(&assumeYes, "yes", false, "bypass TTY safety check for --reveal (scripted use)")
-	cmd.MarkFlagsMutuallyExclusive("reveal", "placeholder")
 	return cmd
 }
 
-func runList(cmd *cobra.Command, reveal, showPlaceholder, assumeYes bool) error {
-	if reveal {
-		if !stdoutIsTerminal() && !assumeYes {
-			return cliError(
-				"refusing to print real secrets to a non-TTY stdout",
-				"Pipe or redirect detected. Re-run with --yes to override.")
-		}
-		ui.FormatWarning(cmd.ErrOrStderr(),
-			"--reveal prints plaintext secrets",
-			"This action is recorded in the audit log.")
-	}
-
+func runList(cmd *cobra.Command) error {
 	return withVault(cmd, func(root string, v *vault.Vault) error {
-		return runListInVault(cmd, root, v, reveal, showPlaceholder)
+		return runListInVault(cmd, root, v)
 	})
 }
 
-func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, showPlaceholder bool) error {
+func runListInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	creds := v.List()
 	if len(creds) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No credentials in vault.")
@@ -75,19 +51,6 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 				lastInjected[c.Name] = rows[0].Timestamp
 			}
 		}
-		// Record a single "reveal" row per invocation so `veil log` shows
-		// the action. One row is sufficient — no per-credential detail is
-		// persisted here by design (that would double-store secret metadata).
-		if reveal {
-			store.Record(audit.Injection{
-				Timestamp:      time.Now(),
-				RequestID:      "reveal-" + time.Now().UTC().Format("20060102T150405.000"),
-				AgentPID:       os.Getpid(),
-				AgentCmd:       "veil list --reveal",
-				CredentialName: fmt.Sprintf("(%d credentials)", len(creds)),
-				Location:       "reveal",
-			})
-		}
 	}
 
 	// Build display rows. Each credential produces one row.
@@ -95,7 +58,7 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 	// nameStyled mirrors name but may carry ANSI styling. Width math uses
 	// the plain name to keep alignment correct.
 	type row struct {
-		name, nameStyled, hosts, value, placeholder, source, last string
+		name, nameStyled, hosts, source, last string
 	}
 	var rows []row
 	for _, c := range creds {
@@ -108,30 +71,15 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		} else {
 			base.hosts = "(none)"
 		}
-
-		if reveal {
-			base.value = c.Real
-		}
-		if showPlaceholder {
-			base.placeholder = c.Placeholder
-		}
 		rows = append(rows, base)
 	}
 
 	// Compute column widths from data and headers.
 	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
-	valueW := len("VALUE")
-	phW := len("PLACEHOLDER")
 	for _, r := range rows {
 		nameW = maxInt(nameW, len(r.name))
 		hostsW = maxInt(hostsW, len(r.hosts))
 		sourceW = maxInt(sourceW, len(r.source))
-		if reveal {
-			valueW = maxInt(valueW, len(r.value))
-		}
-		if showPlaceholder {
-			phW = maxInt(phW, len(r.placeholder))
-		}
 	}
 
 	// Print header and rows. Pad plain text first, then apply ANSI styling
@@ -145,52 +93,18 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		}
 		return r.nameStyled + strings.Repeat(" ", pad)
 	}
-	if reveal {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.value, valueW), gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
-	} else if showPlaceholder {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.placeholder, phW), gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
-	} else {
+	_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+		ui.Muted.Sprint(padRight("NAME", nameW)), gap,
+		ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+		ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
+		ui.Muted.Sprint("LAST INJECTED"))
+	for _, r := range rows {
+		hosts := styleHosts(r.hosts, hostsW)
 		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
+			emitName(r), gap,
+			hosts, gap,
+			padRight(r.source, sourceW), gap,
+			r.last)
 	}
 	ui.Footer(out, fmt.Sprintf("%d credentials", len(creds)))
 	return nil

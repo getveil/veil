@@ -720,7 +720,7 @@ func promptSkipHostsPhase(in io.Reader, w io.Writer, root string, interactive, d
 	}
 	_, _ = fmt.Fprintln(w, "Skip hosts — any hosts the proxy should pass through untouched?")
 	ui.Dim(w, "Common examples: api.anthropic.com, *.internal.company.com")
-	ui.Dim(w, "(You can manage these later with: veil skip)")
+	ui.Dim(w, "(Pass --skip <host> to veil run for one-off bypass.)")
 	_, _ = fmt.Fprintln(w)
 	hosts := promptCSV(in, w, "Hosts to skip (comma-separated, or Enter to skip):")
 	if len(hosts) == 0 {

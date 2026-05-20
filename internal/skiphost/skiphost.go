@@ -10,7 +10,7 @@ import (
 	"github.com/getveil/veil/internal/vault"
 )
 
-const header = "# Managed by veil skip\n"
+const header = "# Managed by veil init\n"
 
 // ErrInvalidHost is returned when a host entry fails validation.
 var ErrInvalidHost = errors.New("invalid skip host")
@@ -93,28 +93,6 @@ func Add(path string, host string) (bool, error) {
 	}
 	hosts = append(hosts, host)
 	return true, Save(path, hosts)
-}
-
-// Remove deletes a host from the skip_hosts file. Returns true if the host was found
-// and removed, false if it was not present.
-func Remove(path string, host string) (bool, error) {
-	hosts, err := Load(path)
-	if err != nil {
-		return false, err
-	}
-	filtered := make([]string, 0, len(hosts))
-	found := false
-	for _, h := range hosts {
-		if h == host {
-			found = true
-			continue
-		}
-		filtered = append(filtered, h)
-	}
-	if !found {
-		return false, nil
-	}
-	return true, Save(path, filtered)
 }
 
 // parse extracts host entries from file content, skipping blank lines, comments,

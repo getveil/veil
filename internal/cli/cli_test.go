@@ -13,7 +13,6 @@ import (
 	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/envkeys"
-	"github.com/getveil/veil/internal/skiphost"
 )
 
 // TestMain probes the test-keystore seam: tests in this package set
@@ -568,54 +567,6 @@ func TestAddForceUpdatesEnvFile(t *testing.T) {
 	}
 }
 
-func TestListPlaceholder(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"list", "--path", root, "--placeholder"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("list --placeholder failed: %v", err)
-	}
-	output := out.String()
-	if !strings.Contains(output, "PLACEHOLDER") {
-		t.Errorf("expected PLACEHOLDER column header, got: %s", output)
-	}
-	// The placeholder for OPENAI_API_KEY should start with sk-proj- (format-aware).
-	if !strings.Contains(output, "sk-proj-") {
-		t.Errorf("expected placeholder value with sk-proj- prefix, got: %s", output)
-	}
-}
-
-// TestList_MutuallyExclusiveFlagsError is the F-8 regression at the cobra
-// boundary. The cobra error must (1) be returned to the caller and (2) name
-// both flags so cmd/veil/main.go can surface it. Errors that exit run() with
-// IsAlreadyPrinted == false are the ones that get printed; cobra-internal
-// validation errors fall in that bucket.
-func TestList_MutuallyExclusiveFlagsError(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"list", "--path", root, "--placeholder", "--reveal", "--yes"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for --placeholder + --reveal")
-	}
-	msg := err.Error()
-	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error missing %q: %v", want, err)
-		}
-	}
-	if IsAlreadyPrinted(err) {
-		t.Error("cobra-internal flag-group error should not be marked as already printed")
-	}
-}
-
 func TestStatusShowsProxyNotRunning(t *testing.T) {
 	root := initProject(t)
 
@@ -989,7 +940,7 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandHelp(t *testing.T) {
-	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove", "skip"}
+	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove"}
 	for _, sub := range subcommands {
 		t.Run(sub, func(t *testing.T) {
 			cmd := NewRoot("test")
@@ -1020,7 +971,7 @@ func TestNoArgsShowsHelp(t *testing.T) {
 	if !strings.Contains(output, "Available Commands") {
 		t.Errorf("expected 'Available Commands' in help output, got: %s", output)
 	}
-	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove", "skip"} {
+	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove"} {
 		if !strings.Contains(output, sub) {
 			t.Errorf("help should list %q subcommand", sub)
 		}
@@ -1278,144 +1229,6 @@ func TestManyCredentials(t *testing.T) {
 	}
 	if !strings.Contains(output, "51 credentials") {
 		t.Errorf("expected 51 credentials in footer, got: %s", output)
-	}
-}
-
-func TestSkipAdd(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("skip add failed: %v", err)
-	}
-
-	if !strings.Contains(out.String(), "api.anthropic.com") {
-		t.Errorf("expected confirmation output, got %q", out.String())
-	}
-
-	hosts, err := skiphost.Load(config.SkipHostsFile(root))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(hosts) != 1 || hosts[0] != "api.anthropic.com" {
-		t.Errorf("expected [api.anthropic.com], got %v", hosts)
-	}
-}
-
-func TestSkipDuplicate(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd2.SetOut(out)
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("skip duplicate failed: %v", err)
-	}
-
-	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
-	if len(hosts) != 1 {
-		t.Errorf("expected 1 host, got %d", len(hosts))
-	}
-}
-
-func TestSkipList(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	cmd2.SetOut(new(bytes.Buffer))
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "*.internal.com"})
-	_ = cmd2.Execute()
-
-	cmd3 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd3.SetOut(out)
-	cmd3.SetErr(new(bytes.Buffer))
-	cmd3.SetArgs([]string{"skip", "--path", root, "--list"})
-	if err := cmd3.Execute(); err != nil {
-		t.Fatalf("skip list failed: %v", err)
-	}
-	output := out.String()
-	if !strings.Contains(output, "api.anthropic.com") || !strings.Contains(output, "*.internal.com") {
-		t.Errorf("expected both hosts in output, got %q", output)
-	}
-}
-
-func TestSkipRemove(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd2.SetOut(out)
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "--remove", "api.anthropic.com"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("skip remove failed: %v", err)
-	}
-
-	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
-	if len(hosts) != 0 {
-		t.Errorf("expected empty list, got %v", hosts)
-	}
-}
-
-func TestSkipRemoveNotFound(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "--remove", "not.there.com"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Error("expected error for removing nonexistent host")
-	}
-}
-
-// Regression: a bare "*" in skip_hosts becomes NO_PROXY=*, which Go's httpproxy
-// (and curl/requests) treat as bypass-all — silently disabling Veil for the
-// project. The skip command must reject it.
-func TestSkipRejectsBareWildcard(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "*"})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("expected veil skip \"*\" to fail")
-	}
-
-	hosts, err := skiphost.Load(config.SkipHostsFile(root))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(hosts) != 0 {
-		t.Errorf("expected no hosts persisted, got %v", hosts)
 	}
 }
 

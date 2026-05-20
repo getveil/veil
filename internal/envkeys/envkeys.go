@@ -63,7 +63,3 @@ var CAKeys = []string{
 	"HTTPLIB2_CA_CERTS",
 	"CARGO_HTTP_CAINFO",
 }
-
-// JavaToolOptions is the env var the JVM consults at startup. The runner
-// merges Veil's truststore flags with any pre-existing value before re-export.
-const JavaToolOptions = "JAVA_TOOL_OPTIONS"

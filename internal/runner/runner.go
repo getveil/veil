@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -88,15 +87,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
 	}
 
-	bundlePEM, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return nil, fmt.Errorf("read ca bundle: %w", err)
-	}
-	javaTruststorePath, javaTruststorePassword, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
-	if err != nil {
-		return nil, fmt.Errorf("build java truststore: %w", err)
-	}
-
 	// Resolve the child command to a realpath before touching the proxy or
 	// spawning anything — this is the forensic anchor for audit rows and the
 	// banner. A shadow binary in a writable PATH dir is a real threat for a
@@ -132,9 +122,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if warning := formatStartupWarning(credCount); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", ui.Warning.Sprint("! ")+warning)
 	}
-	if bw := bypassWarningForCommand(runtime.GOOS, resolvedCmd); bw != nil {
-		fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Warning.Sprint("!"), bw.Message)
-	}
 
 	// Strip shell-exported vars whose name matches a vault credential and
 	// Veil's own control vars. Announce the strip loudly — the product's
@@ -146,7 +133,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
 	environ := os.Environ()
-	env, strippedVault, strippedInternal := buildChildEnv(environ, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword, cfg.SkipHosts, entries)
+	env, strippedVault, strippedInternal := buildChildEnv(environ, proxyURL, bundlePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -229,9 +216,8 @@ type vaultEntry struct {
 }
 
 // buildChildEnv constructs the env slice exec'd into the agent. It strips
-// pre-existing proxy/CA vars (replaced with Veil's loopback proxy + bundle),
-// merges any caller-set JAVA_TOOL_OPTIONS with Veil's truststore flags, and
-// removes vars matching vault-credential names (replacing them with the
+// pre-existing proxy/CA vars (replaced with Veil's loopback proxy + bundle)
+// and removes vars matching vault-credential names (replacing them with the
 // credential's placeholder so the child still has a value under that name).
 // Veil's own control vars (envkeys.VeilInternalKeys) are stripped without
 // reinjection — VEIL_PASSPHRASE in particular would let the agent decrypt
@@ -240,7 +226,7 @@ type vaultEntry struct {
 // Returns the child env, the names that were stripped because they matched a
 // vault credential (original casing, for the loud user-facing warning), and
 // the names of Veil-internal vars that were stripped (for a muted notice).
-func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -249,25 +235,14 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 		vaultMap[strings.ToUpper(e.Name)] = e.Placeholder
 	}
 
-	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath, javaTruststorePassword)
-	javaToolOpts := veilJavaFlags
-
 	stripped := make([]string, 0, len(environ))
 	strippedVault := make([]string, 0)
 	strippedInternal := make([]string, 0)
 	reinject := make([]string, 0)
 	for _, kv := range environ {
-		key, value, ok := strings.Cut(kv, "=")
+		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
 			stripped = append(stripped, kv)
-			continue
-		}
-		// JAVA_TOOL_OPTIONS is dropped from the passthrough set; its value is
-		// merged into the Veil-injected JAVA_TOOL_OPTIONS below.
-		if strings.EqualFold(key, envkeys.JavaToolOptions) {
-			if existing := strings.TrimSpace(value); existing != "" {
-				javaToolOpts = existing + " " + veilJavaFlags
-			}
 			continue
 		}
 		if isAnyEnvKey(key, envkeys.ProxyKeys) || isAnyEnvKey(key, envkeys.CAKeys) {
@@ -300,7 +275,6 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 	for _, k := range envkeys.CAKeys {
 		env = append(env, k+"="+bundlePath)
 	}
-	env = append(env, envkeys.JavaToolOptions+"="+javaToolOpts)
 	// Re-injected placeholders go last for readability. The proxy/CA filter
 	// above skips matching names before the vault branch, so there is no
 	// collision with the proxy/CA vars we just appended.

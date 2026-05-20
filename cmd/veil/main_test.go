@@ -83,7 +83,7 @@ func TestRun_PrintsCobraInternalError(t *testing.T) {
 	root := cli.NewRoot("test")
 	var stderr bytes.Buffer
 	code := run(context.Background(), root,
-		[]string{"list", "--placeholder", "--reveal", "--yes"},
+		[]string{"add", "FOO", "--value", "x", "--value-stdin"},
 		io.Discard, &stderr)
 
 	if code == 0 {
@@ -93,7 +93,7 @@ func TestRun_PrintsCobraInternalError(t *testing.T) {
 	if s == "" {
 		t.Fatal("stderr was empty; cobra-internal error was swallowed")
 	}
-	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
+	for _, want := range []string{"value", "value-stdin", "none of the others"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("stderr missing %q:\n%s", want, s)
 		}
