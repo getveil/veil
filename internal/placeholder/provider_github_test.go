@@ -28,7 +28,7 @@ func TestProviderGitHub(t *testing.T) {
 	t.Run("match_name", func(t *testing.T) {
 		// Name-only fallback requires a credential-shaped value length so CI
 		// metadata like GITHUB_REF_NAME=main isn't misclassified as a secret.
-		if !prov.Match("GITHUB_TOKEN", strings.Repeat("a", 40)) {
+		if !prov.Match("GITHUB_TOKEN", "abcdef0123456789abcdef0123456789abcdef01") {
 			t.Fatal("should match GITHUB in name for credential-shaped value")
 		}
 	})

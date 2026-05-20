@@ -145,10 +145,13 @@ func TestFormatProviders(t *testing.T) {
 			t.Run("match_key", func(t *testing.T) {
 				// Stripe / Resend require the value to also carry a real
 				// secret-key prefix; providers without that gate match on
-				// the name hint alone (legacy "anything" value).
+				// the name hint alone, but the value must still be
+				// credential-shaped (clears passesValueShapeGate) — using
+				// a varied >=20-char fallback so the name-hint subtest
+				// reaches the per-provider matcher's name path.
 				valueForKey := tt.matchKeyValue
 				if valueForKey == "" {
-					valueForKey = "anything"
+					valueForKey = "abcdef0123456789abcdef" // 22 chars, distinct=16
 				}
 				if !prov.Match(tt.matchKey, valueForKey) {
 					t.Fatalf("should match key %s with value %q", tt.matchKey, valueForKey)

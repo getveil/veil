@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+// variedSentinelBody mirrors the varied-alphabet helper used in the
+// providers_contract_test.go test package; duplicated here because
+// providers_contract_test.go is package placeholder_test and this file
+// is package placeholder. Kept short and inlined rather than promoted
+// to a shared helper.
+func variedSentinelBody(n int) string {
+	const alphabet = "abcdef0123456789"
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = alphabet[i%len(alphabet)]
+	}
+	return string(b)
+}
+
 // TestGenerateAlwaysContainsSentinel asserts that every placeholder generated
 // by the engine contains the detection sentinel. This lets the proxy's
 // fail-closed guard detect a leaked placeholder with a single substring scan.
@@ -14,27 +28,27 @@ func TestGenerateAlwaysContainsSentinel(t *testing.T) {
 		name  string
 		value string
 	}{
-		{"openai_prefix", "SOME_KEY", "sk-proj-abcdef0123456789abcdef01"},
-		{"openai_by_name", "OPENAI_API_KEY", "arbitrary-value-here-12345"},
-		{"anthropic_prefix", "SOME_KEY", "sk-ant-api03-" + strings.Repeat("x", 95)},
-		{"anthropic_by_name", "ANTHROPIC_API_KEY", strings.Repeat("y", 40)},
-		{"github_ghp", "SOME_KEY", "ghp_" + strings.Repeat("a", 36)},
-		{"github_pat", "SOME_KEY", "github_pat_" + strings.Repeat("a", 22) + "_" + strings.Repeat("b", 59)},
-		{"github_by_name", "GITHUB_TOKEN", strings.Repeat("z", 40)},
-		{"stripe_live", "SOME_KEY", "sk_live_" + strings.Repeat("a", 24)},
-		{"stripe_test", "SOME_KEY", "sk_test_" + strings.Repeat("a", 24)},
-		{"stripe_by_name", "STRIPE_SECRET_KEY", "sk_live_" + strings.Repeat("a", 24)},
-		{"slack_bot", "SOME_KEY", "xoxb-" + strings.Repeat("a", 50)},
-		{"slack_by_name", "SLACK_TOKEN", strings.Repeat("b", 40)},
-		{"sendgrid_prefix", "SOME_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},
-		{"sendgrid_by_name", "SENDGRID_API_KEY", strings.Repeat("a", 60)},
-		{"supabase_by_name", "SUPABASE_ANON_KEY", strings.Repeat("a", 40)},
-		{"google_prefix", "SOME_KEY", "AIza" + strings.Repeat("a", 35)},
-		{"replicate_prefix", "SOME_KEY", "r8_" + strings.Repeat("a", 37)},
-		{"huggingface_prefix", "SOME_KEY", "hf_" + strings.Repeat("a", 34)},
-		{"vercel_prefix", "SOME_KEY", "vercel_" + strings.Repeat("a", 16)},
-		{"gitlab_prefix", "SOME_KEY", "glpat-" + strings.Repeat("a", 20)},
-		{"resend_prefix", "SOME_KEY", "re_" + strings.Repeat("a", 20)},
+		{"openai_prefix", "SOME_KEY", "sk-proj-" + variedSentinelBody(40)},
+		{"openai_by_name", "OPENAI_API_KEY", variedSentinelBody(40)},
+		{"anthropic_prefix", "SOME_KEY", "sk-ant-api03-" + variedSentinelBody(95)},
+		{"anthropic_by_name", "ANTHROPIC_API_KEY", variedSentinelBody(40)},
+		{"github_ghp", "SOME_KEY", "ghp_" + variedSentinelBody(36)},
+		{"github_pat", "SOME_KEY", "github_pat_" + variedSentinelBody(22) + "_" + variedSentinelBody(59)},
+		{"github_by_name", "GITHUB_TOKEN", variedSentinelBody(40)},
+		{"stripe_live", "SOME_KEY", "sk_live_" + variedSentinelBody(24)},
+		{"stripe_test", "SOME_KEY", "sk_test_" + variedSentinelBody(24)},
+		{"stripe_by_name", "STRIPE_SECRET_KEY", "sk_live_" + variedSentinelBody(24)},
+		{"slack_bot", "SOME_KEY", "xoxb-" + variedSentinelBody(50)},
+		{"slack_by_name", "SLACK_TOKEN", variedSentinelBody(40)},
+		{"sendgrid_prefix", "SOME_KEY", "SG." + variedSentinelBody(22) + "." + variedSentinelBody(43)},
+		{"sendgrid_by_name", "SENDGRID_API_KEY", variedSentinelBody(60)},
+		{"supabase_by_name", "SUPABASE_ANON_KEY", variedSentinelBody(40)},
+		{"google_prefix", "SOME_KEY", "AIza" + variedSentinelBody(35)},
+		{"replicate_prefix", "SOME_KEY", "r8_" + variedSentinelBody(37)},
+		{"huggingface_prefix", "SOME_KEY", "hf_" + variedSentinelBody(34)},
+		{"vercel_prefix", "SOME_KEY", "vercel_" + variedSentinelBody(16)},
+		{"gitlab_prefix", "SOME_KEY", "glpat-" + variedSentinelBody(20)},
+		{"resend_prefix", "SOME_KEY", "re_" + variedSentinelBody(20)},
 		{"charclass_fallback", "UNKNOWN_KEY", "arbitrarySecret12345_value"},
 	}
 

@@ -18,7 +18,7 @@ func TestProviderSendGrid(t *testing.T) {
 		// Name-only fallback requires a credential-shaped value length so
 		// SENDGRID_FROM_EMAIL=foo@bar.com and similar config vars aren't
 		// misclassified.
-		if !prov.Match("SENDGRID_API_KEY", strings.Repeat("a", 40)) {
+		if !prov.Match("SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
 			t.Fatal("should match SENDGRID in name for credential-shaped value")
 		}
 	})

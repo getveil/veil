@@ -14,6 +14,20 @@ type sample struct {
 	value   string
 }
 
+// variedBody returns n varied alphanumeric characters so a token body
+// clears the distinct-byte floor in passesValueShapeGate. Real tokens
+// are random alphanumerics — using Repeat("a", N) here produces 1-byte
+// bodies that are pathological for the gate even though no production
+// token would ever look like that.
+func variedBody(n int) string {
+	const alphabet = "abcdef0123456789"
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = alphabet[i%len(alphabet)]
+	}
+	return string(b)
+}
+
 // providerSamples supplies a match-triggering input for each known provider.
 // Every entry here must correspond to a registered provider; every registered
 // provider must have an entry here. Run TestAllRegisteredProvidersHaveSamples_Dynamic
@@ -21,20 +35,20 @@ type sample struct {
 // hardcoded list.
 var providerSamples = map[string]sample{
 	// Hand-written providers.
-	"openai":    {"OPENAI_API_KEY", "sk-proj-" + strings.Repeat("a", 40)},
-	"anthropic": {"ANTHROPIC_API_KEY", "sk-ant-api03-" + strings.Repeat("a", 95)},
-	"github":    {"GITHUB_TOKEN", "ghp_" + strings.Repeat("a", 36)},
-	"stripe":    {"STRIPE_KEY", "sk_live_" + strings.Repeat("a", 24)},
-	"slack":     {"SLACK_TOKEN", "xoxb-" + strings.Repeat("a", 50)},
-	"supabase":  {"SUPABASE_KEY", "sbp_" + strings.Repeat("a", 36)},
-	"sendgrid":  {"SENDGRID_API_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},
+	"openai":    {"OPENAI_API_KEY", "sk-proj-" + variedBody(40)},
+	"anthropic": {"ANTHROPIC_API_KEY", "sk-ant-api03-" + variedBody(95)},
+	"github":    {"GITHUB_TOKEN", "ghp_" + variedBody(36)},
+	"stripe":    {"STRIPE_KEY", "sk_live_" + variedBody(24)},
+	"slack":     {"SLACK_TOKEN", "xoxb-" + variedBody(50)},
+	"supabase":  {"SUPABASE_KEY", "sbp_" + variedBody(36)},
+	"sendgrid":  {"SENDGRID_API_KEY", "SG." + variedBody(22) + "." + variedBody(43)},
 	// Format providers (declarative — registered in provider_formats.go).
-	"google":      {"GOOGLE_API_KEY", "AIza" + strings.Repeat("a", 35)},
-	"replicate":   {"REPLICATE_API_TOKEN", "r8_" + strings.Repeat("a", 37)},
-	"huggingface": {"HF_TOKEN", "hf_" + strings.Repeat("a", 34)},
-	"vercel":      {"VERCEL_TOKEN", "vercel_" + strings.Repeat("a", 20)},
-	"gitlab":      {"GITLAB_TOKEN", "glpat-" + strings.Repeat("a", 20)},
-	"resend":      {"RESEND_API_KEY", "re_" + strings.Repeat("a", 20)},
+	"google":      {"GOOGLE_API_KEY", "AIza" + variedBody(35)},
+	"replicate":   {"REPLICATE_API_TOKEN", "r8_" + variedBody(37)},
+	"huggingface": {"HF_TOKEN", "hf_" + variedBody(34)},
+	"vercel":      {"VERCEL_TOKEN", "vercel_" + variedBody(20)},
+	"gitlab":      {"GITLAB_TOKEN", "glpat-" + variedBody(20)},
+	"resend":      {"RESEND_API_KEY", "re_" + variedBody(20)},
 }
 
 // providerRegexes validates the structural shape of Generate output. Add
