@@ -8,14 +8,16 @@
 
 **.gitignore protected your secrets from git. Veil protects them from AI.**
 
-Veil is a local CLI that sits between your AI coding agents and the network via a local HTTPS proxy. It replaces real secrets with format-aware placeholders, then injects the real credentials at the proxy layer — so the agent never sees them. Works with any agent or tool that respects `HTTP_PROXY` / `HTTPS_PROXY` environment variables, including Claude Code, Cursor, curl, and most HTTP clients.
+Veil moves the Bearer API keys in your `.env` into your OS keychain, leaves
+format-preserving placeholders behind, and injects the real values at a local
+HTTPS proxy so the agent never sees them. One promise, one wire, no daemon.
 
-> **What's in scope today.** v0.1.x mediates HTTP Bearer credentials
-> for the providers listed below. Keyed-crypto schemes (HMAC webhook
-> signing, AWS SigV4, GitHub App JWTs, Google service-accounts) and
-> HTTP Basic are not in scope — Veil leaves them in place and won't
-> pretend to manage them. See [docs/MVP.md](docs/MVP.md) for the full
-> surface.
+> **What's in scope.** v1 mediates HTTP `Authorization: Bearer` credentials
+> for the providers listed below, sourced from `.env` files. HTTP Basic,
+> keyed-crypto schemes (AWS SigV4, GitHub App JWTs, HMAC webhooks), shell
+> environment variables, MCP config files, and non-HTTP protocols are not in
+> scope — Veil leaves them alone. See [docs/MVP.md](docs/MVP.md) for the full
+> contract.
 
 ## Demo
 
@@ -25,15 +27,30 @@ Veil is a local CLI that sits between your AI coding agents and the network via 
 
 ## Why this exists
 
-Your AI agent can read every secret in your project — every `.env`, every key it stumbles across in your code. `.gitignore` stopped this at the git boundary years ago. Nothing has stopped it at the AI boundary. Veil is that gap-filler.
+Your AI agent can read every secret in your project — every `.env` it
+stumbles across in your code. `.gitignore` stopped this at the git boundary
+years ago. Nothing has stopped it at the AI boundary. Veil is that
+gap-filler.
 
 ## How it works
 
-1. `veil init` scans your `.env` files, moves secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
-2. `veil run <agent>` starts a local HTTPS proxy and launches your agent with `HTTP_PROXY` / `HTTPS_PROXY` set. The proxy swaps placeholders for real credentials on outbound requests.
+1. `veil init` scans your `.env` files, moves Bearer secrets into your OS keychain, and drops in placeholders that look real (correct prefix, length, charset).
+2. `veil run <agent>` starts a local HTTPS proxy and launches your agent with `HTTP_PROXY` / `HTTPS_PROXY` set. The proxy swaps placeholders for real credentials on outbound `Authorization: Bearer` requests.
 3. Every credential injection and agent action is logged to local SQLite. Query with `veil log`.
 
 The agent thinks it has real tokens. It doesn't.
+
+## Quick start
+
+```
+brew install getveil/tap/veil
+veil init
+veil run claude
+```
+
+That's the whole flow. `veil init` migrates secrets out of `.env` and
+installs the local CA; `veil run claude` (or `cursor`, `curl`, anything that
+honours `HTTPS_PROXY`) routes outbound traffic through the proxy.
 
 ## Install
 
@@ -106,7 +123,7 @@ make build
 ## Usage
 
 ```bash
-# Initialize — migrate secrets to keychain, drop in placeholders
+# Initialize — migrate Bearer secrets in .env to keychain, drop in placeholders
 veil init
 
 # Run an agent through the proxy
@@ -117,8 +134,8 @@ veil run cursor
 veil status
 veil list
 
-# Add a secret manually
-veil add GITHUB_TOKEN --value ghp_abc123
+# Add a Bearer credential manually (e.g. for a custom internal API)
+veil add INTERNAL_TOKEN --value-stdin --host api.mycompany.com
 
 # View audit logs
 veil log
@@ -134,9 +151,9 @@ veil uninstall --dry-run    # preview the plan without changes
 | | Status |
 |---|---|
 | **Bearer providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab |
+| **Unknown Bearer secrets** | Detected by entropy + name pattern; needs manual `veil add --host` to scope |
 | **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
 | **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |
-| **Roadmap** | Google service-accounts · HMAC webhooks · gRPC · Windows |
 
 ## How Veil compares
 
@@ -154,12 +171,14 @@ Veil isn't a replacement for a secrets manager — it sits beside one. Secrets m
 <details>
 <summary><strong>What secrets does Veil manage today?</strong></summary>
 
-Anything sent as HTTP Bearer — GitHub PATs, OpenAI/Anthropic, Stripe,
-Slack, and the remaining Bearer providers in the support table above.
+Anything sent as HTTP `Authorization: Bearer` for the providers listed in
+the support table — OpenAI, Anthropic, Stripe, Slack, GitHub PATs, and the
+rest. Unknown Bearer-shaped secrets in `.env` are detected by entropy +
+name-pattern but need a manual `veil add --host <host>` to be routed.
 **Not in scope:** HTTP Basic, AWS SigV4, GitHub App JWTs, Google
-service-accounts, HMAC webhook signing. If Veil can't safely manage a
-credential, `veil init` leaves it in `.env` and tells you — it never
-half-manages a secret.
+service-accounts, HMAC webhook signing, shell-environment secrets, MCP
+config files. If Veil can't safely manage a credential, `veil init` leaves
+it in `.env` and tells you — it never half-manages a secret.
 </details>
 
 <details>
@@ -187,12 +206,6 @@ Then Veil doesn't protect you. Veil is not a sandbox. It assumes a *cooperative-
 </details>
 
 <details>
-<summary><strong>Does it work with non-HTTP protocols (WebSockets, gRPC)?</strong></summary>
-
-HTTPS-over-CONNECT and plain HTTP today. WebSockets that upgrade through the proxy traverse it but Veil does not inject into the WS frame body. gRPC over HTTP/2 is on the roadmap. If you need this, [open an issue](https://github.com/getveil/veil/issues/new).
-</details>
-
-<details>
 <summary><strong>Is this production-ready?</strong></summary>
 
 No. Pre-1.0. Designed for **dev-machine** use with AI coding agents. Veil is not a substitute for runtime secret management in production services.
@@ -203,7 +216,7 @@ No. Pre-1.0. Designed for **dev-machine** use with AI coding agents. Veil is not
 ```
 cmd/veil/       CLI entrypoint
 internal/
-  cli/          Command definitions (init, run, status, add, list, log, remove, skip, uninstall)
+  cli/          Command definitions (init, run, status, add, list, log, remove, uninstall)
   proxy/        HTTPS proxy with credential injection
   vault/        OS keychain abstraction
   placeholder/  Format-aware placeholder generation
@@ -212,7 +225,7 @@ internal/
   config/       Project config management
   envkeys/      Canonical env-var key list (proxy + CA bundle)
   runner/       Agent process management
-  skiphost/     Persistent skip-host list
+  skiphost/     NO_PROXY allow-list (ephemeral --skip + persistent file)
   ui/           Terminal output
 ```
 

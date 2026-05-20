@@ -8,20 +8,72 @@ expect breaking changes in any 0.x release; we will call them out under
 
 ## [Unreleased]
 
+## [0.2.0]
+
+Scope reduction release. v0.2.0 narrows Veil to its core promise — discover
+Bearer API keys in `.env` files, vault them in the OS keychain, inject them
+on outbound HTTPS requests — and removes every surface outside that line.
+See [docs/MVP.md](docs/MVP.md) for the v1 scope contract.
+
 ### Removed
 
-- **AWS SigV4 and GitHub App JWT signers** — both schemes are out of scope
-  for v1. The `--scheme aws` / `--scheme github_app` flags on `veil add`,
-  the hidden `--experimental` gate, and all AWS / GitHub-App specific
-  flags (`--aws-access-key-id`, `--aws-session-token-file`,
+- **Keyed-crypto signers (AWS SigV4 + GitHub App JWT).** Both schemes
+  required Veil to re-sign requests with credentials the agent never
+  saw on the wire; the failure modes around mismatch were the largest
+  source of wire-level launch blockers. Removed entirely from the
+  proxy, vault, CLI, and audit log. The `--scheme aws` /
+  `--scheme github_app` flags on `veil add`, the hidden
+  `--experimental` gate, and all AWS / GitHub-App-specific flags
+  (`--aws-access-key-id`, `--aws-session-token-file`,
   `--aws-session-token-stdin`, `--github-app-id`,
   `--github-installation-id`) are gone. Existing vault entries with
-  `Scheme: "aws"` or `Scheme: "github_app"` are silently skipped at load
-  time so old vaults remain openable; the underlying records remain on
-  disk and can be removed with `veil init --force` or `veil remove`.
-- The hidden `veil log --signer-failed` flag is removed; the audit
-  column it queried (`signer_error`) is retained for now and will be
-  cleaned up in a later schema pass.
+  `Scheme: "aws"` or `Scheme: "github_app"` are silently skipped at
+  load time so old vaults remain openable; the underlying records can
+  be removed with `veil init --force` or `veil remove`.
+- **HTTP Basic auth.** Mixed-token format (username + password joined
+  with `:`) prevented safe rewriting when only one half was Veil-managed.
+  Provider definitions for `npm`, `pypi`, `docker_hub`, and `twilio`,
+  plus the `Authorization: Basic` decoder and Basic-aware correlator,
+  are removed. Users needing one-off Bearer routing can still use
+  `veil add NAME --value-stdin --host <host>`.
+- **MCP config scanning.** v1 scans `.env` files only. Bearer tokens in
+  Claude Desktop / Cursor / other MCP server configs are no longer
+  migrated by `veil init` and `veil uninstall` no longer touches them.
+- **Shell-environment scanning.** v1 does not look at `~/.zshrc` /
+  `~/.bashrc` / inherited environment for secrets.
+- **URL-with-password DSN handling.** `postgresql://user:pass@…` style
+  DSNs in `.env` are no longer parsed for their password component.
+- **Transform-mismatch detector + `veil log --suspect`.** Without
+  signers and Basic, the WARN-only mismatch heuristic was a relic.
+  The `suspect` audit column is dropped from the schema.
+- **`veil skip` command.** Persistent skip-host editing via the CLI is
+  removed. The runtime `--skip <host>` flag on `veil run` (ephemeral,
+  repeatable) remains, and the on-disk `skip_hosts` file is still
+  honored.
+- **`veil list --reveal`.** Vault values are never printed by `veil list`.
+- **JVM truststore injection (`JAVA_TOOL_OPTIONS`).** Java-side
+  interception was deferred. Veil no longer writes a per-session
+  truststore.
+- **Runner startup bypass warnings** for Docker-on-macOS / dotnet /
+  sccache. The information is in [docs/MVP.md](docs/MVP.md); the
+  per-invocation banner spam is gone.
+- **Hidden `veil log --signer-failed` flag** and its `signer_error`
+  audit column.
+- **Hidden `--experimental` gate on `veil add`.**
+
+### Changed
+
+- `veil init` summary collapses prior three-section output ("Managed /
+  Not managed / Unrecognized") to two ("Vaulted / Skipped") aligned
+  with the v1 binary classification.
+- Threat model updated to remove signer / Basic / MCP sections — see
+  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+- README rewritten around the single v1 promise and pruned FAQ.
+- Provider list trimmed to the surviving Bearer set: OpenAI, Anthropic,
+  Stripe (secret keys), Slack, Google, GitHub PATs, Resend, Vercel,
+  Replicate, Hugging Face, GitLab, SendGrid, Supabase. Unknown
+  Bearer-shaped values are still vaulted with a generic placeholder
+  but require `veil add --host` to scope.
 
 ## [0.1.1] — 2026-05-14
 
@@ -103,16 +155,12 @@ First public release.
   respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, `curl`, the
   standard language SDKs, and `gh`. The agent sees only placeholders; Veil
   swaps in real credentials at the network boundary.
-- Format-aware placeholders for 22+ providers across cloud, AI, dev tooling,
-  and messaging: AWS (access keys + secret + STS session tokens), GitHub
-  (PATs + App private keys), OpenAI, Anthropic, Google, Stripe, Slack,
-  Twilio, SendGrid, Resend, Postmark, Supabase, Vercel, Replicate, Hugging
-  Face, Datadog, GitLab, npm, PyPI, Docker Hub, Quay, GCR. Plus a
-  character-class fallback for unknown formats — the placeholder matches the
-  original credential's length and character class so regex-based consumers
-  still see the right type.
-- SigV4 re-signing for AWS requests so swapped credentials produce correct
-  signatures at the proxy boundary.
+- Format-aware placeholders across cloud, AI, dev tooling, and messaging:
+  GitHub PATs, OpenAI, Anthropic, Google, Stripe, Slack, Twilio, SendGrid,
+  Resend, Supabase, Vercel, Replicate, Hugging Face, GitLab, npm, PyPI,
+  Docker Hub. Plus a character-class fallback for unknown formats — the
+  placeholder matches the original credential's length and character class
+  so regex-based consumers still see the right type.
 - Fail-closed guard: if a placeholder body or basic-auth header somehow
   reaches the outbound request after rewriting, the request is rejected
   rather than forwarded raw.
@@ -185,6 +233,7 @@ First public release.
 - Release artifacts are signed (cosign) and attested (SLSA). End-user
   verification instructions live in [README.md](README.md#direct-download).
 
-[Unreleased]: https://github.com/getveil/veil/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/getveil/veil/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/getveil/veil/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/getveil/veil/releases/tag/v0.1.1
 [0.1.0]: https://github.com/getveil/veil/releases/tag/v0.1.0

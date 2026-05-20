@@ -21,7 +21,7 @@ In scope:
 - The Veil CLI and proxy (`cmd/veil`, `internal/proxy`, `internal/vault`)
 - Placeholder generation and matching (`internal/placeholder`)
 - Audit logging integrity (`internal/audit`)
-- Project secret discovery (`internal/scanner` for `.env` files; `internal/mcpconfig` for MCP server configs)
+- Project secret discovery (`internal/scanner` for `.env` files)
 - Keychain integration (`internal/vault/keystore_keyring.go`)
 
 Out of scope (report upstream where applicable):

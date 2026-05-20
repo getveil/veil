@@ -93,7 +93,7 @@ func TestAdd_RejectsInvalid(t *testing.T) {
 func TestLoad_FiltersInvalidEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
-	content := "# Managed by veil skip\napi.anthropic.com\n*\n\n...\n*.internal.corp.com\nfoo,bar\n"
+	content := "# Managed by veil init\napi.anthropic.com\n*\n\n...\n*.internal.corp.com\nfoo,bar\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestLoad_EmptyFile(t *testing.T) {
 func TestLoad_WithEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
-	content := "# Managed by veil skip\napi.anthropic.com\n*.internal.corp.com\n"
+	content := "# Managed by veil init\napi.anthropic.com\n*.internal.corp.com\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
