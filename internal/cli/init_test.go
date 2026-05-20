@@ -1412,7 +1412,13 @@ func TestInit_RejectsScanShellEnvFlag(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-shell-env"})
-	if err := cmd.Execute(); err == nil {
+	err := cmd.Execute()
+	if err == nil {
 		t.Fatal("expected error from removed --scan-shell-env flag, got nil")
+	}
+	// Pin the specific flag name so a rename like `--shell-scan` still trips
+	// the test instead of passing on any "unknown flag" error.
+	if !strings.Contains(err.Error(), "scan-shell-env") {
+		t.Errorf("expected 'scan-shell-env' in error, got: %v", err)
 	}
 }

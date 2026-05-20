@@ -75,9 +75,9 @@ func printUnvaultedWarning(w io.Writer, names []string) {
 		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
 	}
 	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("the agent will see their real values. move them into your project's .env file and run"))
+		ui.Muted.Sprint("the agent will see their real values. use `veil add NAME` to vault each one,"))
 	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("`veil init --force` to capture them, or pass --allow-env-secret NAME to confirm pass-through."))
+		ui.Muted.Sprint("or pass --allow-env-secret NAME to confirm intentional pass-through."))
 }
 
 // plural is a local helper to avoid depending on the cli package.
