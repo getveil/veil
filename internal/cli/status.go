@@ -128,7 +128,6 @@ func runStatusInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	}
 	if leaked > 0 {
 		_, _ = fmt.Fprintf(w, "  Leaks        %d\n", leaked)
-		_, _ = fmt.Fprintf(w, "               %s\n", ui.Muted.Sprint("Run `veil log --suspect` for details."))
 	}
 
 	if len(hosts) > 0 {

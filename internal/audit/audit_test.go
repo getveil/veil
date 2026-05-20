@@ -70,8 +70,8 @@ func TestOpenAndSchema(t *testing.T) {
 	if err := s.db.QueryRow("SELECT v FROM schema_version").Scan(&v); err != nil {
 		t.Fatalf("query schema_version: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("schema_version = %d, want 1", v)
+	if v != 4 {
+		t.Errorf("schema_version = %d, want 4", v)
 	}
 }
 
@@ -217,13 +217,6 @@ func TestSummary(t *testing.T) {
 	blockedInj2.BytesAfter = 0
 	s.Record(blockedInj2)
 
-	// Add a suspect row — must NOT count toward total, hosts, or last.
-	suspect := makeInjection("suspect.example.com", "susp-key", base.Add(7*time.Second))
-	suspect.Location = "mismatch_suspected"
-	suspect.SuspectFlag = true
-	suspect.AuthSignal = "authorization_header"
-	s.Record(suspect)
-
 	s.flushPending()
 
 	total, blocked, leaked, hostList, last, err := s.Summary(base)
@@ -232,7 +225,7 @@ func TestSummary(t *testing.T) {
 	}
 
 	if total != 3 {
-		t.Errorf("total = %d, want 3 (suspect row must be excluded)", total)
+		t.Errorf("total = %d, want 3", total)
 	}
 	if blocked != 2 {
 		t.Errorf("blocked = %d, want 2", blocked)
@@ -241,18 +234,13 @@ func TestSummary(t *testing.T) {
 		t.Errorf("leaked = %d, want 0", leaked)
 	}
 	if len(hostList) != 3 {
-		t.Errorf("hosts = %v, want 3 distinct (suspect host must be excluded)", hostList)
-	}
-	for _, h := range hostList {
-		if h == "suspect.example.com" {
-			t.Errorf("suspect host leaked into hostList: %v", hostList)
-		}
+		t.Errorf("hosts = %v, want 3 distinct", hostList)
 	}
 	if last == nil {
 		t.Fatal("lastInjection is nil")
 	}
 	if last.Host != "api.cohere.com" {
-		t.Errorf("last host = %q, want api.cohere.com (suspect row must be excluded)", last.Host)
+		t.Errorf("last host = %q, want api.cohere.com", last.Host)
 	}
 }
 
@@ -438,39 +426,12 @@ func TestQueryBlockedFilter(t *testing.T) {
 	}
 }
 
-func TestSchemaHasSuspectColumns(t *testing.T) {
-	dir := t.TempDir()
-	db, err := Open(filepath.Join(dir, "audit.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	rows, err := db.db.Query(`PRAGMA table_info(injections)`)
-	if err != nil {
-		t.Fatalf("pragma: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	found := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt interface{}
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		found[name] = true
-	}
-	for _, col := range []string{"suspect_flag", "auth_signal"} {
-		if !found[col] {
-			t.Errorf("missing column %q", col)
-		}
-	}
-}
-
-func TestSchemaMigratesFromV1(t *testing.T) {
+// TestSchemaMigratesV3ToV4 verifies that opening a database with a v1/v2/v3
+// schema (with suspect_flag / auth_signal / signer_error columns) cleanly
+// upgrades to v4 by dropping the legacy injections table and recreating it
+// with the simplified v4 shape. Audit data is per-session ephemeral state,
+// so the migration deliberately discards old rows rather than copy-rebuild.
+func TestSchemaMigratesV3ToV4(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "audit.db")
 
@@ -479,10 +440,11 @@ func TestSchemaMigratesFromV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	// Frozen snapshot of the v1 production schema. Do not edit to match
-	// current schemaDDL — the point of this fixture is to exercise migration
-	// from what shipped as v1.
-	const v1DDL = `
+	// Frozen snapshot of the pre-v4 production schema (v3 — what shipped
+	// with the mismatch detector and signer columns). Do not edit to match
+	// current schemaDDL — the point of this fixture is to exercise the
+	// migration from what shipped before the Phase 6 cut.
+	const v3DDL = `
 CREATE TABLE injections (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   ts              INTEGER NOT NULL,
@@ -496,102 +458,94 @@ CREATE TABLE injections (
   agent_cmd       TEXT NOT NULL,
   bytes_before    INTEGER NOT NULL,
   bytes_after     INTEGER NOT NULL,
-  location        TEXT NOT NULL
+  location        TEXT NOT NULL,
+  suspect_flag    INTEGER NOT NULL DEFAULT 0,
+  auth_signal     TEXT NOT NULL DEFAULT '',
+  signer_error    TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX idx_inj_suspect ON injections(suspect_flag);
 CREATE TABLE schema_version (v INTEGER PRIMARY KEY);
-INSERT INTO schema_version VALUES (1);
+INSERT INTO schema_version VALUES (3);
+INSERT INTO injections
+  (ts, request_id, host, method, url_path, credential_id, credential_name,
+   agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag,
+   auth_signal, signer_error)
+  VALUES (0, 'r', 'old.example.com', 'GET', '/', 'c', 'cred', 0, '', 0, 0,
+          'header', 0, '', '');
 `
-	if _, err := raw.Exec(v1DDL); err != nil {
-		t.Fatalf("v1 ddl: %v", err)
+	if _, err := raw.Exec(v3DDL); err != nil {
+		t.Fatalf("v3 ddl: %v", err)
 	}
 	_ = raw.Close()
 
 	db, err := Open(dbPath)
 	if err != nil {
-		t.Fatalf("Open on v1 db: %v", err)
+		t.Fatalf("Open on v3 db: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
+	// Schema version must now be 4.
 	var v int
 	if err := db.db.QueryRow(`SELECT MAX(v) FROM schema_version`).Scan(&v); err != nil {
 		t.Fatalf("scan version: %v", err)
 	}
-	if v < 2 {
-		t.Errorf("schema_version = %d, want >= 2", v)
+	if v != 4 {
+		t.Errorf("schema_version = %d, want 4", v)
 	}
 
-	if _, err := db.db.Exec(`INSERT INTO injections
-		(ts, request_id, host, method, url_path, credential_id, credential_name,
-		 agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal)
-		VALUES (0, '', '', '', '', '', '', 0, '', 0, 0, 'mismatch_suspected', 1, 'authorization_header')`); err != nil {
-		t.Errorf("insert with new columns: %v", err)
+	// The legacy injections table (and its row) must have been dropped —
+	// historical session rows do not survive the migration.
+	var count int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM injections`).Scan(&count); err != nil {
+		t.Fatalf("count injections: %v", err)
 	}
-}
+	if count != 0 {
+		t.Errorf("expected 0 rows after v3->v4 migration (old data dropped), got %d", count)
+	}
 
-func TestRecordAndQuerySuspectFields(t *testing.T) {
-	dir := t.TempDir()
-	db, err := Open(filepath.Join(dir, "audit.db"))
+	// The dropped columns must no longer exist.
+	rows, err := db.db.Query(`PRAGMA table_info(injections)`)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("pragma: %v", err)
 	}
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	db.Record(Injection{
-		Timestamp:   now,
-		RequestID:   "req-suspect-1",
-		Host:        "api.example.com",
-		Method:      "GET",
-		URLPath:     "/v1/thing",
-		Location:    "mismatch_suspected",
-		SuspectFlag: true,
-		AuthSignal:  "authorization_header",
-	})
-	db.Record(Injection{
-		Timestamp:      now,
-		RequestID:      "req-inj-1",
-		Host:           "api.example.com",
-		Method:         "GET",
-		URLPath:        "/v1/thing",
-		CredentialID:   "c1",
-		CredentialName: "gh",
-		Location:       "header",
-		BytesBefore:    10, BytesAfter: 20,
-	})
-	// Force flush.
-	_ = db.Close()
-
-	// Reopen and query.
-	db2, err := Open(filepath.Join(dir, "audit.db"))
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
+	defer func() { _ = rows.Close() }()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		cols[name] = true
 	}
-	defer func() { _ = db2.Close() }()
-
-	rows, err := db2.Query(Filter{Since: now.Add(-time.Hour), IncludeBlocked: true, IncludeSuspect: true})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
-	}
-
-	var suspect, normal *Row
-	for i := range rows {
-		if rows[i].SuspectFlag {
-			suspect = &rows[i]
-		} else {
-			normal = &rows[i]
+	for _, dropped := range []string{"suspect_flag", "auth_signal", "signer_error"} {
+		if cols[dropped] {
+			t.Errorf("column %q must not exist after v4 migration", dropped)
 		}
 	}
-	if suspect == nil {
-		t.Fatal("no suspect row returned")
+	// And the idx_inj_suspect index must be gone too.
+	var idxCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_inj_suspect'`).Scan(&idxCount); err != nil {
+		t.Fatalf("count idx_inj_suspect: %v", err)
 	}
-	if suspect.AuthSignal != "authorization_header" {
-		t.Errorf("AuthSignal = %q", suspect.AuthSignal)
+	if idxCount != 0 {
+		t.Errorf("idx_inj_suspect index must not exist after v4 migration")
 	}
-	if normal == nil || normal.SuspectFlag {
-		t.Error("normal injection row incorrectly marked suspect")
+
+	// Fresh inserts into the v4 table must work.
+	db.Record(Injection{
+		Timestamp: time.Now(), RequestID: "post-mig-1",
+		Host: "new.example.com", Method: "GET", URLPath: "/x",
+		Location: "header",
+	})
+	db.DrainForTest()
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM injections`).Scan(&count); err != nil {
+		t.Fatalf("re-count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("post-migration insert: got %d rows, want 1", count)
 	}
 }
 
@@ -861,33 +815,3 @@ func TestCloseClearsHealthSidecarWhenHealthy(t *testing.T) {
 	}
 }
 
-func TestInjection_SignerErrorRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "audit.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-
-	s.Record(Injection{
-		Timestamp:   time.Now(),
-		RequestID:   "req-1",
-		Host:        "s3.amazonaws.com",
-		Method:      "GET",
-		URLPath:     "/",
-		Location:    "signer_failed",
-		SignerError: "unknown_access_key_id",
-	})
-	s.DrainForTest()
-
-	rows, err := s.Query(Filter{Limit: 10, IncludeBlocked: true, IncludeSuspect: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
-	}
-	if rows[0].SignerError != "unknown_access_key_id" {
-		t.Errorf("SignerError = %q, want unknown_access_key_id", rows[0].SignerError)
-	}
-}

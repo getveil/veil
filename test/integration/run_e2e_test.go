@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/scanner"
 )
@@ -495,27 +496,31 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	// 8. Verify audit log recorded both events:
 	//   - blocked: the injector denied the swap on host-scope mismatch.
 	//   - leaked:  the fail-closed guard caught the sentinel on the wire.
-	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json", "--blocked")
-	logCmd.Env = env
-	logOut, err := logCmd.CombinedOutput()
+	//
+	// The `veil log` CLI excludes blocked rows by default and Phase 6
+	// removed the `--blocked` flag (audit is a Go-API surface for tooling
+	// like this test, not a CLI knob). Open the audit DB directly and
+	// query with IncludeBlocked: true to see both event types.
+	auditDB := filepath.Join(projDir, ".veil", "audit.sqlite")
+	store, err := audit.Open(auditDB)
 	if err != nil {
-		t.Fatalf("veil log failed: %v\n%s", err, logOut)
+		t.Fatalf("audit.Open: %v", err)
 	}
-	logStr := string(logOut)
-	t.Logf("audit log:\n%s", logStr)
-	if strings.TrimSpace(logStr) == "" {
+	defer func() { _ = store.Close() }()
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 100})
+	if err != nil {
+		t.Fatalf("audit.Query: %v", err)
+	}
+	t.Logf("audit log rows: %d", len(rows))
+	if len(rows) == 0 {
 		t.Fatal("audit log is empty; expected blocked + leaked events")
 	}
 
 	var sawBlocked, sawLeaked bool
-	for _, line := range strings.Split(strings.TrimSpace(logStr), "\n") {
-		var entry map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("parsing audit log JSON: %v\nline: %s", err, line)
-		}
-		switch entry["location"] {
+	for _, r := range rows {
+		switch r.Location {
 		case "blocked":
-			if entry["credential"] == "OPENAI_API_KEY" {
+			if r.CredentialName == "OPENAI_API_KEY" {
 				sawBlocked = true
 			}
 		case "leaked":

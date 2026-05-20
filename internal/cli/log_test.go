@@ -95,14 +95,13 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	// Fields with deliberately nasty content:
 	//   Host           — CSI clear-screen + cursor-home (classic terminal hijack)
 	//   CredentialName — BEL (0x07) (audible)
-	//   SignerError    — OSC 8 hyperlink escape (mislead an operator into clicking)
 	//   Location       — embedded ESC
+	//   Method         — embedded ESC
 	const (
-		nastyHost        = "evil\x1b[2J\x1b[H.com"
-		nastyCredential  = "cred\x07alert"
-		nastySignerError = "\x1b]8;;http://attacker/\x1b\\fake\x1b]8;;\x1b\\"
-		nastyLocation    = "loc\x1bmix"
-		nastyMethod      = "GE\x1bT"
+		nastyHost       = "evil\x1b[2J\x1b[H.com"
+		nastyCredential = "cred\x07alert"
+		nastyLocation   = "loc\x1bmix"
+		nastyMethod     = "GE\x1bT"
 	)
 
 	store, err := audit.Open(config.AuditDBFile(root))
@@ -117,7 +116,6 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 		URLPath:        "/",
 		Location:       nastyLocation,
 		CredentialName: nastyCredential,
-		SignerError:    nastySignerError,
 	})
 	store.DrainForTest()
 	_ = store.Close()
@@ -144,7 +142,6 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	for _, bad := range []string{
 		nastyHost,
 		nastyCredential,
-		nastySignerError,
 		nastyLocation,
 		nastyMethod,
 	} {
@@ -154,28 +151,24 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	}
 	// And spot-check that the specific nasty byte sequences are absent.
 	for _, bad := range []string{
-		"\x1b[2J",  // clear screen
-		"\x1b[H",   // cursor home
-		"\x1b]8;;", // OSC 8 hyperlink start
-		"\x07",     // BEL
+		"\x1b[2J", // clear screen
+		"\x1b[H",  // cursor home
+		"\x07",    // BEL
 	} {
 		if strings.Contains(humanS, bad) {
 			t.Errorf("human output contains raw control sequence %q", bad)
 		}
 	}
-	// Belt-and-braces: ensure the visible portion of each row (after we
-	// drop the trusted ui.Muted styling for the header) contains no
-	// stray C0/DEL/C1 bytes from the row payload. The header line uses
-	// ANSI styling so we can't blanket-ban 0x1B over the whole output;
-	// instead, check each data row by lines that start with the row
-	// marker ("   " or "[!]"). That marker prefix never appears in the
-	// header.
-	for _, line := range strings.Split(humanS, "\n") {
-		if !strings.HasPrefix(line, "   ") && !strings.HasPrefix(line, "[!]") {
+	// Belt-and-braces: ensure data rows contain no stray C0/DEL/C1 bytes
+	// from the row payload. Skip the header line (uses ANSI styling, so
+	// it legitimately contains 0x1B) and the footer line ("N events ...").
+	lines := strings.Split(humanS, "\n")
+	for i, line := range lines {
+		if i == 0 || line == "" || strings.Contains(line, "events (last") {
 			continue
 		}
-		for i := 0; i < len(line); i++ {
-			c := line[i]
+		for j := 0; j < len(line); j++ {
+			c := line[j]
 			if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
 				// Allow LF only — but we split on \n already, so no LF
 				// can appear inside `line`. Anything else is a bug.
@@ -210,11 +203,10 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	// After JSON decoding, the field values must equal the original
 	// attacker bytes exactly.
 	cases := map[string]string{
-		"host":         nastyHost,
-		"method":       nastyMethod,
-		"credential":   nastyCredential,
-		"location":     nastyLocation,
-		"signer_error": nastySignerError,
+		"host":       nastyHost,
+		"method":     nastyMethod,
+		"credential": nastyCredential,
+		"location":   nastyLocation,
 	}
 	for k, want := range cases {
 		got, ok := entry[k]
@@ -229,22 +221,6 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 		}
 		if gotStr != want {
 			t.Errorf("JSON field %q round-trip mismatch:\n got %q\nwant %q", k, gotStr, want)
-		}
-	}
-}
-
-// TestLogCmd_AdvancedFlagsHidden verifies that --suspect and --blocked
-// flags are marked as hidden from --help output.
-func TestLogCmd_AdvancedFlagsHidden(t *testing.T) {
-	cmd := logCmd()
-	for _, name := range []string{"suspect", "blocked"} {
-		f := cmd.Flags().Lookup(name)
-		if f == nil {
-			t.Errorf("flag --%s missing entirely", name)
-			continue
-		}
-		if !f.Hidden {
-			t.Errorf("flag --%s must be hidden from --help", name)
 		}
 	}
 }

@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -441,81 +440,3 @@ func TestProcessRequestInjectsQueryString(t *testing.T) {
 	}
 }
 
-func TestProcessRequestDetectorFires(t *testing.T) {
-	dir := t.TempDir()
-	store, err := audit.Open(filepath.Join(dir, "audit.db"))
-	if err != nil {
-		t.Fatalf("audit.Open: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cred := makeCred("gh", "VEIL_BEARER_AAAA", "ghp-real", "api.github.com")
-	inj := NewInjector(placeholderMap(cred), store, 1, "agent")
-
-	hdr := http.Header{}
-	// Credential is scoped to api.github.com, but the placeholder used on the
-	// wire doesn't match anything in the vault -- detector should fire.
-	hdr.Set("Authorization", "Bearer some-other-token")
-
-	_, _, _, injections := inj.ProcessRequest(
-		"req-detect-1", "GET", "https://api.github.com/user", hdr, nil)
-
-	var suspect []audit.Injection
-	for _, i := range injections {
-		if i.SuspectFlag {
-			suspect = append(suspect, i)
-		}
-	}
-	if len(suspect) != 1 {
-		t.Fatalf("expected 1 suspect injection, got %d (all: %+v)", len(suspect), injections)
-	}
-	if suspect[0].Location != "mismatch_suspected" {
-		t.Errorf("Location = %q", suspect[0].Location)
-	}
-	if suspect[0].AuthSignal != "authorization_header" {
-		t.Errorf("AuthSignal = %q", suspect[0].AuthSignal)
-	}
-	if suspect[0].Host != "api.github.com" {
-		t.Errorf("Host = %q", suspect[0].Host)
-	}
-	if suspect[0].CredentialName != "" || suspect[0].CredentialID != "" {
-		t.Error("suspect row should carry no credential id/name")
-	}
-	if suspect[0].RequestID != "req-detect-1" {
-		t.Errorf("RequestID = %q", suspect[0].RequestID)
-	}
-}
-
-func TestProcessRequestDetectorSilentOnSuccessfulInjection(t *testing.T) {
-	cred := makeCred("gh", "VEIL_PH_SUCC", "ghp-real", "api.github.com")
-	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
-
-	hdr := http.Header{}
-	hdr.Set("Authorization", "Bearer VEIL_PH_SUCC")
-
-	_, _, _, injections := inj.ProcessRequest(
-		"req-succ", "GET", "https://api.github.com/user", hdr, nil)
-
-	for _, i := range injections {
-		if i.SuspectFlag {
-			t.Errorf("detector fired despite successful injection: %+v", i)
-		}
-	}
-}
-
-func TestProcessRequestDetectorSilentOnUncredentialedHost(t *testing.T) {
-	cred := makeCred("gh", "VEIL_PH_UNCRED", "ghp-real", "api.github.com")
-	inj := NewInjector(placeholderMap(cred), nil, 1, "agent")
-
-	hdr := http.Header{}
-	hdr.Set("Authorization", "Bearer some-token")
-
-	_, _, _, injections := inj.ProcessRequest(
-		"req-uncred", "GET", "https://api.openai.com/v1", hdr, nil)
-
-	for _, i := range injections {
-		if i.SuspectFlag {
-			t.Errorf("detector fired on uncredentialed host: %+v", i)
-		}
-	}
-}

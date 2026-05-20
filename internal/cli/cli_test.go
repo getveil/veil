@@ -872,29 +872,13 @@ func TestLogWithFilters(t *testing.T) {
 		}
 	})
 
-	// T-8.4: --blocked filter
-	t.Run("blocked_filter", func(t *testing.T) {
-		cmd := NewRoot("test")
-		out := new(bytes.Buffer)
-		cmd.SetOut(out)
-		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--blocked"})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("log --blocked failed: %v", err)
-		}
-		output := out.String()
-		if !strings.Contains(output, "blocked") {
-			t.Error("expected blocked event in output")
-		}
-	})
-
 	// T-8.8: --limit flag
 	t.Run("limit", func(t *testing.T) {
 		cmd := NewRoot("test")
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--blocked", "--limit", "1"})
+		cmd.SetArgs([]string{"log", "--path", root, "--limit", "1"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("log --limit failed: %v", err)
 		}
@@ -921,7 +905,7 @@ func TestLogWithFilters(t *testing.T) {
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--json", "--blocked"})
+		cmd.SetArgs([]string{"log", "--path", root, "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("log --json failed: %v", err)
 		}
@@ -949,7 +933,7 @@ func TestLogWithFilters(t *testing.T) {
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.openai.com", "--credential", "OPENAI_API_KEY", "--since", "1h", "--limit", "10", "--json", "--blocked"})
+		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.openai.com", "--credential", "OPENAI_API_KEY", "--since", "1h", "--limit", "10", "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("combined filter failed: %v", err)
 		}
@@ -1435,73 +1419,11 @@ func TestSkipRejectsBareWildcard(t *testing.T) {
 	}
 }
 
-func TestLogShowsSuspectMarker(t *testing.T) {
-	root := initProject(t)
-
-	// Insert a suspect row directly into the audit DB.
-	dbPath := config.AuditDBFile(root)
-	store, err := audit.Open(dbPath)
-	if err != nil {
-		t.Fatalf("audit open: %v", err)
-	}
-	store.Record(audit.Injection{
-		Timestamp:   time.Now(),
-		RequestID:   "req-susp-1",
-		Host:        "api.example.com",
-		Method:      "GET",
-		URLPath:     "/x",
-		Location:    "mismatch_suspected",
-		SuspectFlag: true,
-		AuthSignal:  "authorization_header",
-	})
-	_ = store.Close()
-
-	// Default output should include the suspect row tagged with [!].
-	logCmd := NewRoot("test")
-	logOut := new(bytes.Buffer)
-	logCmd.SetOut(logOut)
-	logCmd.SetErr(new(bytes.Buffer))
-	logCmd.SetArgs([]string{"log", "--path", root})
-	if err := logCmd.Execute(); err != nil {
-		t.Fatalf("log: %v\n%s", err, logOut.String())
-	}
-	if !strings.Contains(logOut.String(), "[!]") {
-		t.Errorf("log output missing [!] marker:\n%s", logOut.String())
-	}
-
-	// --suspect filter returns only suspect rows.
-	suspectCmd := NewRoot("test")
-	susOut := new(bytes.Buffer)
-	suspectCmd.SetOut(susOut)
-	suspectCmd.SetErr(new(bytes.Buffer))
-	suspectCmd.SetArgs([]string{"log", "--path", root, "--suspect"})
-	if err := suspectCmd.Execute(); err != nil {
-		t.Fatalf("log --suspect: %v\n%s", err, susOut.String())
-	}
-	susText := susOut.String()
-	if !strings.Contains(susText, "api.example.com") {
-		t.Errorf("--suspect output missing host:\n%s", susText)
-	}
-
-	// --json output includes `"suspect":true`.
-	jsonCmd := NewRoot("test")
-	jsonOut := new(bytes.Buffer)
-	jsonCmd.SetOut(jsonOut)
-	jsonCmd.SetErr(new(bytes.Buffer))
-	jsonCmd.SetArgs([]string{"log", "--path", root, "--json"})
-	if err := jsonCmd.Execute(); err != nil {
-		t.Fatalf("log --json: %v\n%s", err, jsonOut.String())
-	}
-	if !strings.Contains(jsonOut.String(), `"suspect":true`) {
-		t.Errorf("--json output missing suspect flag:\n%s", jsonOut.String())
-	}
-}
-
-// TestStatusShowsLeakHint covers F15: when status reports Leaks: N (N > 0),
-// the operator should see a follow-up line pointing them at the log command
-// to investigate. Without the hint, "Leaks: 1" was the only signal and
-// E2E testers had to guess how to dig deeper.
-func TestStatusShowsLeakHint(t *testing.T) {
+// TestStatusShowsLeakCount verifies that when status reports leaks > 0
+// the Leaks line appears with the count. The Phase 6 cut removed the
+// "Run `veil log --suspect` for details" hint that previously followed
+// this line — the count alone is the signal now.
+func TestStatusShowsLeakCount(t *testing.T) {
 	root := initProject(t)
 
 	// Seed a leaked row so Summary returns leaked > 0.
@@ -1531,28 +1453,8 @@ func TestStatusShowsLeakHint(t *testing.T) {
 	if !strings.Contains(output, "Leaks") {
 		t.Fatalf("status output missing Leaks line:\n%s", output)
 	}
-	if !strings.Contains(output, "veil log --suspect") {
-		t.Errorf("status output missing 'veil log --suspect' hint after Leaks:\n%s", output)
-	}
-}
-
-// TestStatusOmitsLeakHintWhenZero verifies the hint only appears when
-// there are actual leaks to investigate. A fresh project with no leaked
-// rows should not advertise the flag.
-func TestStatusOmitsLeakHintWhenZero(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"status", "--path", root})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	output := out.String()
-	if strings.Contains(output, "veil log --suspect") {
-		t.Errorf("status output should not show suspect hint when no leaks:\n%s", output)
+	if strings.Contains(output, "--suspect") {
+		t.Errorf("status output must not reference removed --suspect flag:\n%s", output)
 	}
 }
 

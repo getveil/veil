@@ -55,7 +55,7 @@ func TestFailClosedGuard_LeakedBody(t *testing.T) {
 	// Allow the background flusher (100ms ticker) to persist the audit row.
 	time.Sleep(250 * time.Millisecond)
 
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 50})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestFailClosedGuard_LeakAuditUsesRawURL(t *testing.T) {
 	// Allow the background flusher to persist the audit row.
 	time.Sleep(250 * time.Millisecond)
 
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 50})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}

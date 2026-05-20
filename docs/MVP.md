@@ -16,11 +16,11 @@ The MVP free tier is this binary. Everything below is what that binary does toda
 
 Mapped to the four outcomes Veil targets.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer is mediated end-to-end (Authorization headers, `git push` over HTTPS with a Bearer token). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — and HTTP Basic credentials are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer is mediated end-to-end (Authorization headers, `git push` over HTTPS with a Bearer token). Keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — and HTTP Basic credentials are out of scope (see §5).
 
 **Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-**Every action is on the record.** Every credential swap, blocked event, and mismatch-detector flag is written to a local SQLite database. The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md#audit-plane).
+**Every action is on the record.** Every credential swap and blocked event is written to a local SQLite database. The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md#audit-plane).
 
 **Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
 
@@ -63,14 +63,12 @@ These are the live edges of MVP coverage. Each links to where it's addressed in 
 |---|---|---|
 | Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement | Kernel enforcement — [`ARCHITECTURE.md`](ARCHITECTURE.md) Part II |
 | HTTP/2 (gRPC), QUIC, raw TCP, SSH | Proxy is HTTP/1.1 CONNECT only | Per-protocol handlers / kernel interception — Part II |
-| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. |
+| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. |
 | mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural |
 | OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
 | Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded | Decompression risk exceeds the gap |
 | Request bodies > 10 MiB | Performance boundary | Configurable in a future release |
 | Windows | No proxy substrate yet | Part II |
-
-The transform-mismatch detector deserves a specific note: when a request to a credentialed host carries an auth-shaped signal (Authorization / Proxy-Authorization / Cookie / `X-*-{token,auth,key,sig,signature}` / auth-shaped query params) but no injection fires, Veil emits a structured WARN and flags the audit row. It is **a signal, not enforcement** — the real secret still exists wherever the agent read it from.
 
 ---
 

@@ -34,10 +34,7 @@ type Injection struct {
 	AgentCmd       string
 	BytesBefore    int
 	BytesAfter     int
-	Location       string // "header", "body", "url", "blocked", or "mismatch_suspected"
-	SuspectFlag    bool
-	AuthSignal     string
-	SignerError    string // empty unless Location == "signer_failed"
+	Location       string // "header", "body", "url", "blocked", or "leaked"
 }
 
 // Store persists injection events to a SQLite database with batched writes.
@@ -76,24 +73,20 @@ CREATE TABLE IF NOT EXISTS injections (
   agent_cmd       TEXT NOT NULL,
   bytes_before    INTEGER NOT NULL,
   bytes_after     INTEGER NOT NULL,
-  location        TEXT NOT NULL,
-  suspect_flag    INTEGER NOT NULL DEFAULT 0,
-  auth_signal     TEXT NOT NULL DEFAULT '',
-  signer_error    TEXT NOT NULL DEFAULT ''
+  location        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_inj_ts   ON injections(ts);
 CREATE INDEX IF NOT EXISTS idx_inj_host ON injections(host);
 CREATE INDEX IF NOT EXISTS idx_inj_cred ON injections(credential_name);
 CREATE TABLE IF NOT EXISTS schema_version (v INTEGER PRIMARY KEY);
-INSERT OR IGNORE INTO schema_version VALUES (1);
+INSERT OR IGNORE INTO schema_version VALUES (4);
 `
 
 const insertSQL = `INSERT INTO injections (
   ts, request_id, host, method, url_path,
   credential_id, credential_name, agent_pid, agent_cmd,
-  bytes_before, bytes_after, location, suspect_flag, auth_signal,
-  signer_error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  bytes_before, bytes_after, location
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Open opens (or creates) the SQLite database at dbPath and starts the
 // background flush goroutine. It enforces 0600 permissions on the database
@@ -138,20 +131,19 @@ func Open(dbPath string) (*Store, error) {
 		if openErr != nil {
 			return fmt.Errorf("sql.Open: %w", openErr)
 		}
+		// migrateToV4 must run before schemaDDL so the CREATE TABLE IF NOT
+		// EXISTS sees no pre-existing v1/v2/v3 table. If we ran schemaDDL
+		// first it would no-op against a stale schema and the migration
+		// would have to ALTER columns anyway, defeating the purpose.
+		if mErr := migrateToV4(db); mErr != nil {
+			_ = db.Close()
+			db = nil
+			return fmt.Errorf("migrate v4: %w", mErr)
+		}
 		if _, execErr := db.Exec(schemaDDL); execErr != nil {
 			_ = db.Close()
 			db = nil
 			return fmt.Errorf("ddl: %w", execErr)
-		}
-		if mErr := migrateToV2(db); mErr != nil {
-			_ = db.Close()
-			db = nil
-			return fmt.Errorf("migrate v2: %w", mErr)
-		}
-		if mErr := migrateToV3(db); mErr != nil {
-			_ = db.Close()
-			db = nil
-			return fmt.Errorf("migrate v3: %w", mErr)
 		}
 		// Force WAL + SHM sidecar materialization by taking a write lock.
 		// BeginTx with sql.LevelSerializable maps to BEGIN IMMEDIATE on SQLite,
@@ -381,10 +373,6 @@ func (s *Store) writeBatch(batch []Injection) error {
 		return fmt.Errorf("%w: prepare: %w", ErrWrite, err)
 	}
 	for _, inj := range batch {
-		suspect := 0
-		if inj.SuspectFlag {
-			suspect = 1
-		}
 		if _, err := stmt.Exec(
 			inj.Timestamp.UnixMilli(),
 			inj.RequestID,
@@ -398,9 +386,6 @@ func (s *Store) writeBatch(batch []Injection) error {
 			inj.BytesBefore,
 			inj.BytesAfter,
 			inj.Location,
-			suspect,
-			inj.AuthSignal,
-			inj.SignerError,
 		); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
@@ -450,94 +435,56 @@ func (s *Store) recordFlushFailure(batch []Injection, err error) {
 	_ = writeHealthSidecar(dbPath, snapshot)
 }
 
-// migrateToV2 adds the suspect_flag and auth_signal columns to pre-existing
-// v1 schemas. It is idempotent and safe to call on already-migrated databases.
-func migrateToV2(db *sql.DB) error {
+// migrateToV4 removes the mismatch-detector / signer columns
+// (suspect_flag, auth_signal, signer_error) and the idx_inj_suspect index
+// that supported them.
+//
+// Strategy: when an older v1/v2/v3 schema is detected, the injections
+// table is dropped and its index too — historical rows are discarded.
+// Audit data is per-session ephemeral state: `veil run` opens the DB, the
+// proxy writes during the run, and `veil log` reads from it after. Older
+// sessions' rows have no semantic value once the session ended, so the
+// migration prioritizes a clean v4 shape over preserving them. A
+// copy-rebuild migration was rejected because SQLite ALTER TABLE DROP
+// COLUMN is only on >= 3.35 and the rows it would preserve carry the
+// just-removed columns anyway.
+//
+// Idempotent: if the table already matches v4 (or doesn't exist at all),
+// this is a no-op. The Open() caller then runs schemaDDL which creates a
+// fresh table when needed.
+//
+// Must be called BEFORE schemaDDL, otherwise the CREATE TABLE IF NOT
+// EXISTS would skip a stale v3 table and leave the suspect/signer columns
+// in place.
+func migrateToV4(db *sql.DB) error {
+	// Ensure schema_version exists so the version read below works on
+	// fresh DBs. The DDL below also runs in schemaDDL — duplicate is fine
+	// because both use IF NOT EXISTS.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (v INTEGER PRIMARY KEY)`); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
 	var v int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
 		return fmt.Errorf("read version: %w", err)
 	}
-	if v >= 2 {
+	if v >= 4 {
 		return nil
 	}
-
-	rows, err := db.Query(`PRAGMA table_info(injections)`)
-	if err != nil {
-		return fmt.Errorf("table_info: %w", err)
+	// v == 0 means schema_version is empty (fresh DB or pre-versioned).
+	// Either way, dropping injections is safe: a non-existent table is
+	// a no-op, and pre-versioned data is from an even older build.
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_inj_suspect`); err != nil {
+		return fmt.Errorf("drop idx_inj_suspect: %w", err)
 	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt interface{}
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("scan table_info: %w", err)
-		}
-		have[name] = true
+	if _, err := db.Exec(`DROP TABLE IF EXISTS injections`); err != nil {
+		return fmt.Errorf("drop injections: %w", err)
 	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close table_info: %w", err)
-	}
-
-	if !have["suspect_flag"] {
-		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN suspect_flag INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("add suspect_flag: %w", err)
-		}
-	}
-	if !have["auth_signal"] {
-		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN auth_signal TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add auth_signal: %w", err)
-		}
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_inj_suspect ON injections(suspect_flag)`); err != nil {
-		return fmt.Errorf("create suspect index: %w", err)
-	}
-
-	if _, err := db.Exec(`INSERT INTO schema_version (v) VALUES (2)`); err != nil {
-		return fmt.Errorf("mark v2: %w", err)
-	}
-	return nil
-}
-
-// migrateToV3 adds the signer_error column to pre-existing v2 schemas.
-// Idempotent.
-func migrateToV3(db *sql.DB) error {
-	var v int
-	if err := db.QueryRow(`SELECT COALESCE(MAX(v), 0) FROM schema_version`).Scan(&v); err != nil {
-		return fmt.Errorf("read version: %w", err)
-	}
-	if v >= 3 {
-		return nil
-	}
-
-	rows, err := db.Query(`PRAGMA table_info(injections)`)
-	if err != nil {
-		return fmt.Errorf("table_info: %w", err)
-	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt interface{}
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("scan table_info: %w", err)
-		}
-		have[name] = true
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close table_info: %w", err)
-	}
-	if !have["signer_error"] {
-		if _, err := db.Exec(`ALTER TABLE injections ADD COLUMN signer_error TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add signer_error: %w", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO schema_version (v) VALUES (3)`); err != nil {
-		return fmt.Errorf("mark v3: %w", err)
+	// Replace any stale schema_version row (1/2/3) with 4. Plain INSERT
+	// would create a duplicate row that breaks the COALESCE(MAX(v)) read
+	// later if the row count ever matters; INSERT OR REPLACE keeps the
+	// table at one row per version.
+	if _, err := db.Exec(`INSERT OR REPLACE INTO schema_version (v) VALUES (4)`); err != nil {
+		return fmt.Errorf("mark v4: %w", err)
 	}
 	return nil
 }

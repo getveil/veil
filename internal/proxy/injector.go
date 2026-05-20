@@ -3,7 +3,6 @@ package proxy
 import (
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -149,27 +148,6 @@ func (inj *Injector) ProcessRequest(
 			out, evs := applyMatched(string(body), matched, creds, host, "body", makeInjection)
 			newBody = []byte(out)
 			injections = append(injections, evs...)
-		}
-	}
-
-	// --- Mismatch detector (post-pass) ---
-	if !anyNonBlocked(injections) {
-		credList := dedupCredentials(creds)
-		parsedURL, _ := url.Parse(rawURL)
-		if sig, names, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
-			logMismatch(os.Stderr, host, urlPath, method, sig, names)
-			injections = append(injections, audit.Injection{
-				Timestamp:   now,
-				RequestID:   requestID,
-				Host:        host,
-				Method:      method,
-				URLPath:     urlPath,
-				AgentPID:    inj.agentPID,
-				AgentCmd:    inj.agentCmd,
-				Location:    "mismatch_suspected",
-				SuspectFlag: true,
-				AuthSignal:  sig,
-			})
 		}
 	}
 
@@ -322,34 +300,6 @@ func applyMatched(
 		}
 	}
 	return output, events
-}
-
-// anyNonBlocked reports whether at least one injection is a real swap (not a
-// blocked entry emitted when host scoping denied the swap, and not a suspect row).
-func anyNonBlocked(injections []audit.Injection) bool {
-	for _, i := range injections {
-		if i.Location != "blocked" && !i.SuspectFlag {
-			return true
-		}
-	}
-	return false
-}
-
-// dedupCredentials collapses the placeholder map into a unique slice.
-// Previously basic credentials appeared twice (under secret and username
-// placeholders); after the v1 launch cut every entry is a 1:1 placeholder
-// to credential, but the dedup is kept as a defensive O(n) pass.
-func dedupCredentials(pmap map[string]*vault.Credential) []*vault.Credential {
-	seen := make(map[*vault.Credential]struct{}, len(pmap))
-	out := make([]*vault.Credential, 0, len(pmap))
-	for _, c := range pmap {
-		if _, ok := seen[c]; ok {
-			continue
-		}
-		seen[c] = struct{}{}
-		out = append(out, c)
-	}
-	return out
 }
 
 // parseRequestURL extracts host, path, and raw query from a URL. On parse
