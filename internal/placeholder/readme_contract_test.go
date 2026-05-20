@@ -12,7 +12,7 @@ import (
 )
 
 // readmeDisplayToKey maps the human-readable display names used in the
-// README's "Bearer/Basic providers" table to the canonical provider keys
+// README's "Bearer providers" table to the canonical provider keys
 // returned by Registry.Names(). The table is the public-facing list; the
 // keys are the implementation. Keep this map narrow and explicit so
 // renames in either direction surface as test failures rather than
@@ -33,23 +33,21 @@ var readmeDisplayToKey = map[string]string{
 	"gitlab":       "gitlab",
 }
 
-// TestREADMEProviderTableMatchesRegistry parses the "Bearer/Basic
-// providers" row of README.md and asserts every display name listed
-// there maps to a provider currently registered in DefaultRegistry().
+// TestREADMEProviderTableMatchesRegistry parses the "Bearer providers"
+// row of README.md and asserts every display name listed there maps to
+// a provider currently registered in DefaultRegistry().
 //
 // This is a doc-as-code lint: when a provider is removed from the
-// registry (e.g. commit 62637c6 dropping Postmark/Datadog/Quay) but
-// left in the README table, this test fails loudly instead of letting
-// the docs drift silently. It does NOT assert the reverse direction —
-// the registry may legitimately contain providers (e.g. aws) that are
-// experimental-gated and intentionally omitted from the user-facing
-// table.
+// registry but left in the README table, this test fails loudly instead
+// of letting the docs drift silently. It does NOT assert the reverse
+// direction — the registry may legitimately contain providers that are
+// intentionally omitted from the user-facing table.
 func TestREADMEProviderTableMatchesRegistry(t *testing.T) {
 	readme := readREADME(t)
 
-	names := extractBearerBasicProviders(t, readme)
+	names := extractBearerProviders(t, readme)
 	if len(names) == 0 {
-		t.Fatal("could not extract any provider names from README Bearer/Basic row — table format may have changed")
+		t.Fatal("could not extract any provider names from README Bearer row — table format may have changed")
 	}
 
 	reg := placeholder.DefaultRegistry()
@@ -102,20 +100,19 @@ func readREADME(t *testing.T) string {
 	return ""
 }
 
-// bearerBasicRowRE matches the "Bearer/Basic providers" markdown table
-// row. The provider list is the third column (after the leading `|` and
-// the bolded label). The row is delimited by the closing `|` at end of
+// bearerRowRE matches the "Bearer providers" markdown table row. The
+// provider list is the third column (after the leading `|` and the
+// bolded label). The row is delimited by the closing `|` at end of
 // line. Tolerates surrounding whitespace.
-var bearerBasicRowRE = regexp.MustCompile(`(?m)^\|\s*\*\*Bearer/Basic providers\*\*\s*\|\s*(.+?)\s*\|\s*$`)
+var bearerRowRE = regexp.MustCompile(`(?m)^\|\s*\*\*Bearer providers\*\*\s*\|\s*(.+?)\s*\|\s*$`)
 
-// extractBearerBasicProviders pulls the provider names out of the
-// Bearer/Basic row. Names are separated by `·` (middle dot) in the
-// rendered table.
-func extractBearerBasicProviders(t *testing.T, readme string) []string {
+// extractBearerProviders pulls the provider names out of the Bearer
+// row. Names are separated by `·` (middle dot) in the rendered table.
+func extractBearerProviders(t *testing.T, readme string) []string {
 	t.Helper()
-	m := bearerBasicRowRE.FindStringSubmatch(readme)
+	m := bearerRowRE.FindStringSubmatch(readme)
 	if m == nil {
-		t.Fatal("Bearer/Basic providers row not found in README — has the table moved or changed format?")
+		t.Fatal("Bearer providers row not found in README — has the table moved or changed format?")
 	}
 	cell := m[1]
 	parts := strings.Split(cell, "·")

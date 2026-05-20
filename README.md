@@ -133,7 +133,7 @@ veil uninstall --dry-run    # preview the plan without changes
 
 | | Status |
 |---|---|
-| **Bearer/Basic providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab |
+| **Bearer providers** | GitHub PATs · OpenAI · Anthropic · Stripe · Slack · SendGrid · Resend · Supabase · Vercel · Replicate · Hugging Face · Google · GitLab |
 | **Agents** | Anything respecting `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `gh`, `npm`, `pip` |
 | **MCP configs** | Opt-in via `veil init --scan-mcp` (Claude Desktop, Claude Code, Cursor, project-local `.mcp.json`) |
 | **Keychain** | macOS Keychain, Linux Secret Service; age-file fallback on headless Linux |

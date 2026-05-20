@@ -561,18 +561,19 @@ func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) 
 	return envFile.Bytes()
 }
 
-// printDryRunVaultLines emits the same "would vault" lines the legacy code
-// path produced, derived from the prepared credentials. secrets and creds
-// share appearance order.
+// printDryRunVaultLines emits "would vault: KEY -> PLACEHOLDER" for each
+// vault-eligible credential, preserving the file's appearance order. Non-
+// eligible entries in secrets (not-managed, unrecognized) are skipped via
+// name lookup so the pairing stays correct when buckets are mixed.
 func printDryRunVaultLines(w io.Writer, secrets []secretLine, creds []*vault.Credential) {
-	ci := 0
+	byName := make(map[string]string, len(creds))
+	for _, c := range creds {
+		byName[c.Name] = c.Placeholder
+	}
 	for _, s := range secrets {
-		if ci >= len(creds) {
-			break
+		if ph, ok := byName[s.key]; ok {
+			ui.Dimf(w, "  would vault: %s -> %s", s.key, ph)
 		}
-		c := creds[ci]
-		ci++
-		ui.Dimf(w, "  would vault: %s -> %s", s.key, c.Placeholder)
 	}
 }
 

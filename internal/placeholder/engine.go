@@ -23,8 +23,8 @@ var rng io.Reader = rand.Reader
 //
 // Design decisions:
 //   - "VEIL" (4 uppercase ASCII letters) is short enough to fit into even the
-//     most constrained placeholder body (32 hex chars for Twilio/Datadog) and
-//     long enough that a collision with random content of a real secret is
+//     most constrained placeholder body (short hex-only providers) and long
+//     enough that a collision with random content of a real secret is
 //     vanishingly unlikely (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex
 //     bodies where VEIL is not a valid character at all — the whole string
 //     would have to bear the sentinel, which cannot happen for a hex secret).
@@ -35,11 +35,10 @@ var rng io.Reader = rand.Reader
 //     to a casual observer.
 //   - Charset impact: VEIL is valid for alphanumeric, upper-alphanumeric,
 //     and base64-ish charsets, so most providers are undisturbed. For hex
-//     bodies (Twilio, Postmark, Datadog) VEIL introduces non-hex characters;
-//     this is deliberate — the audit explicitly endorses trading slight
-//     shape-conformance for guaranteed detectability, and a leaked
-//     sentinel-bearing token is easier to catch than a plausible
-//     sentinel-free one.
+//     bodies VEIL introduces non-hex characters; this is deliberate — the
+//     audit explicitly endorses trading slight shape-conformance for
+//     guaranteed detectability, and a leaked sentinel-bearing token is
+//     easier to catch than a plausible sentinel-free one.
 const Sentinel = "VEIL"
 
 // ContainsSentinel reports whether s carries the placeholder sentinel — i.e.

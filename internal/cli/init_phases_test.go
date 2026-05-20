@@ -704,6 +704,38 @@ func TestBuildEnvFileCredentials_PopulatesCredReasons(t *testing.T) {
 	}
 }
 
+// TestPrintDryRunVaultLines_SkipsNonEligibleByName guards against a
+// counter-pairing regression: when secrets contain entries that didn't
+// produce a Credential (not-managed / unrecognized), the dry-run output
+// must skip them rather than print the next eligible credential's
+// placeholder against the wrong key.
+func TestPrintDryRunVaultLines_SkipsNonEligibleByName(t *testing.T) {
+	secrets := []secretLine{
+		{key: "OPENAI_API_KEY", value: "sk-real"},
+		{key: "RANDOM_NOT_SECRET", value: "hello"},
+		{key: "STRIPE_SECRET_KEY", value: "sk_live_xxx"},
+	}
+	creds := []*vault.Credential{
+		{Name: "OPENAI_API_KEY", Placeholder: "veilph-openai"},
+		{Name: "STRIPE_SECRET_KEY", Placeholder: "veilph-stripe"},
+	}
+	var buf bytes.Buffer
+	printDryRunVaultLines(&buf, secrets, creds)
+	out := buf.String()
+	if !strings.Contains(out, "OPENAI_API_KEY -> veilph-openai") {
+		t.Errorf("missing OPENAI line:\n%s", out)
+	}
+	if !strings.Contains(out, "STRIPE_SECRET_KEY -> veilph-stripe") {
+		t.Errorf("missing STRIPE line:\n%s", out)
+	}
+	if strings.Contains(out, "RANDOM_NOT_SECRET") {
+		t.Errorf("non-eligible key surfaced in dry-run:\n%s", out)
+	}
+	if strings.Contains(out, "RANDOM_NOT_SECRET -> veilph-stripe") {
+		t.Errorf("pairing bug: non-eligible key bound to next credential's placeholder:\n%s", out)
+	}
+}
+
 // TestPrintVaultSummary_AnnotatesManagedReason verifies that each Managed
 // line in the summary carries a parenthesized annotation describing why
 // the value was classified as a secret. The annotation is transparent
