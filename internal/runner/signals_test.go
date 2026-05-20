@@ -163,6 +163,143 @@ func TestForwardSignals_SecondSignalAlsoForwarded(t *testing.T) {
 	}
 }
 
+// sigtermIgnoredScript traps SIGTERM (prints "TERM" but does NOT exit) so the
+// only way for the child to exit is via SIGKILL from the escalation ladder.
+// Used by TestForwardSignals_SIGTERMEscalatesToKill to verify that a SIGTERM
+// delivered to the veil parent triggers the same SIGTERM→SIGKILL ladder as
+// SIGINT, not just a one-shot forward that orphans a stubborn child.
+const sigtermIgnoredScript = `
+trap 'printf "TERM\n"' TERM
+printf "READY\n"
+while :; do sleep 0.05; done
+`
+
+// TestForwardSignals_SIGTERMEscalatesToKill is the regression test for the
+// bug where forwardSignals only started the escalation ladder on SIGINT,
+// leaving a child that ignores SIGTERM alive indefinitely when CI sends
+// SIGTERM to the veil parent (e.g., GitHub Actions hard timeout). The test
+// spawns a child that traps and ignores SIGTERM, sends SIGTERM via the test
+// pid (which forwardSignals re-emits to the child group), and asserts the
+// child is killed within killTimeout — which can only happen if the
+// escalation goroutine fires SIGKILL on the child group.
+func TestForwardSignals_SIGTERMEscalatesToKill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping signal integration test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix signal semantics only")
+	}
+
+	// Shorten the escalation ladder for the test. Production values (5s / 10s)
+	// would make this a 10-second test. 100ms / 200ms keeps it fast while still
+	// exercising the timer-based path.
+	origEscalate := escalateTimeout
+	origKill := killTimeout
+	escalateTimeout = 100 * time.Millisecond
+	killTimeout = 200 * time.Millisecond
+	t.Cleanup(func() {
+		escalateTimeout = origEscalate
+		killTimeout = origKill
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Mask SIGTERM in the test process so the signal we send to ourselves can't
+	// terminate the test runner if it races forwardSignals' Notify.
+	mask := make(chan os.Signal, 4)
+	signal.Notify(mask, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(mask)
+
+	child := exec.CommandContext(ctx, "sh", "-c", sigtermIgnoredScript)
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	child.Stderr = io.Discard
+
+	if err := child.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if child.Process != nil {
+			_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+		}
+		_ = child.Wait()
+	})
+
+	sigCtx, sigCancel := context.WithCancel(context.Background())
+	defer sigCancel()
+	done := make(chan struct{})
+	go func() {
+		forwardSignals(sigCtx, child)
+		close(done)
+	}()
+
+	// Wait for READY so the SIGTERM trap is installed before we signal.
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatalf("child exited before READY: %v", scanner.Err())
+	}
+	if got := scanner.Text(); got != "READY" {
+		t.Fatalf("first child line = %q, want READY", got)
+	}
+
+	// Send SIGTERM to ourselves; forwardSignals re-emits it to the child group.
+	// The child traps it ("TERM" line) and stays alive. With the fix, the
+	// escalation goroutine starts and sends SIGKILL after killTimeout (200ms),
+	// which the child cannot trap.
+	selfPid := syscall.Getpid()
+	if err := syscall.Kill(selfPid, syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill SIGTERM: %v", err)
+	}
+
+	// The child should print "TERM" (trap fired) before SIGKILL hits.
+	if line, ok := readLineWithin(scanner, 1*time.Second); !ok || line != "TERM" {
+		t.Fatalf("after SIGTERM, child output = %q (ok=%v); want TERM", line, ok)
+	}
+
+	// Wait for the child to actually exit. Without the fix, it stays alive
+	// until t.Cleanup SIGKILLs it (test passes but exit reason is wrong) —
+	// so we assert on the wait result: SIGKILL is the signature.
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- child.Wait() }()
+	select {
+	case err := <-waitErr:
+		// On Unix, exec.Cmd.Wait returns *exec.ExitError for non-zero exits.
+		// SIGKILL produces ExitCode -1 with Signal() == SIGKILL. Verify this
+		// rather than just "child exited" — a child that exits cleanly via
+		// trap (which our script doesn't do for TERM) would also satisfy
+		// "wait returned" but indicate the test's assumption is wrong.
+		if err == nil {
+			t.Fatal("child exited cleanly; expected SIGKILL termination")
+		}
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("child Wait err = %v (%T); want *exec.ExitError", err, err)
+		}
+		ws, ok := exitErr.Sys().(syscall.WaitStatus)
+		if !ok {
+			t.Fatalf("WaitStatus assertion failed: %T", exitErr.Sys())
+		}
+		if !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+			t.Fatalf("child exit signal = %v (signaled=%v); want SIGKILL — escalation ladder did not fire for SIGTERM",
+				ws.Signal(), ws.Signaled())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("child still alive 2s after SIGTERM — escalation ladder did not fire (bug: only SIGINT escalates)")
+	}
+
+	sigCancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("forwardSignals did not return after ctx cancel")
+	}
+}
+
 // readLineWithin reads one newline-delimited line from scanner, returning the
 // line text and true if a line arrived within timeout, otherwise ("", false).
 // The scanner.Scan() call is itself blocking, so we run it in a goroutine.
