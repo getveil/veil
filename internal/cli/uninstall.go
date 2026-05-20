@@ -407,6 +407,8 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		plan = append(plan, planned{pair: p, status: status, diff: diff})
 	}
 
+	caPaths, caPresent := caCleanupTargets()
+
 	_, _ = fmt.Fprintln(w, "Uninstall plan:")
 	for _, pl := range plan {
 		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), pl.pair.original)
@@ -416,6 +418,9 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 	if stateExists {
 		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", stateDir)
+	}
+	if caPresent {
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", caPaths.dir)
 	}
 
 	if dryRun {
@@ -464,8 +469,17 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
+	caRemoved := false
 	if stateExists {
 		purgeKeystoreEntry(ew, root)
+		// Remove the user-global CA cert + key BEFORE wiping the project
+		// state dir. An orphan "Veil Local Root" cert under
+		// ~/Library/Application Support/veil (macOS) or
+		// ~/.local/share/veil (Linux) is exactly what a security-conscious
+		// user will flag post-uninstall — symmetry with init's
+		// LoadOrCreateCA. Best-effort: any error surfaces as a warning so
+		// state-dir removal still runs.
+		caRemoved = cleanupCAFiles(w, ew)
 		if err := os.RemoveAll(stateDir); err != nil {
 			return wrapErr(fmt.Sprintf("removing %s", stateDir), err)
 		}
@@ -482,6 +496,9 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 	if stateExists {
 		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
+	}
+	if caRemoved {
+		printCATrustStoreReminder(w)
 	}
 	return nil
 }
@@ -553,6 +570,118 @@ func purgeKeystoreEntry(ew io.Writer, root string) {
 	if err := ks.Delete(pid); err != nil {
 		ui.Warnf(ew, "could not purge keystore entry: %v", err)
 	}
+}
+
+// caCleanupPaths bundles the user-global CA paths uninstall may remove.
+// dir is the containing `ca/` directory; parent is the app-support root
+// (e.g. ~/Library/Application Support/veil) we'll opportunistically
+// rmdir if it ends up empty after the ca/ dir is gone.
+type caCleanupPaths struct {
+	cert   string
+	key    string
+	dir    string
+	parent string
+}
+
+// caCleanupTargets resolves the user-global CA paths and reports whether
+// any of the cert/key files exist on disk. A failure to resolve a path
+// (e.g. unsupported GOOS) returns present=false with no error — callers
+// treat that as "nothing to clean up" since init couldn't have written
+// there either.
+func caCleanupTargets() (caCleanupPaths, bool) {
+	var p caCleanupPaths
+	dir, err := config.CADir()
+	if err != nil {
+		return p, false
+	}
+	cert, err := config.CAFile()
+	if err != nil {
+		return p, false
+	}
+	key, err := config.CAKeyFile()
+	if err != nil {
+		return p, false
+	}
+	p = caCleanupPaths{cert: cert, key: key, dir: dir, parent: filepath.Dir(dir)}
+	present := pathExists(cert) || pathExists(key)
+	return p, present
+}
+
+// cleanupCAFiles removes the user-global CA cert + key, then attempts to
+// rmdir the containing ca/ dir and its parent (app-support root) when
+// each is empty. Returns true when at least one of cert/key existed and
+// was removed — callers use that to gate the trust-store reminder.
+//
+// All filesystem errors are surfaced as warnings via ew so uninstall
+// remains best-effort and continues with state-dir removal. The
+// "already-gone" case is silent: a missing file is not an error.
+func cleanupCAFiles(w, ew io.Writer) bool {
+	paths, present := caCleanupTargets()
+	if !present {
+		return false
+	}
+
+	removed := false
+	for _, p := range []string{paths.cert, paths.key} {
+		err := os.Remove(p)
+		switch {
+		case err == nil:
+			removed = true
+		case errors.Is(err, os.ErrNotExist):
+			// Half-installed CA (only one of cert/key on disk): nothing
+			// to do for the missing side, but the other side was/will be
+			// removed — leave `removed` as set by the successful branch.
+		default:
+			ui.Warnf(ew, "could not remove %s: %v", p, err)
+		}
+	}
+	if !removed {
+		return false
+	}
+	ui.Step(w, fmt.Sprintf("removed CA cert + key under %s", ui.RedactPath(paths.dir)))
+
+	// Best-effort rmdir of the ca/ directory; only succeeds when empty.
+	// os.Remove on a non-empty dir returns ENOTEMPTY — treat that as
+	// "user has other files here, leave it alone" without warning.
+	if err := os.Remove(paths.dir); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmptyErr(err) {
+		ui.Warnf(ew, "could not remove %s: %v", paths.dir, err)
+	}
+	// Same for the parent app-support dir (~/Library/Application Support/veil
+	// or ~/.local/share/veil): rmdir if empty, leave it otherwise.
+	if paths.parent != "" {
+		if err := os.Remove(paths.parent); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmptyErr(err) {
+			ui.Warnf(ew, "could not remove %s: %v", paths.parent, err)
+		}
+	}
+	return true
+}
+
+// printCATrustStoreReminder tells the user how to remove the Veil root
+// from their OS trust store if they ever manually added it. We only call
+// this when at least one CA file was actually removed, so the message
+// doesn't fire spuriously on a clean second-run uninstall.
+func printCATrustStoreReminder(w io.Writer) {
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "If you added the Veil CA to your system trust store, you can now remove it:")
+	_, _ = fmt.Fprintln(w, `  macOS: sudo security delete-certificate -c "Veil Local Root" /Library/Keychains/System.keychain`)
+	_, _ = fmt.Fprintln(w, "  Linux: see docs/RELEASING.md or your distro's CA-trust tool")
+}
+
+// pathExists reports whether a filesystem entry exists at path. Unlike
+// proxy.fileExists this does NOT exclude directories — uninstall wants
+// to clean up the ca/ dir whether or not the leaf files were ever
+// written (e.g. half-installed state).
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// isNotEmptyErr reports whether an os.Remove error indicates the
+// directory wasn't empty. Both syscall.ENOTEMPTY and syscall.EEXIST can
+// surface on different platforms; either means "user has unrelated
+// files here, leave it alone".
+func isNotEmptyErr(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 // classLabel returns a short label for display in the plan table.

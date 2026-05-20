@@ -1223,3 +1223,161 @@ func TestUninstallPreservesUserGitignore(t *testing.T) {
 		t.Errorf("user's .gitignore entries must be preserved, got:\n%s", got)
 	}
 }
+
+// TestUninstallRemovesCAFiles is the regression for the launch-blocker bug:
+// `veil init` writes a self-signed "Veil Local Root" CA cert + key under the
+// user's app-support dir (macOS: ~/Library/Application Support/veil/ca,
+// Linux: ~/.local/share/veil/ca), but `veil uninstall` left them on disk
+// indefinitely. An orphan root CA post-uninstall is a security-hygiene red
+// flag for a MITM tool, so uninstall must remove them symmetrically with
+// init's LoadOrCreateCA, rmdir the containing ca/ dir and the parent
+// app-support dir when empty, and stay idempotent on a second run.
+func TestUninstallRemovesCAFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Pin HOME inside a tempdir so init's CA write lands in a sandbox we
+	// can assert against (and so we don't pollute the developer's real
+	// ~/Library/Application Support/veil or ~/.local/share/veil). Also
+	// pin XDG_DATA_HOME so the Linux branch of caDir() stays inside HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// init writes CA cert + key as a side effect of setupProxyCA.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	caCert, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("CAFile: %v", err)
+	}
+	caKey, err := config.CAKeyFile()
+	if err != nil {
+		t.Fatalf("CAKeyFile: %v", err)
+	}
+	caDir, err := config.CADir()
+	if err != nil {
+		t.Fatalf("CADir: %v", err)
+	}
+	// Sanity: init must have actually written the CA. If this fires, the
+	// test below would be a no-op rather than a regression check.
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("precondition: init should have created %s, stat: %v", p, err)
+		}
+	}
+
+	// First uninstall: CA files + ca/ dir must be gone, and the trust-store
+	// reminder must fire (because at least one CA file was actually removed).
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed; stat err: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(caDir); !os.IsNotExist(err) {
+		t.Errorf("expected ca/ dir %s to be removed; stat err: %v", caDir, err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Veil CA to your system trust store") {
+		t.Errorf("expected trust-store removal reminder in output; got:\n%s", out)
+	}
+	if !strings.Contains(out, `security delete-certificate -c "Veil Local Root"`) {
+		t.Errorf("expected macOS keychain hint in reminder; got:\n%s", out)
+	}
+
+	// Second uninstall must be a clean no-op: nothing on disk to act on,
+	// no errors, no spurious trust-store reminder (which is gated on
+	// "we actually removed something").
+	cmd = NewRoot("test")
+	stdout = new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("second uninstall failed (must be idempotent): %v", err)
+	}
+	out = stdout.String()
+	if !strings.Contains(out, "already uninstalled") {
+		t.Errorf("expected 'already uninstalled' on second run; got:\n%s", out)
+	}
+	if strings.Contains(out, "Veil CA to your system trust store") {
+		t.Errorf("trust-store reminder must not fire when nothing was removed; got:\n%s", out)
+	}
+}
+
+// TestUninstallDryRunDoesNotRemoveCAFiles guards the no-side-effects contract
+// of --dry-run for the new CA cleanup path: the plan should mention the CA
+// dir as a [wipe] entry, but no CA file may be touched on disk.
+func TestUninstallDryRunDoesNotRemoveCAFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	caCert, _ := config.CAFile()
+	caKey, _ := config.CAKeyFile()
+	caDir, _ := config.CADir()
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+
+	// CA files must still be present.
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("--dry-run removed %s (stat err: %v); contract is no side effects", p, err)
+		}
+	}
+	// Plan output must mention the CA dir so the user knows it'll be wiped.
+	if !strings.Contains(stdout.String(), caDir) {
+		t.Errorf("expected dry-run plan to include CA dir %s; got:\n%s", caDir, stdout.String())
+	}
+	// And of course the reminder must NOT fire on a dry-run.
+	if strings.Contains(stdout.String(), "Veil CA to your system trust store") {
+		t.Errorf("trust-store reminder must not appear on --dry-run; got:\n%s", stdout.String())
+	}
+}
