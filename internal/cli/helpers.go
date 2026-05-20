@@ -63,7 +63,7 @@ func announceFileBackedKeystore(w io.Writer, ks vault.Keystore) error {
 			envkeys.Passphrase,
 		)
 		ui.FormatWarning(w, msg, hint)
-		return cliErrorWith(vault.ErrKeystoreUnavailable, msg, hint)
+		return cliErrorWith(vault.ErrPassphraseMissing, msg, hint)
 	}
 	ui.Dim(w, fmt.Sprintf("Using file-backed keystore at %s", dir))
 	return nil

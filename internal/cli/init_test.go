@@ -1640,7 +1640,10 @@ func TestInit_DoesNotWarnWhenPathFlagOmitted(t *testing.T) {
 // the keystore fell back to FileKeystore AND VEIL_PASSPHRASE is unset, the
 // announce helper surfaces a warning and returns a typed error so the caller
 // short-circuits before the first vault op (which would have produced an
-// opaque ErrKeystoreUnavailable instead).
+// opaque ErrKeystoreUnavailable instead). The wrapped sentinel is
+// ErrPassphraseMissing (narrower than ErrKeystoreUnavailable) so the CLI can
+// distinguish "user forgot to set passphrase" from "wrong / corrupt
+// passphrase" and recommend different remediation for each.
 func TestAnnounceFileBackedKeystore_WithoutPassphraseErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("VEIL_PASSPHRASE", "")
@@ -1652,8 +1655,8 @@ func TestAnnounceFileBackedKeystore_WithoutPassphraseErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected announceFileBackedKeystore to error when passphrase is unset")
 	}
-	if !errors.Is(err, vault.ErrKeystoreUnavailable) {
-		t.Errorf("expected wrapped ErrKeystoreUnavailable, got: %v", err)
+	if !errors.Is(err, vault.ErrPassphraseMissing) {
+		t.Errorf("expected wrapped ErrPassphraseMissing, got: %v", err)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "No system keyring found") {

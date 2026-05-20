@@ -9,7 +9,7 @@ import (
 // IsFileBacked reports whether ks is a FileKeystore (the Linux fallback
 // when no system keyring is available). Callers use this to surface a
 // banner before the first vault operation so users don't hit an opaque
-// ErrKeystoreUnavailable when VEIL_PASSPHRASE is unset.
+// ErrPassphraseMissing when VEIL_PASSPHRASE is unset.
 func IsFileBacked(ks Keystore) bool {
 	_, ok := ks.(*FileKeystore)
 	return ok

@@ -36,10 +36,19 @@ func TestMapRunError(t *testing.T) {
 		// passphrase). The fix routes this case through a dedicated arm that
 		// names VEIL_PASSPHRASE explicitly and does NOT recommend --force.
 		{
-			name:         "keystore unavailable passphrase missing",
-			in:           fmt.Errorf("open vault: %w: %w: %s is not set", vault.ErrOpen, vault.ErrKeystoreUnavailable, "VEIL_PASSPHRASE"),
-			expectMsg:    "VEIL_PASSPHRASE",
+			name:         "keystore passphrase missing",
+			in:           fmt.Errorf("open vault: %w: %w: %s is not set", vault.ErrOpen, vault.ErrPassphraseMissing, "VEIL_PASSPHRASE"),
+			expectMsg:    "VEIL_PASSPHRASE is not set",
 			notExpectMsg: "--force",
+		},
+		// Wrong/corrupt passphrase — decryption fails. Must NOT say "is not
+		// set" because the env var IS set, just wrong. Must mention
+		// `veil init --force` as the recovery option.
+		{
+			name:         "keystore wrong passphrase",
+			in:           fmt.Errorf("open vault: %w: %w: decrypt: invalid", vault.ErrOpen, vault.ErrKeystoreUnavailable),
+			expectMsg:    "veil init --force",
+			notExpectMsg: "is not set",
 		},
 		{name: "vault open", in: fmt.Errorf("wrap: %w", vault.ErrOpen), expectMsg: "Cannot decrypt vault"},
 		{name: "master key", in: fmt.Errorf("wrap: %w", vault.ErrMasterKey), expectMsg: "Cannot decrypt vault"},

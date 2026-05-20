@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -183,6 +184,12 @@ func TestFileKeystoreNoPassphrase(t *testing.T) {
 	err := ks.Set("proj-1", key)
 	if err == nil {
 		t.Fatal("expected error when VEIL_PASSPHRASE is empty")
+	}
+	// Must wrap ErrPassphraseMissing (not ErrKeystoreUnavailable) so the CLI
+	// can tell "user forgot to set passphrase" apart from "wrong passphrase /
+	// corrupt key file" and recommend different remediation for each.
+	if !errors.Is(err, ErrPassphraseMissing) {
+		t.Errorf("expected ErrPassphraseMissing, got: %v", err)
 	}
 }
 

@@ -35,11 +35,14 @@ func (f *FileKeystore) SetWorkFactor(logN int) {
 	f.workFactor = logN
 }
 
-// passphrase returns the encryption passphrase or an error if unset.
+// passphrase returns the encryption passphrase or an error if unset. Returns
+// ErrPassphraseMissing (not ErrKeystoreUnavailable) so the CLI can distinguish
+// "user forgot to set VEIL_PASSPHRASE" from "passphrase wrong / file corrupt"
+// and offer the correct remediation for each.
 func passphrase() (string, error) {
 	p := os.Getenv(envkeys.Passphrase)
 	if p == "" {
-		return "", fmt.Errorf("%w: %s is not set (required for age-encrypted key file)", ErrKeystoreUnavailable, envkeys.Passphrase)
+		return "", fmt.Errorf("%w: %s is not set (required for age-encrypted key file)", ErrPassphraseMissing, envkeys.Passphrase)
 	}
 	return p, nil
 }

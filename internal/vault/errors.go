@@ -30,8 +30,16 @@ var (
 	ErrSave = errors.New("vault: save failed")
 
 	// ErrKeystoreUnavailable indicates the system keystore (keyring, file)
-	// could not be reached.
+	// could not be reached. Use ErrPassphraseMissing for the narrower case
+	// where the file-backed fallback has no passphrase configured — the two
+	// require different user-facing remediation.
 	ErrKeystoreUnavailable = errors.New("keystore: unavailable")
+
+	// ErrPassphraseMissing indicates VEIL_PASSPHRASE is unset for the
+	// file-backed keystore fallback. Distinct from ErrKeystoreUnavailable so
+	// the CLI can tell the user to set the env var instead of routing them to
+	// the destructive `veil init --force` recovery path.
+	ErrPassphraseMissing = errors.New("keystore: passphrase missing")
 
 	// ErrKeystoreWrite indicates a write or chmod on the keystore backing
 	// store failed.

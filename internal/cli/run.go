@@ -89,15 +89,20 @@ func mapRunError(err error) (string, error) {
 		// here: there is no vault to lose, and the message implies one
 		// existed. Route the user to plain `veil init` instead.
 		return "Veil is not initialized in this project. Run `veil init` to get started.", ErrNotInitialized
-	case errors.Is(err, vault.ErrKeystoreUnavailable):
+	case errors.Is(err, vault.ErrPassphraseMissing):
 		// On Linux without a working Secret Service (no system keyring) the
 		// keystore falls back to an age-encrypted key file gated by
-		// VEIL_PASSPHRASE. If that env var is unset (or any other keystore
-		// access path fails), the previous "keychain may have changed"
-		// hint sent users down a destructive `init --force` path that
-		// would not fix anything. Keep this arm BEFORE the generic
+		// VEIL_PASSPHRASE. If that env var is unset, the previous "keychain
+		// may have changed" hint sent users down a destructive `init --force`
+		// path that would not fix anything. Keep this arm BEFORE the generic
 		// ErrMasterKey / ErrOpen arms so it wins when both match.
 		return "Cannot open vault: VEIL_PASSPHRASE is not set. On Linux without a system keyring, Veil falls back to an age-encrypted key file. Set VEIL_PASSPHRASE in your environment before running veil. See docs.", nil
+	case errors.Is(err, vault.ErrKeystoreUnavailable):
+		// Keystore reachable but the file could not be decrypted or parsed —
+		// most commonly a wrong VEIL_PASSPHRASE. The user-facing message must
+		// NOT say "is not set" (the env var IS set, just wrong) and must
+		// surface `veil init --force` as the explicit recovery path.
+		return "Cannot open vault. Check VEIL_PASSPHRASE matches the passphrase used at `veil init`.\n  If you've forgotten it, run `veil init --force` to start over (existing credentials will be lost).", nil
 	case errors.Is(err, vault.ErrOpen), errors.Is(err, vault.ErrMasterKey), errors.Is(err, vault.ErrCorrupt):
 		return "Cannot decrypt vault. Your keychain may have changed. Run veil init --force to reinitialize.", nil
 	case errors.Is(err, proxy.ErrCALoad), errors.Is(err, proxy.ErrCAGenerate):
