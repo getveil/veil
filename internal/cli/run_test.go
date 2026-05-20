@@ -29,6 +29,18 @@ func TestMapRunError(t *testing.T) {
 			notExpectMsg:   "--force",
 			expectSentinel: cli.ErrNotInitialized,
 		},
+		// Keystore unavailable — most commonly VEIL_PASSPHRASE unset on a Linux
+		// box without a system keyring. The previous "keychain may have
+		// changed, run init --force" hint was actively wrong here: --force
+		// would destroy the vault without solving the actual problem (missing
+		// passphrase). The fix routes this case through a dedicated arm that
+		// names VEIL_PASSPHRASE explicitly and does NOT recommend --force.
+		{
+			name:         "keystore unavailable passphrase missing",
+			in:           fmt.Errorf("open vault: %w: %w: %s is not set", vault.ErrOpen, vault.ErrKeystoreUnavailable, "VEIL_PASSPHRASE"),
+			expectMsg:    "VEIL_PASSPHRASE",
+			notExpectMsg: "--force",
+		},
 		{name: "vault open", in: fmt.Errorf("wrap: %w", vault.ErrOpen), expectMsg: "Cannot decrypt vault"},
 		{name: "master key", in: fmt.Errorf("wrap: %w", vault.ErrMasterKey), expectMsg: "Cannot decrypt vault"},
 		{name: "ca load", in: fmt.Errorf("wrap: %w", proxy.ErrCALoad), expectMsg: "CA certificate"},
