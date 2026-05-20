@@ -405,24 +405,45 @@ func TestQueryBlockedFilter(t *testing.T) {
 	blocked.Location = "blocked"
 	s.Record(blocked)
 
+	// Sentinel-leaked injection — must be filtered the same way as
+	// blocked rows so `veil log` and Summary agree on what counts.
+	leaked := makeInjection("api.example.com", "leaked-key", base.Add(2*time.Second))
+	leaked.Location = "leaked"
+	s.Record(leaked)
+
 	s.flushPending()
 
-	// Without IncludeBlocked, should only get regular.
+	// Without IncludeBlocked, only the regular row is returned —
+	// both blocked AND leaked rows are excluded by default so the
+	// table never disagrees with the session footer.
 	rows, err := s.Query(Filter{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Errorf("without IncludeBlocked: got %d rows, want 1", len(rows))
+		t.Errorf("default Query: got %d rows, want 1 (blocked+leaked must be hidden)", len(rows))
+	}
+	if len(rows) == 1 && rows[0].Location != "header" {
+		t.Errorf("default Query: row Location = %q, want header (regular injection)", rows[0].Location)
 	}
 
-	// With IncludeBlocked, should get both.
+	// With IncludeBlocked, both blocked and leaked rows are surfaced
+	// alongside regular injections.
 	rows, err = s.Query(Filter{IncludeBlocked: true})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Errorf("with IncludeBlocked: got %d rows, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Errorf("with IncludeBlocked: got %d rows, want 3 (regular+blocked+leaked)", len(rows))
+	}
+	locations := map[string]bool{}
+	for _, r := range rows {
+		locations[r.Location] = true
+	}
+	for _, want := range []string{"header", "blocked", "leaked"} {
+		if !locations[want] {
+			t.Errorf("with IncludeBlocked: missing location %q in %v", want, locations)
+		}
 	}
 }
 

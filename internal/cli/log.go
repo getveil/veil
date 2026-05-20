@@ -31,18 +31,19 @@ func projectHasEverRun(root string, store *audit.Store) (bool, error) {
 
 func logCmd() *cobra.Command {
 	var (
-		since      string
-		host       string
-		credential string
-		limit      int
-		jsonOutput bool
+		since       string
+		host        string
+		credential  string
+		limit       int
+		jsonOutput  bool
+		showBlocked bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "log",
 		Short: "Show audit log of secret injections",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLog(cmd, since, host, credential, limit, jsonOutput)
+			return runLog(cmd, since, host, credential, limit, jsonOutput, showBlocked)
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "24h", "show entries since duration (e.g. 24h, 7d) or RFC3339 timestamp")
@@ -50,10 +51,11 @@ func logCmd() *cobra.Command {
 	cmd.Flags().StringVar(&credential, "credential", "", "filter by credential name")
 	cmd.Flags().IntVar(&limit, "limit", 100, "max rows to return")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON Lines")
+	cmd.Flags().BoolVar(&showBlocked, "blocked", false, "Include host-blocked and sentinel-leaked events in the output.")
 	return cmd
 }
 
-func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput bool) error {
+func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, showBlocked bool) error {
 	root, err := requireInitializedProject(cmd)
 	if err != nil {
 		return err
@@ -76,6 +78,7 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		Host:           host,
 		CredentialName: credential,
 		Limit:          limit,
+		IncludeBlocked: showBlocked,
 	})
 	if err != nil {
 		return cliError(fmt.Sprintf("querying audit log: %v", err), "")

@@ -225,11 +225,11 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	}
 }
 
-// TestLogCmd_PublicFlagsVisible verifies that --since, --host, and
-// --credential flags remain visible in --help output.
+// TestLogCmd_PublicFlagsVisible verifies that --since, --host,
+// --credential, and --blocked flags remain visible in --help output.
 func TestLogCmd_PublicFlagsVisible(t *testing.T) {
 	cmd := logCmd()
-	for _, name := range []string{"since", "host", "credential"} {
+	for _, name := range []string{"since", "host", "credential", "blocked"} {
 		f := cmd.Flags().Lookup(name)
 		if f == nil {
 			t.Fatalf("flag --%s missing", name)
@@ -237,5 +237,185 @@ func TestLogCmd_PublicFlagsVisible(t *testing.T) {
 		if f.Hidden {
 			t.Errorf("flag --%s must remain visible in --help", name)
 		}
+	}
+}
+
+// seedLogFixtures inserts one regular injection, one blocked event, and
+// one sentinel-leaked event into the audit DB for the given project root.
+// Returns the credential names so callers can assert on row contents
+// without coupling to byte-level details.
+func seedLogFixtures(t *testing.T, root string) (regularCred, blockedCred, leakedCred string) {
+	t.Helper()
+	regularCred = "regular-cred"
+	blockedCred = "blocked-cred"
+	leakedCred = "leaked-cred"
+
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	now := time.Now()
+
+	// Regular injection — should always appear in `veil log`.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-3 * time.Second),
+		RequestID:      "req-regular",
+		Host:           "api.example.com",
+		Method:         "POST",
+		URLPath:        "/v1/chat",
+		Location:       "header",
+		CredentialName: regularCred,
+	})
+
+	// Host-blocked event.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-2 * time.Second),
+		RequestID:      "req-blocked",
+		Host:           "evil.example.com",
+		Method:         "POST",
+		URLPath:        "/steal",
+		Location:       "blocked",
+		CredentialName: blockedCred,
+	})
+
+	// Sentinel-leaked event — the fail-closed guard refused to forward.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-time.Second),
+		RequestID:      "req-leaked",
+		Host:           "api.example.com",
+		Method:         "POST",
+		URLPath:        "/v1/chat",
+		Location:       "leaked",
+		CredentialName: leakedCred,
+	})
+
+	store.DrainForTest()
+	_ = store.Close()
+	return
+}
+
+// TestLog_DefaultExcludesLeakedRows verifies the default `veil log`
+// output hides both blocked and leaked rows, mirroring the session
+// footer's "N injections" count. Without this exclusion the footer
+// would say "0 injections" while the log table renders leaked rows
+// with empty bytes/credential fields — a direct contradiction.
+func TestLog_DefaultExcludesLeakedRows(t *testing.T) {
+	root := initProject(t)
+	regularCred, blockedCred, leakedCred := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	if !strings.Contains(s, regularCred) {
+		t.Errorf("default output must include regular injection %q:\n%s", regularCred, s)
+	}
+	if strings.Contains(s, blockedCred) {
+		t.Errorf("default output must hide blocked rows; saw %q:\n%s", blockedCred, s)
+	}
+	if strings.Contains(s, leakedCred) {
+		t.Errorf("default output must hide leaked rows; saw %q:\n%s", leakedCred, s)
+	}
+	if strings.Contains(s, "blocked") {
+		t.Errorf("default output must not show the 'blocked' location label:\n%s", s)
+	}
+	if strings.Contains(s, "leaked") {
+		t.Errorf("default output must not show the 'leaked' location label:\n%s", s)
+	}
+}
+
+// TestLog_BlockedFlagShowsBlockedAndLeaked verifies that --blocked
+// surfaces BOTH host-blocked and sentinel-leaked rows alongside the
+// regular injection, so operators can investigate refusal events from
+// the same command.
+func TestLog_BlockedFlagShowsBlockedAndLeaked(t *testing.T) {
+	root := initProject(t)
+	regularCred, blockedCred, leakedCred := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--blocked"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --blocked: %v", err)
+	}
+	s := out.String()
+
+	for _, want := range []string{regularCred, blockedCred, leakedCred} {
+		if !strings.Contains(s, want) {
+			t.Errorf("--blocked output missing credential %q:\n%s", want, s)
+		}
+	}
+	if !strings.Contains(s, "blocked") {
+		t.Errorf("--blocked output must show 'blocked' location:\n%s", s)
+	}
+	if !strings.Contains(s, "leaked") {
+		t.Errorf("--blocked output must show 'leaked' location:\n%s", s)
+	}
+
+	// Footer reports the row count for the displayed window.
+	if !strings.Contains(s, "3 events") {
+		t.Errorf("--blocked footer must report 3 events; got:\n%s", s)
+	}
+}
+
+// TestLog_JSONSchemaUnchangedForRegularRows verifies that --json output
+// for a regular injection still has exactly the documented field set,
+// so existing machine consumers don't break when the --blocked flag is
+// added. The blocked-row schema is the same — we only exercise the
+// regular row here because that's the path consumers rely on.
+func TestLog_JSONSchemaUnchangedForRegularRows(t *testing.T) {
+	root := initProject(t)
+	regularCred, _, _ := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	// Parse the regular row (default --json mode excludes blocked/leaked).
+	var entry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON line %q: %v", line, err)
+		}
+		if entry["credential"] == regularCred {
+			break
+		}
+	}
+	if entry["credential"] != regularCred {
+		t.Fatalf("did not find regular row in JSON output; got %v", entry)
+	}
+
+	wantKeys := map[string]bool{
+		"timestamp":  true,
+		"host":       true,
+		"method":     true,
+		"path":       true,
+		"credential": true,
+		"location":   true,
+	}
+	for k := range entry {
+		if !wantKeys[k] {
+			t.Errorf("JSON entry contains unexpected key %q (schema drift):\n%v", k, entry)
+		}
+		delete(wantKeys, k)
+	}
+	for k := range wantKeys {
+		t.Errorf("JSON entry missing expected key %q:\n%v", k, entry)
 	}
 }

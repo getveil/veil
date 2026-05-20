@@ -12,7 +12,13 @@ type Filter struct {
 	Host           string    // empty = any
 	CredentialName string    // empty = any
 	Limit          int       // 0 = default 100
-	IncludeBlocked bool      // false = exclude blocked events. Kept on the Go API for the runner's session footer and tests after the CLI flag was removed in Phase 6.
+	// IncludeBlocked controls whether host-blocked and sentinel-leaked
+	// rows are surfaced. When false (the default) Query mirrors Summary
+	// and hides both location='blocked' and location='leaked' so the
+	// table never disagrees with the session-end "N injections" line.
+	// When true, both blocked and leaked rows are returned — the CLI's
+	// `--blocked` flag is the only user-facing toggle.
+	IncludeBlocked bool
 }
 
 // Row represents a single injection record returned by a query.
@@ -58,7 +64,12 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 	}
 
 	if !f.IncludeBlocked {
-		clauses = append(clauses, "location != 'blocked'")
+		// Mirror Summary's exclusion list so `veil log` never shows rows
+		// that the session footer counts as zero injections. Blocked rows
+		// are host-policy refusals; leaked rows are sentinel-guard
+		// refusals — neither put a secret on the wire, so both are
+		// hidden unless the operator opts in via --blocked.
+		clauses = append(clauses, "location NOT IN ('blocked', 'leaked')")
 	}
 
 	limit := f.Limit
