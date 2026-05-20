@@ -16,6 +16,13 @@ func TestFormatProviders(t *testing.T) {
 		wantLen    int // 0 = same as input
 		charset    string
 		wantHosts  []string
+		// matchKeyValue is the value paired with matchKey for the
+		// "name-hint matches" subtest. Empty string means the legacy
+		// behaviour ("anything") — set to a shape-passing value for
+		// providers that require the value to also clear a credential
+		// shape gate (Stripe, Resend), which intentionally refuse to
+		// vault on the name hint alone.
+		matchKeyValue string
 	}{
 		{
 			name:       "openai",
@@ -40,15 +47,16 @@ func TestFormatProviders(t *testing.T) {
 			wantHosts:  []string{"api.anthropic.com"},
 		},
 		{
-			name:       "stripe",
-			matchKey:   "STRIPE_SECRET_KEY",
-			matchValue: "sk_live_" + strings.Repeat("a", 24),
-			noMatchKey: "OTHER_KEY",
-			genInput:   "sk_live_" + strings.Repeat("a", 24),
-			wantPrefix: "sk_live_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"api.stripe.com", "files.stripe.com"},
+			name:          "stripe",
+			matchKey:      "STRIPE_SECRET_KEY",
+			matchKeyValue: "sk_live_" + strings.Repeat("a", 24),
+			matchValue:    "sk_live_" + strings.Repeat("a", 24),
+			noMatchKey:    "OTHER_KEY",
+			genInput:      "sk_live_" + strings.Repeat("a", 24),
+			wantPrefix:    "sk_live_",
+			wantLen:       0,
+			charset:       "alphanumeric",
+			wantHosts:     []string{"api.stripe.com", "files.stripe.com"},
 		},
 		{
 			name:       "slack",
@@ -117,15 +125,16 @@ func TestFormatProviders(t *testing.T) {
 			wantHosts:  []string{"gitlab.com"},
 		},
 		{
-			name:       "resend",
-			matchKey:   "RESEND_API_KEY",
-			matchValue: "re_abcdefghijklmnopqrst",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "re_abcdefghijklmnopqrst",
-			wantPrefix: "re_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"api.resend.com"},
+			name:          "resend",
+			matchKey:      "RESEND_API_KEY",
+			matchKeyValue: "re_abcdefghijklmnopqrst",
+			matchValue:    "re_abcdefghijklmnopqrst",
+			noMatchKey:    "OTHER_KEY",
+			genInput:      "re_abcdefghijklmnopqrst",
+			wantPrefix:    "re_",
+			wantLen:       0,
+			charset:       "alphanumeric",
+			wantHosts:     []string{"api.resend.com"},
 		},
 	}
 
@@ -134,8 +143,15 @@ func TestFormatProviders(t *testing.T) {
 			prov := mustProvider(t, tt.name)
 
 			t.Run("match_key", func(t *testing.T) {
-				if !prov.Match(tt.matchKey, "anything") {
-					t.Fatalf("should match key %s", tt.matchKey)
+				// Stripe / Resend require the value to also carry a real
+				// secret-key prefix; providers without that gate match on
+				// the name hint alone (legacy "anything" value).
+				valueForKey := tt.matchKeyValue
+				if valueForKey == "" {
+					valueForKey = "anything"
+				}
+				if !prov.Match(tt.matchKey, valueForKey) {
+					t.Fatalf("should match key %s with value %q", tt.matchKey, valueForKey)
 				}
 			})
 
@@ -231,5 +247,108 @@ func TestProviderFormats_AreVaultEligible(t *testing.T) {
 		if len(p.Hosts) == 0 {
 			t.Errorf("%s must declare a non-empty Hosts set", name)
 		}
+	}
+}
+
+// TestStripe_PublishableKeyNotVaulted is a regression test for the Stripe
+// false positive: STRIPE_PUBLISHABLE_KEY=pk_live_<...> matched the legacy
+// declarative provider via the STRIPE name hint and got auto-vaulted, even
+// though Stripe publishable keys (pk_*) are intentionally public. The new
+// hand-written matcher requires the value to start with one of the secret
+// prefixes (sk_/rk_) before the STRIPE name hint can fire.
+func TestStripe_PublishableKeyNotVaulted(t *testing.T) {
+	prov := mustProvider(t, "stripe")
+
+	value := "pk_live_" + strings.Repeat("a", 24)
+
+	if prov.Match("STRIPE_PUBLISHABLE_KEY", value) {
+		t.Fatalf("Stripe provider should NOT match publishable key under STRIPE_PUBLISHABLE_KEY=%q", value)
+	}
+	// Even with the secret-shaped name, a pk_ value must not vault.
+	if prov.Match("STRIPE_SECRET_KEY", value) {
+		t.Fatalf("Stripe provider should NOT match pk_ value even under STRIPE_SECRET_KEY")
+	}
+}
+
+// TestResend_ShortPrefixedValueNotVaulted is a regression test for the Resend
+// false positive: REDIRECT_URI=re_login_callback_url matched the legacy "re_"
+// prefix and got auto-vaulted. The new hand-written matcher requires
+// len(value) >= 20 so short re_-prefixed strings (paths, config tokens,
+// callback identifiers) cannot match.
+func TestResend_ShortPrefixedValueNotVaulted(t *testing.T) {
+	prov := mustProvider(t, "resend")
+
+	// Under 20 chars — must not match even though prefix is present.
+	short := "re_login_callback"
+	if len(short) >= 20 {
+		t.Fatalf("test setup: value %q must be < 20 chars to exercise the floor", short)
+	}
+	if prov.Match("REDIRECT_URI", short) {
+		t.Fatalf("Resend provider should NOT match short re_ value REDIRECT_URI=%q", short)
+	}
+	// Same value under a RESEND-named key must also not match — the name
+	// hint never short-circuits the shape gate.
+	if prov.Match("RESEND_REDIRECT", short) {
+		t.Fatalf("Resend provider should NOT match short re_ value RESEND_REDIRECT=%q", short)
+	}
+	// Sanity: a realistic-length re_ value still matches.
+	long := "re_" + strings.Repeat("a", 36)
+	if !prov.Match("REDIRECT_URI", long) {
+		t.Fatalf("Resend provider should match real-length value %q", long)
+	}
+}
+
+// TestResend_NameHintRequiresShape is a tighter sibling to
+// TestResend_ShortPrefixedValueNotVaulted: even when the key name contains
+// RESEND, a value that doesn't carry the re_ prefix at all must not match.
+func TestResend_NameHintRequiresShape(t *testing.T) {
+	prov := mustProvider(t, "resend")
+
+	// No re_ prefix at all — name hint alone must not fire.
+	if prov.Match("RESEND_FROM_EMAIL", "team@example.com") {
+		t.Fatal("Resend provider should NOT match on name hint alone (value lacks re_ prefix)")
+	}
+}
+
+// TestSupabase_SBPPrefixDetected_UnderGenericName locks in the sbp_ prefix
+// path: a Supabase personal access token (sbp_<36 alnum>) stored under an
+// arbitrary key name (e.g. MY_DB_TOKEN) must be classified as a Supabase
+// credential. Without the prefix path, only SUPABASE_*-named values or
+// real Supabase JWTs would be recognised.
+func TestSupabase_SBPPrefixDetected_UnderGenericName(t *testing.T) {
+	prov := mustProvider(t, "supabase")
+
+	value := "sbp_" + strings.Repeat("a", 36)
+	if !prov.Match("MY_DB_TOKEN", value) {
+		t.Fatalf("Supabase provider should match sbp_ value under generic key name MY_DB_TOKEN=%q", value)
+	}
+	// Verify host wiring is intact.
+	hasSupabaseHost := false
+	for _, h := range prov.Hosts {
+		if strings.Contains(h, "supabase") {
+			hasSupabaseHost = true
+		}
+	}
+	if !hasSupabaseHost {
+		t.Fatalf("supabase provider Hosts missing supabase entry: %v", prov.Hosts)
+	}
+	// Generate must produce a non-empty placeholder that carries the
+	// sentinel and the sbp_ prefix (so the placeholder is re-detectable
+	// by Match on a subsequent veil init pass).
+	gen := prov.Generate("MY_DB_TOKEN", value)
+	if gen == "" {
+		t.Fatal("Supabase Generate returned empty placeholder for sbp_ value")
+	}
+	if !strings.HasPrefix(gen, "sbp_") {
+		t.Fatalf("Supabase Generate for sbp_ input must preserve sbp_ prefix; got %q", gen)
+	}
+	if !strings.Contains(gen, Sentinel) {
+		t.Fatalf("Supabase Generate for sbp_ input must contain sentinel %q; got %q", Sentinel, gen)
+	}
+	// Round-trip: the generated placeholder must itself match Match so a
+	// re-run of veil init doesn't re-vault the placeholder as a fresh
+	// secret.
+	if !prov.Match("ANOTHER_NAME", gen) {
+		t.Fatalf("generated sbp_ placeholder %q does not round-trip through Match", gen)
 	}
 }

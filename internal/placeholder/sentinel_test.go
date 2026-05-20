@@ -23,7 +23,7 @@ func TestGenerateAlwaysContainsSentinel(t *testing.T) {
 		{"github_by_name", "GITHUB_TOKEN", strings.Repeat("z", 40)},
 		{"stripe_live", "SOME_KEY", "sk_live_" + strings.Repeat("a", 24)},
 		{"stripe_test", "SOME_KEY", "sk_test_" + strings.Repeat("a", 24)},
-		{"stripe_by_name", "STRIPE_SECRET_KEY", strings.Repeat("a", 32)},
+		{"stripe_by_name", "STRIPE_SECRET_KEY", "sk_live_" + strings.Repeat("a", 24)},
 		{"slack_bot", "SOME_KEY", "xoxb-" + strings.Repeat("a", 50)},
 		{"slack_by_name", "SLACK_TOKEN", strings.Repeat("b", 40)},
 		{"sendgrid_prefix", "SOME_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},

@@ -70,6 +70,36 @@ func TestProviderContract(t *testing.T) {
 	}
 }
 
+// TestSupabaseSBPPrefixUnderGenericName asserts that a Supabase personal
+// access token (sbp_<36 alnum>) stored under an arbitrary key name (not a
+// SUPABASE_* name) is still recognised by the Supabase provider. This locks
+// in the sbp_ prefix path independently from the SUPABASE_* name-hint path
+// covered by providerSamples["supabase"].
+func TestSupabaseSBPPrefixUnderGenericName(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	p, ok := reg.Get("supabase")
+	if !ok {
+		t.Fatal("supabase provider not registered")
+	}
+	value := "sbp_" + strings.Repeat("a", 36)
+	if !p.Match("MY_DB_TOKEN", value) {
+		t.Fatalf("Supabase provider should match sbp_ value under generic name; value=%q", value)
+	}
+	if !p.VaultEligible {
+		t.Fatal("supabase provider must be vault-eligible")
+	}
+	hasSupabaseHost := false
+	for _, h := range p.Hosts {
+		if strings.Contains(h, "supabase") {
+			hasSupabaseHost = true
+			break
+		}
+	}
+	if !hasSupabaseHost {
+		t.Fatalf("supabase provider Hosts missing supabase entry: %v", p.Hosts)
+	}
+}
+
 // TestRemovedLowSignalProviders asserts that the four key-name-only
 // providers (no value-shape check, just a substring on the env key) have
 // been removed. These were a noise source — DD_API_KEY in particular

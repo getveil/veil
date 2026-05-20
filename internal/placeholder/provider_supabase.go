@@ -18,19 +18,36 @@ func init() {
 		VaultEligible: true,
 		Hosts:         []string{"*.supabase.co", "*.supabase.com"},
 		Match:         isJWTWithAlg,
-		Generate: func(_, _ string) string {
+		Generate: func(_, value string) string {
+			// sbp_ personal-access-tokens: emit an sbp_-shaped placeholder
+			// rather than a JWT so the placeholder's structural class matches
+			// the input. Real Resend-style PATs are sbp_ + 36 alphanumeric.
+			if strings.HasPrefix(value, "sbp_") {
+				rest := len(value) - len("sbp_")
+				if rest < len(Sentinel) {
+					rest = 36
+				}
+				return sentinelize("sbp_"+randAlphanumeric(rest), len("sbp_"))
+			}
 			return generateSupabaseJWT("anon")
 		},
 	})
 }
 
 // isJWTWithAlg returns true only when the credential is clearly a Supabase
-// JWT — either the key name carries "SUPABASE", or the JWT payload's iss
-// field references supabase.co. The earlier shape-only check ("looks like a
-// JWT") matched every signed token in the wild (Auth0, Cognito, Firebase,
-// custom apps), producing false positives that caused us to inject Supabase
-// placeholders for unrelated credentials.
+// credential — a value bearing the sbp_ personal-access-token prefix, a key
+// name carrying "SUPABASE", or a JWT whose payload iss field references
+// supabase.co. The earlier shape-only check ("looks like a JWT") matched
+// every signed token in the wild (Auth0, Cognito, Firebase, custom apps),
+// producing false positives that caused us to inject Supabase placeholders
+// for unrelated credentials.
 func isJWTWithAlg(name, value string) bool {
+	// sbp_ personal-access-token prefix. Length floor matches the
+	// credential-shape gate applied to the SUPABASE_* name path so a stray
+	// `sbp_x` config value doesn't slip through.
+	if strings.HasPrefix(value, "sbp_") && len(value) >= secretMinLength {
+		return true
+	}
 	// Name-only fallback: catches custom/unprefixed tokens stored under a
 	// SUPABASE_* name. Require a credential-shaped value length so we don't
 	// classify config metadata like SUPABASE_REGION=us-east-1 or
