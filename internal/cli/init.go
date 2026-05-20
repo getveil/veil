@@ -84,9 +84,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return cliError(err.Error(), "")
 	}
-	if announce {
-		ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
-	}
 
 	stateDir := config.ProjectStateDir(root)
 	proceed, err := detectExistingProject(in, w, stateDir, force, interactive)
@@ -106,6 +103,14 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	if len(envPaths) == 0 {
 		return runInitNoEnvFiles(w, root, dryRun)
+	}
+
+	// Defer the non-interactive announce until after the scanner has confirmed
+	// there is actually something to vault. Printing it earlier produced a
+	// contradictory pair of lines on empty repos ("vaulting all detected
+	// secrets" immediately followed by "no .env files found").
+	if announce {
+		ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
 	}
 
 	envPaths = filterInputs(in, w, root, envPaths, interactive)

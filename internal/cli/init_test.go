@@ -1060,6 +1060,53 @@ func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
 	}
 }
 
+// TestInit_NoNonInteractiveNoticeWhenNoEnvFiles verifies that init does not
+// print the "Non-interactive mode: vaulting all detected secrets" announce
+// when the scanner returns zero .env files. Otherwise the user sees a
+// contradictory pair of lines — a "vaulting all detected" promise followed
+// immediately by "no .env files found" — describing an action that did not
+// happen.
+func TestInit_NoNonInteractiveNoticeWhenNoEnvFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Provide a non-TTY *os.File for stdin so detectInteractive falls
+	// into the auto-detected non-interactive branch (where announce=true).
+	// A *bytes.Buffer would be treated as interactive and bypass the bug.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pr.Close() }()
+	_ = pw.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(pr)
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init with no .env files should not error: %v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "no .env files found") {
+		t.Fatalf("expected no-sources message in output, got: %s", outStr)
+	}
+	if strings.Contains(outStr, "vaulting all detected secrets") {
+		t.Errorf("non-interactive announce printed when no .env files found:\n%s", outStr)
+	}
+}
+
 // TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted is the regression
 // for the data-loss bug where `veil init --force` re-scanned a .env that already
 // contained Veil placeholders, treated the placeholders as fresh secrets
