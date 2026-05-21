@@ -59,7 +59,8 @@ func forwardSignals(ctx context.Context, cmd *exec.Cmd) {
 			// additional SIGTERM/SIGKILL timers on top.
 			if sig == syscall.SIGINT || sig == syscall.SIGTERM {
 				escalateOnce.Do(func() {
-					go escalate(ctx, cmd)
+					et, kt := escalateTimeout, killTimeout
+					go escalate(ctx, cmd, et, kt)
 				})
 			}
 		}
@@ -68,8 +69,8 @@ func forwardSignals(ctx context.Context, cmd *exec.Cmd) {
 
 // escalate sends SIGTERM after escalateTimeout and SIGKILL after killTimeout
 // if the child process is still running.
-func escalate(ctx context.Context, cmd *exec.Cmd) {
-	termTimer := time.NewTimer(escalateTimeout)
+func escalate(ctx context.Context, cmd *exec.Cmd, escTimeout, kTimeout time.Duration) {
+	termTimer := time.NewTimer(escTimeout)
 	defer termTimer.Stop()
 
 	select {
@@ -83,7 +84,7 @@ func escalate(ctx context.Context, cmd *exec.Cmd) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 
-	killTimer := time.NewTimer(killTimeout - escalateTimeout)
+	killTimer := time.NewTimer(kTimeout - escTimeout)
 	defer killTimer.Stop()
 
 	select {
