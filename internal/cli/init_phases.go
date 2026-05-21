@@ -7,12 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/getveil/veil/internal/cli/correlate"
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/scanner"
@@ -66,7 +65,7 @@ func detectExistingProject(in io.Reader, w io.Writer, stateDir string, force, in
 		return false, cliErrorWith(ErrAlreadyInitialized, "project already initialized", "Use --force to reinitialize")
 	}
 	if interactive && !promptYN(in, w, "This will replace your existing vault. Continue?", false) {
-		ui.Dim(w, "Aborted.")
+		ui.Dim(w, "Cancelled.")
 		return false, nil
 	}
 	return true, nil
@@ -136,40 +135,26 @@ func firstSymlinkInChain(anchor string, subpath []string) string {
 // project while cleartext lands at the link target — strictly worse exposure
 // than not running Veil. Aggregates every violation so the user fixes them
 // in one pass.
-func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string) error {
+func refuseSymlinkedInputs(root string, envPaths []string) error {
 	var hits []string
 
 	for _, p := range envPaths {
 		hits = appendIfSymlink(hits, p, displayRel(root, p))
 	}
-	if mcpConfigPath != "" {
-		hits = appendIfSymlink(hits, mcpConfigPath, displayRel(root, mcpConfigPath))
-	}
 
-	checkChain := func(anchor string, subpath []string, leafDisplay string) {
-		hit := firstSymlinkInChain(anchor, subpath)
-		if hit == "" {
-			return
-		}
-		hits = append(hits, fmt.Sprintf("%s (parent %s)", leafDisplay, describeSymlink(hit, hit)))
-	}
-
-	// .env anchor is the project root. Scanner only looks at root itself
-	// today (no subdirs), so the walk is a no-op for current code; we keep
-	// it so a future nested scanner does not silently regress.
+	// .env anchor is the project root. We walk each file's parent chain
+	// so a .env discovered in a subdirectory with a symlinked ancestor is
+	// refused — not just leaf-symlinked files.
 	for _, p := range envPaths {
 		rel, err := filepath.Rel(root, filepath.Dir(p))
 		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
 			continue
 		}
-		checkChain(root, strings.Split(filepath.ToSlash(rel), "/"), displayRel(root, p))
-	}
-	// MCP anchor is the user's home (default discovery); skipped under the
-	// test-override env var since that path is explicitly user-chosen.
-	if mcpConfigPath != "" {
-		if anchor, subpath, ok, _ := mcpconfig.ParentAnchor(); ok {
-			checkChain(anchor, subpath, mcpConfigPath)
+		hit := firstSymlinkInChain(root, strings.Split(filepath.ToSlash(rel), "/"))
+		if hit == "" {
+			continue
 		}
+		hits = append(hits, fmt.Sprintf("%s (parent %s)", displayRel(root, p), describeSymlink(hit, hit)))
 	}
 
 	if len(hits) == 0 {
@@ -185,32 +170,6 @@ func refuseSymlinkedInputs(root string, envPaths []string, mcpConfigPath string)
 	)
 }
 
-// mcpSentinelHits returns "<rel>: <server>.<key>" entries for every value in
-// the MCP config at mcpConfigPath that already carries the placeholder
-// sentinel. Both env values and positional args are inspected. Parse errors
-// are non-fatal — downstream code surfaces them with better context.
-func mcpSentinelHits(root, mcpConfigPath string) []string {
-	cfg, err := mcpconfig.Parse(mcpConfigPath)
-	if err != nil {
-		return nil
-	}
-	rel := displayRel(root, mcpConfigPath)
-	var hits []string
-	for serverName, server := range cfg.Servers() {
-		for k, v := range server.Env {
-			if placeholder.IsSecretLike(k, v) && placeholder.ContainsSentinel(v) {
-				hits = append(hits, fmt.Sprintf("%s: %s.%s", rel, serverName, k))
-			}
-		}
-		for i, v := range server.Args {
-			if placeholder.IsSecretLike("", v) && placeholder.ContainsSentinel(v) {
-				hits = append(hits, fmt.Sprintf("%s: %s.args[%d]", rel, serverName, i))
-			}
-		}
-	}
-	return hits
-}
-
 // refusePlaceholderInputs scans the files init is about to vault and refuses
 // to proceed if any contains a value bearing the placeholder sentinel. Those
 // values were produced by a prior Generate call — re-running init over them
@@ -218,7 +177,7 @@ func mcpSentinelHits(root, mcpConfigPath string) []string {
 // destroying every copy of the original secret Veil controls. Files with an
 // existing sibling .veil-backup are skipped unless --force is set, since the
 // downstream "already has a backup" short-circuit makes them safe.
-func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath string, force bool) error {
+func refusePlaceholderInputs(root string, envPaths []string, force bool) error {
 	var hits []string
 
 	for _, p := range envPaths {
@@ -240,10 +199,6 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath strin
 		}
 	}
 
-	if mcpConfigPath != "" && (force || !backupExists(mcpConfigPath)) {
-		hits = append(hits, mcpSentinelHits(root, mcpConfigPath)...)
-	}
-
 	if len(hits) == 0 {
 		return nil
 	}
@@ -258,37 +213,47 @@ func refusePlaceholderInputs(root string, envPaths []string, mcpConfigPath strin
 	)
 }
 
-// filterEnvPaths asks the user to narrow the set of .env files to scan when
-// there is more than one. In non-interactive mode or with a single file the
-// input is returned unchanged.
-func filterEnvPaths(in io.Reader, w io.Writer, root string, envPaths []string, interactive bool) []string {
+// filterInputs asks the user to narrow the set of .env files to scan when
+// more than one was discovered. In non-interactive mode, or when only a
+// single input was found, the inputs pass through unchanged. A "Y" answer
+// keeps everything; "n" drops everything; "s" lets the user multi-select.
+// Per-secret prompts inside each file still run during processing.
+func filterInputs(
+	in io.Reader,
+	w io.Writer,
+	root string,
+	envPaths []string,
+	interactive bool,
+) []string {
 	if !interactive || len(envPaths) <= 1 {
 		return envPaths
 	}
-	_, _ = fmt.Fprintf(w, "\nFound %d .env files:\n", len(envPaths))
-	names := make([]string, len(envPaths))
+
+	_, _ = fmt.Fprintf(w, "\nFound %d %s to process:\n", len(envPaths), plural(len(envPaths), "input", "inputs"))
+	displays := make([]string, len(envPaths))
 	for i, p := range envPaths {
-		rel := displayRel(root, p)
-		names[i] = rel
-		_, _ = fmt.Fprintf(w, "  %s\n", rel)
+		displays[i] = displayRel(root, p)
+		_, _ = fmt.Fprintf(w, "  %s\n", displays[i])
 	}
 	_, _ = fmt.Fprintln(w)
+
 	switch promptYNS(in, w, "Scan all?") {
+	case choiceYes:
+		return envPaths
 	case choiceNo:
 		return nil
 	case choiceSelect:
-		selected := promptMultiSelect(in, w, names)
-		selectedSet := make(map[string]bool, len(selected))
-		for _, s := range selected {
-			selectedSet[s] = true
+		picked := make(map[string]bool, len(envPaths))
+		for _, n := range promptMultiSelect(in, w, displays) {
+			picked[n] = true
 		}
-		var filtered []string
+		var selEnvs []string
 		for i, p := range envPaths {
-			if selectedSet[names[i]] {
-				filtered = append(filtered, p)
+			if i < len(displays) && picked[displays[i]] {
+				selEnvs = append(selEnvs, p)
 			}
 		}
-		return filtered
+		return selEnvs
 	}
 	return envPaths
 }
@@ -310,17 +275,20 @@ type secretLine struct {
 //  2. build .env bytes in memory
 //  3. writeBackup(envPath)
 //  4. v.AddBatch(creds)
-//  5. registerVaultedFile(root, envPath, KindEnv)
-//  6. atomicWriteFile(envPath, bytes)
+//  5. atomicWriteFile(envPath, bytes)
 //
-// If we crash between 5 and 6 the next run detects the registered-but-
-// cleartext .env via needsEnvRewrite and replays step 6 only.
+// If we crash between 4 and 5 the next run detects the vault-knows-but-
+// cleartext-on-disk state via recoverPendingEnvRewrite and replays step 5
+// only.
 func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen placeholder.Set, root, envPath string, force, dryRun, interactive bool) (int, int, error) {
 	if backupExists(envPath) && !force {
-		// An orphaned backup (one not in the current vault's registry)
-		// indicates a prior Veil install whose state is gone — the backup is
-		// the source of truth, not the placeholder-filled .env on disk.
-		orphan, oerr := isOrphanedBackup(root, envPath)
+		// Orphan check: a backup whose adjacent .env carries Veil-shaped
+		// placeholders that the CURRENT vault doesn't own is the output of
+		// a prior install whose state is gone (different vault root, wiped
+		// .veil/, etc.) — the backup, not the stale placeholders, is the
+		// true pre-Veil state. Replaces the vault.meta vaulted-files
+		// registry the launch cuts dropped.
+		orphan, oerr := isOrphanByContent(v, envPath)
 		if oerr != nil {
 			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", envPath), oerr)
 		}
@@ -329,12 +297,6 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", envPath), err)
 			}
 			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", envPath)
-			// A crashed run may have committed credentials between AddBatch
-			// and registerVaultedFile. Wipe them before re-vaulting so the
-			// imminent AddBatch doesn't hit ErrDuplicateCredential.
-			if err := cleanupStaleVaultedCreds(cmd, v, envPath); err != nil {
-				return 0, 0, wrapErr(fmt.Sprintf("cleaning stale vault credentials for %s", envPath), err)
-			}
 		} else {
 			recovered, rerr := recoverPendingEnvRewrite(cmd, v, envPath, dryRun)
 			if rerr != nil {
@@ -371,31 +333,28 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 		return 0, 0, nil
 	}
 
-	// Correlate multi-value schemes (e.g., AWS triples) before prompting so
-	// the user sees grouped rows and members cannot be split individually.
-	cands := make([]correlate.Candidate, len(secrets))
-	for i, s := range secrets {
-		cands[i] = correlate.Candidate{Key: s.key, Value: s.value}
-	}
-	groups, remaining := correlate.DetectAll(cands)
-	remainingSecrets := filterSecretsByRemaining(secrets, remaining)
-
-	selectedGroups, selectedSecrets := selectEnvKeys(in, w, root, envPath, groups, remainingSecrets, interactive)
-	if len(selectedGroups) == 0 && len(selectedSecrets) == 0 {
+	selectedSecrets := selectEnvKeys(in, w, root, envPath, secrets, interactive)
+	if len(selectedSecrets) == 0 {
 		return 0, 0, nil
 	}
 
-	creds, vaulted, scoped, err := buildEnvFileCredentials(envFile, selectedGroups, selectedSecrets, seen)
+	res, err := buildEnvFileCredentials(envFile, selectedSecrets, seen)
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(creds) == 0 {
+	if len(res.Creds) == 0 && len(res.Skipped) == 0 {
 		return 0, 0, nil
 	}
 
+	printVaultSummary(w, res, dryRun)
+
 	if dryRun {
-		printDryRunVaultLines(w, selectedGroups, selectedSecrets, creds)
-		return vaulted, scoped, nil
+		printDryRunVaultLines(w, selectedSecrets, res.Creds)
+		return res.Vaulted, res.Scoped, nil
+	}
+
+	if len(res.Creds) == 0 {
+		return 0, 0, nil
 	}
 
 	// envFile has already been mutated in place; freeze the bytes before any
@@ -406,7 +365,7 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	// duplicate at AddBatch time means a prior partial run stranded a cred
 	// without a matching backup/rewrite; skipping silently would strand it.
 	if force {
-		for _, c := range creds {
+		for _, c := range res.Creds {
 			if v.HasCredential(c.Name) {
 				if _, err := v.Delete(c.Name); err != nil {
 					return 0, 0, wrapErr(fmt.Sprintf("clearing existing %s for --force", c.Name), err)
@@ -418,78 +377,101 @@ func processEnvFile(cmd *cobra.Command, in io.Reader, v *vault.Vault, seen place
 	if err := writeBackup(envPath); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing backup for %s", envPath), err)
 	}
-	if err := v.AddBatch(creds); err != nil {
+	if err := v.AddBatch(res.Creds); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("vaulting %s", envPath), err)
-	}
-	if err := registerVaultedFile(root, envPath, vault.KindEnv); err != nil {
-		return 0, 0, wrapErr(fmt.Sprintf("registering %s", envPath), err)
 	}
 	if err := atomicWriteFile(envPath, newBytes); err != nil {
 		return 0, 0, wrapErr(fmt.Sprintf("writing %s", envPath), err)
 	}
-	return vaulted, scoped, nil
+	return res.Vaulted, res.Scoped, nil
+}
+
+// vaultBuildResult bundles the outputs of buildEnvFileCredentials so
+// callers can render the summary without changing the function's
+// positional return list every time a new bucket is added.
+type vaultBuildResult struct {
+	Creds      []*vault.Credential
+	Vaulted    int
+	Scoped     int
+	Skipped    []secretLine     // Bearer-shaped but no registered provider — `veil add` may help
+	OutOfScope []outOfScopeLine // known v1 non-Bearer scheme — `veil add` won't help
+}
+
+// outOfScopeLine is a secret that init explicitly cannot mediate in v1
+// (URL-with-embedded-password, AWS SigV4, HTTP Basic, etc.). The annotation
+// explains the scheme so the user understands the `veil add` hint shown for
+// the Bearer-shaped Skipped bucket would not actually protect this value.
+type outOfScopeLine struct {
+	key        string
+	annotation string
+}
+
+// Compiled name-pattern matchers for the out-of-scope categorizer. Compiled
+// once at package init to avoid the per-call compile cost on every init run.
+var (
+	outOfScopeURLNameRE   = regexp.MustCompile(`(?i)^DATABASE_URL$|^DB_URL$|.*_DSN$|.*_CONNECTION_STRING$|.*POSTGRES.*|.*MYSQL.*|.*MONGO.*`)
+	outOfScopeAWSNameRE   = regexp.MustCompile(`(?i)^AWS_.*`)
+	outOfScopeBasicNameRE = regexp.MustCompile(`(?i).*BASIC.*`)
+	// embeddedPasswordURLRE matches scheme://user:password@host... URLs that
+	// look like a TCP-protocol connection string with an inline password.
+	// Used as the value-shape leg of the URL-with-embedded-password rule.
+	embeddedPasswordURLRE = regexp.MustCompile(`^(postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|rediss|amqp|amqps)://[^/@]*:[^/@]+@`)
+)
+
+// categorizeOutOfScope reports whether (name, value) belongs to a v1 out-of-
+// scope scheme and, if so, returns the annotation to surface in the summary.
+// Returns ("", false) for Bearer-shaped values that should keep the existing
+// "Skipped — `veil add`" path.
+//
+// Rules applied in order (first match wins):
+//  1. URL-with-embedded-password: name looks like a connection-string env or
+//     value parses as scheme://user:password@... — annotation explains TCP.
+//  2. AWS_*: SigV4 is out of scope for v1.
+//  3. *BASIC*: HTTP Basic auth is out of scope (see docs/MVP.md §5).
+func categorizeOutOfScope(name, value string) (string, bool) {
+	if outOfScopeURLNameRE.MatchString(name) || embeddedPasswordURLRE.MatchString(value) {
+		return "(URL with embedded password — not a Bearer header)", true
+	}
+	if outOfScopeAWSNameRE.MatchString(name) {
+		return "(looks like an AWS credential — Veil does not handle SigV4 in v1)", true
+	}
+	if outOfScopeBasicNameRE.MatchString(name) {
+		return "(HTTP Basic auth — see docs/MVP.md §5)", true
+	}
+	return "", false
 }
 
 // buildEnvFileCredentials constructs the credentials for one .env file from
-// the user's selection, resolving AWS groups inline. envFile is mutated in
-// place so each selected key now holds its placeholder; callers can take
-// envFile.Bytes() once buildEnvFileCredentials returns. The seen set is
-// updated with every placeholder generated, in caller-visible order.
+// the user's selection. envFile is mutated in place so each selected key
+// now holds its placeholder; callers can take envFile.Bytes() once
+// buildEnvFileCredentials returns. The seen set is updated with every
+// placeholder generated, in caller-visible order.
 func buildEnvFileCredentials(
 	envFile *scanner.EnvFile,
-	groups []correlate.Group,
 	secrets []secretLine,
 	seen placeholder.Set,
-) (creds []*vault.Credential, vaulted, scoped int, err error) {
-	for _, g := range groups {
-		secretPh, gErr := placeholder.Generate(g.AWS.SecretKeyVar, g.AWS.SecretKey, seen)
-		if gErr != nil {
-			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SecretKeyVar), gErr)
-		}
-		seen[secretPh] = struct{}{}
-
-		akIDPh := generateAWSAccessKeyIDPlaceholder(g.AWS.AccessKeyID, seen)
-		seen[akIDPh] = struct{}{}
-
-		var sessPh string
-		if g.AWS.SessionToken != "" {
-			sessPh, gErr = placeholder.GenerateAWSSessionToken(g.AWS.SessionToken, seen)
-			if gErr != nil {
-				return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", g.AWS.SessionTokenVar), gErr)
-			}
-			seen[sessPh] = struct{}{}
-		}
-
-		creds = append(creds, &vault.Credential{
-			ID:                         vault.NewID(),
-			Name:                       g.Name,
-			Real:                       g.AWS.SecretKey,
-			Placeholder:                secretPh,
-			Source:                     "init",
-			AllowedHosts:               []string{"*.amazonaws.com"},
-			CreatedAt:                  time.Now(),
-			Scheme:                     "aws",
-			AWSAccessKeyID:             g.AWS.AccessKeyID,
-			AWSAccessKeyIDPlaceholder:  akIDPh,
-			AWSSessionToken:            g.AWS.SessionToken,
-			AWSSessionTokenPlaceholder: sessPh,
-		})
-		envFile.SetValue(g.AWS.AccessKeyIDVar, akIDPh)
-		envFile.SetValue(g.AWS.SecretKeyVar, secretPh)
-		if g.AWS.SessionTokenVar != "" {
-			envFile.SetValue(g.AWS.SessionTokenVar, sessPh)
-		}
-		vaulted++
-		scoped++
-	}
+) (vaultBuildResult, error) {
+	var res vaultBuildResult
 
 	for _, s := range secrets {
+		if !isVaultEligible(s.key, s.value) {
+			// Route v1 out-of-scope schemes (URL-with-password, AWS SigV4,
+			// HTTP Basic) to a dedicated bucket so the renderer can mark them
+			// as "Veil cannot mediate these" rather than implying the user
+			// can rescue them with `veil add`.
+			if annotation, ok := categorizeOutOfScope(s.key, s.value); ok {
+				res.OutOfScope = append(res.OutOfScope, outOfScopeLine{key: s.key, annotation: annotation})
+				continue
+			}
+			res.Skipped = append(res.Skipped, s)
+			continue
+		}
 		ph, gErr := placeholder.Generate(s.key, s.value, seen)
 		if gErr != nil {
-			return nil, 0, 0, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), gErr)
+			return vaultBuildResult{}, wrapErr(fmt.Sprintf("generating placeholder for %s", s.key), gErr)
 		}
 		credHosts := placeholder.HostsForCredential(s.key, s.value)
-		creds = append(creds, &vault.Credential{
+		res.Creds = append(res.Creds, &vault.Credential{
 			ID:           vault.NewID(),
 			Name:         s.key,
 			Real:         s.value,
@@ -500,13 +482,13 @@ func buildEnvFileCredentials(
 		})
 		envFile.SetValue(s.key, ph)
 		seen[ph] = struct{}{}
-		vaulted++
+		res.Vaulted++
 		if len(credHosts) > 0 {
-			scoped++
+			res.Scoped++
 		}
 	}
 
-	return creds, vaulted, scoped, nil
+	return res, nil
 }
 
 // applyEnvFileMutations rewrites envFile in place so each credential's source
@@ -515,60 +497,113 @@ func buildEnvFileCredentials(
 // buildEnvFileCredentials and just calls envFile.Bytes() there.
 func applyEnvFileMutations(envFile *scanner.EnvFile, creds []*vault.Credential) []byte {
 	for _, c := range creds {
-		if c.Scheme == "aws" {
-			// AWS creds rewrite up to three vars. Name (= AccessKeyIDVar)
-			// is the only var name on the credential; for the other two
-			// (secret access key, optional session token), value-match the
-			// remaining KV lines since their original var names aren't stored.
-			envFile.SetValue(c.Name, c.AWSAccessKeyIDPlaceholder)
-			replaceValueIfMatches(envFile, c.Real, c.Placeholder)
-			if c.AWSSessionToken != "" {
-				replaceValueIfMatches(envFile, c.AWSSessionToken, c.AWSSessionTokenPlaceholder)
-			}
-			continue
-		}
 		envFile.SetValue(c.Name, c.Placeholder)
 	}
 	return envFile.Bytes()
 }
 
-// replaceValueIfMatches scans envFile and, for the first KV line whose
-// decoded value equals oldVal, swaps it to newVal.
-func replaceValueIfMatches(envFile *scanner.EnvFile, oldVal, newVal string) {
-	for _, line := range envFile.Lines {
-		if line.Kind == scanner.KVLine && line.Value == oldVal {
-			envFile.SetValue(line.Key, newVal)
-			return
+// printDryRunVaultLines emits "would vault: KEY -> PLACEHOLDER" for each
+// vault-eligible credential, preserving the file's appearance order.
+// Skipped entries in secrets (no provider match) are filtered via name
+// lookup so the pairing stays correct when eligible and skipped lines mix.
+func printDryRunVaultLines(w io.Writer, secrets []secretLine, creds []*vault.Credential) {
+	byName := make(map[string]string, len(creds))
+	for _, c := range creds {
+		byName[c.Name] = c.Placeholder
+	}
+	for _, s := range secrets {
+		if ph, ok := byName[s.key]; ok {
+			ui.Dimf(w, "  would vault: %s -> %s", s.key, ph)
 		}
 	}
 }
 
-// printDryRunVaultLines emits the same "would vault" lines the legacy code
-// path produced, derived from the prepared credentials. Group lines list
-// each member var. Both groups and creds[] share appearance order.
-func printDryRunVaultLines(w io.Writer, groups []correlate.Group, secrets []secretLine, creds []*vault.Credential) {
-	ci := 0
-	for _, g := range groups {
-		if ci >= len(creds) {
-			break
-		}
-		c := creds[ci]
-		ci++
-		ui.Dimf(w, "  would vault (aws): %s", g.Name)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.AccessKeyIDVar, c.AWSAccessKeyIDPlaceholder)
-		ui.Dimf(w, "    %-24s -> %s", g.AWS.SecretKeyVar, c.Placeholder)
-		if g.AWS.SessionToken != "" {
-			ui.Dimf(w, "    %-24s -> %s", g.AWS.SessionTokenVar, c.AWSSessionTokenPlaceholder)
+// isVaultEligible reports whether `veil init` should move (name, value)
+// into the vault. True iff a registered provider claims the pair AND the
+// provider declares VaultEligible with a non-empty host scope. The
+// charclass fallback (no named provider) is never eligible — a vaulted
+// credential without host scope has nowhere to fire on injection.
+//
+// Replaces the pre-launch three-way bucket discriminator (Unrecognized /
+// Not managed / Eligible) the AuthScheme enum used to drive. With only
+// Bearer surviving, the gate is binary: vault or skip.
+func isVaultEligible(name, value string) bool {
+	p := placeholder.DefaultRegistry().Match(name, value)
+	if p == nil {
+		return false
+	}
+	if len(p.Hosts) == 0 {
+		return false
+	}
+	return p.VaultEligible
+}
+
+// printVaultSummary emits the three-section summary: Vaulted, Skipped, and
+// Out of scope. Called on every run (not just --dry-run) after
+// buildEnvFileCredentials returns. When dryRun is true the Vaulted section is
+// suppressed — printDryRunVaultLines already shows those keys as "would
+// vault" lines, so printing them here too would double-print each credential.
+//
+// Empty sections are omitted. Section order is Vaulted → Skipped (Bearer-no-
+// provider, with the `veil add` hint) → Out of scope (with the docs/MVP.md
+// footer). The split matters because the `veil add` hint can rescue a Bearer
+// value with an unknown provider, but it cannot help with the schemes routed
+// to Out of scope (URL-with-password, AWS SigV4, HTTP Basic).
+//
+// Name columns are padded to the widest name across ALL three sections so the
+// value/annotation columns line up when the user scans top-to-bottom.
+// Skipped's name-only rows pad to the same width so the visual table reads as
+// a single block.
+func printVaultSummary(w io.Writer, res vaultBuildResult, dryRun bool) {
+	nameW := vaultSummaryNameWidth(res, dryRun)
+	if !dryRun && len(res.Creds) > 0 {
+		_, _ = fmt.Fprintf(w, "\nVaulted (%d):\n", len(res.Creds))
+		for _, c := range res.Creds {
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", padRight(c.Name, nameW), c.Placeholder)
 		}
 	}
-	for _, s := range secrets {
-		if ci >= len(creds) {
-			break
+	if len(res.Skipped) > 0 {
+		_, _ = fmt.Fprintf(w, "\nSkipped — no recognized provider or host scope (%d):\n", len(res.Skipped))
+		for _, s := range res.Skipped {
+			_, _ = fmt.Fprintf(w, "    %s\n", padRight(s.key, nameW))
 		}
-		c := creds[ci]
-		ci++
-		ui.Dimf(w, "  would vault: %s -> %s", s.key, c.Placeholder)
+		// One hint per Skipped block tells the user how to vault these
+		// values manually without forcing them to figure out the right flag
+		// names. Printed only once at the bottom so a file with N skipped
+		// rows doesn't repeat the line N times.
+		ui.Dim(w, "  To vault a custom credential manually: veil add <NAME> --value-stdin --host <host>")
 	}
+	if len(res.OutOfScope) > 0 {
+		_, _ = fmt.Fprintf(w, "\nOut of scope — Veil cannot mediate these in v1 (%d):\n", len(res.OutOfScope))
+		for _, s := range res.OutOfScope {
+			// Pad the plain name first, then apply ANSI styling — escape codes
+			// in the annotation must come after padding so column widths stay
+			// based on visible characters.
+			_, _ = fmt.Fprintf(w, "    %s    %s\n", padRight(s.key, nameW), ui.Muted.Sprint(s.annotation))
+		}
+		ui.Dim(w, "  These remain in your .env. See docs/MVP.md for the v1 scope contract.")
+	}
+}
+
+// vaultSummaryNameWidth returns the widest name across every section
+// printVaultSummary will render, so all three sections share the same
+// name-column width. Sections suppressed by dryRun (Vaulted) don't contribute
+// to the width — otherwise a dry-run with no Skipped/OutOfScope entries
+// could pad nothing.
+func vaultSummaryNameWidth(res vaultBuildResult, dryRun bool) int {
+	width := 0
+	if !dryRun {
+		for _, c := range res.Creds {
+			width = maxInt(width, len(c.Name))
+		}
+	}
+	for _, s := range res.Skipped {
+		width = maxInt(width, len(s.key))
+	}
+	for _, s := range res.OutOfScope {
+		width = maxInt(width, len(s.key))
+	}
+	return width
 }
 
 // needsEnvRewrite reports whether envPath still has cleartext for any cred
@@ -582,12 +617,6 @@ func needsEnvRewrite(envPath string, creds []*vault.Credential) (bool, error) {
 	}
 	for _, c := range creds {
 		if c.Placeholder != "" && bytes.Contains(data, []byte(c.Placeholder)) {
-			return false, nil
-		}
-		if c.AWSAccessKeyIDPlaceholder != "" && bytes.Contains(data, []byte(c.AWSAccessKeyIDPlaceholder)) {
-			return false, nil
-		}
-		if c.AWSSessionTokenPlaceholder != "" && bytes.Contains(data, []byte(c.AWSSessionTokenPlaceholder)) {
 			return false, nil
 		}
 	}
@@ -639,15 +668,6 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 		if !ok {
 			continue
 		}
-		if c.Scheme == "aws" {
-			// AWS credentials store the access key id on Name (compared
-			// here) and the secret separately. The stored Real holds the
-			// secret value, not the access key id, so direct Name->Real
-			// comparison would always diverge. Skip the divergence check
-			// for aws-scheme entries — they take the existing recovery
-			// path unchanged.
-			continue
-		}
 		if val != c.Real {
 			diverged = append(diverged, c.Name)
 		}
@@ -668,79 +688,24 @@ func recoverPendingEnvRewrite(cmd *cobra.Command, v *vault.Vault, envPath string
 	return true, nil
 }
 
-// cleanupStaleVaultedCreds removes any credential in v whose name matches a
-// secret-like key in the just-reclaimed .env at envPath. Called from the
-// orphan-recovery path after reclaimOrphanedBackup restores the cleartext
-// .env: those credentials were committed to the vault by a crashed run
-// before registerVaultedFile fired, so they're now orphaned and would
-// trigger ErrDuplicateCredential on the imminent AddBatch. "Not found"
-// (the credential isn't actually present) is non-fatal; only true persist
-// errors surface.
-func cleanupStaleVaultedCreds(cmd *cobra.Command, v *vault.Vault, envPath string) error {
-	envFile, err := scanner.ParseFile(envPath)
-	if err != nil {
-		return wrapErr(fmt.Sprintf("parsing %s", envPath), err)
-	}
-	w := cmd.ErrOrStderr()
-	for _, line := range envFile.Lines {
-		if line.Kind != scanner.KVLine {
-			continue
-		}
-		if !placeholder.IsSecretLike(line.Key, line.Value) {
-			continue
-		}
-		removed, derr := v.Delete(line.Key)
-		if derr != nil {
-			return wrapErr(fmt.Sprintf("removing stale credential %s", line.Key), derr)
-		}
-		if removed {
-			ui.Dimf(w, "  removed stale vault entry %s from crashed run", line.Key)
-		}
-	}
-	return nil
-}
-
-// selectEnvKeys returns the groups and bearer secrets the user chose to
-// vault. In non-interactive mode everything is selected. Callers that
-// receive two empty slices should skip the file.
+// selectEnvKeys returns the bearer secrets the user chose to vault.
+// In non-interactive mode everything is selected. Callers that receive
+// an empty slice should skip the file.
 func selectEnvKeys(
 	in io.Reader, w io.Writer, root, envPath string,
-	groups []correlate.Group, secrets []secretLine, interactive bool,
-) (selectedGroups []correlate.Group, selectedSecrets []secretLine) {
+	secrets []secretLine, interactive bool,
+) (selectedSecrets []secretLine) {
 	if !interactive {
-		return groups, secrets
+		return secrets
 	}
 
 	rel := displayRel(root, envPath)
 
 	total := len(secrets)
-	for _, g := range groups {
-		total += len(g.Members)
-	}
-	header := fmt.Sprintf("\nDetected %d %s in %s", total, plural(total, "secret", "secrets"), rel)
-	switch len(groups) {
-	case 0:
-		header += ":"
-	case 1:
-		header += fmt.Sprintf(" (%d correlated as AWS):", len(groups[0].Members))
-	default:
-		header += fmt.Sprintf(" (%d AWS credentials):", len(groups))
-	}
+	header := fmt.Sprintf("\nDetected %d %s in %s:", total, plural(total, "secret", "secrets"), rel)
 	_, _ = fmt.Fprintln(w, header)
 
-	var names []string
-	for _, g := range groups {
-		label := fmt.Sprintf("[aws] %s", g.Name)
-		for i, m := range g.Members {
-			key := m.Key
-			if i == 0 {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "[aws]", key, ui.Muted.Sprint(redactValue(m.Value)))
-			} else {
-				_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", key, ui.Muted.Sprint(redactValue(m.Value)))
-			}
-		}
-		names = append(names, label)
-	}
+	names := make([]string, 0, len(secrets))
 	for _, s := range secrets {
 		_, _ = fmt.Fprintf(w, "  %-7s %-24s %s\n", "", s.key, ui.Muted.Sprint(redactValue(s.value)))
 		names = append(names, s.key)
@@ -749,44 +714,22 @@ func selectEnvKeys(
 
 	switch promptYNS(in, w, "Vault all?") {
 	case choiceYes:
-		return groups, secrets
+		return secrets
 	case choiceNo:
-		return nil, nil
+		return nil
 	case choiceSelect:
 		picked := make(map[string]bool)
 		for _, n := range promptMultiSelect(in, w, names) {
 			picked[n] = true
-		}
-		for _, g := range groups {
-			if picked[fmt.Sprintf("[aws] %s", g.Name)] {
-				selectedGroups = append(selectedGroups, g)
-			}
 		}
 		for _, s := range secrets {
 			if picked[s.key] {
 				selectedSecrets = append(selectedSecrets, s)
 			}
 		}
-		return selectedGroups, selectedSecrets
+		return selectedSecrets
 	}
-	return nil, nil
-}
-
-// filterSecretsByRemaining keeps secretLine entries whose key is still in
-// the remaining (un-correlated) candidate set, preserving the original
-// file-order of secrets so dry-run and prompt output stay stable.
-func filterSecretsByRemaining(secrets []secretLine, remaining []correlate.Candidate) []secretLine {
-	keep := make(map[string]struct{}, len(remaining))
-	for _, c := range remaining {
-		keep[c.Key] = struct{}{}
-	}
-	out := secrets[:0:0]
-	for _, s := range secrets {
-		if _, ok := keep[s.key]; ok {
-			out = append(out, s)
-		}
-	}
-	return out
+	return nil
 }
 
 // promptSkipHostsPhase asks the user to seed the skip-host list after vaulting.
@@ -797,7 +740,7 @@ func promptSkipHostsPhase(in io.Reader, w io.Writer, root string, interactive, d
 	}
 	_, _ = fmt.Fprintln(w, "Skip hosts — any hosts the proxy should pass through untouched?")
 	ui.Dim(w, "Common examples: api.anthropic.com, *.internal.company.com")
-	ui.Dim(w, "(You can manage these later with: veil skip)")
+	ui.Dim(w, "(Pass --skip <host> to veil run for one-off bypass.)")
 	_, _ = fmt.Fprintln(w)
 	hosts := promptCSV(in, w, "Hosts to skip (comma-separated, or Enter to skip):")
 	if len(hosts) == 0 {
@@ -815,7 +758,23 @@ func promptSkipHostsPhase(in io.Reader, w io.Writer, root string, interactive, d
 }
 
 // setupProxyCA loads or creates the CA. Prints a success step on completion.
-func setupProxyCA(w io.Writer) error {
+// When dryRun is true, no CA is written to disk — we instead report whether
+// the CA already exists ("CA certificate already present") or what would be
+// created ("Would create CA certificate at <path>").
+func setupProxyCA(w io.Writer, dryRun bool) error {
+	if dryRun {
+		certPath, exists, err := proxy.CheckCA()
+		if err != nil {
+			return wrapErr("checking CA", err)
+		}
+		if exists {
+			ui.Step(w, "CA certificate already present")
+		} else {
+			ui.Step(w, fmt.Sprintf("Would create CA certificate at %s", ui.RedactPath(certPath)))
+		}
+		_, _ = fmt.Fprintln(w)
+		return nil
+	}
 	if _, err := proxy.LoadOrCreateCA(); err != nil {
 		return wrapErr("setting up CA", err)
 	}

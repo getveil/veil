@@ -12,9 +12,13 @@ type Filter struct {
 	Host           string    // empty = any
 	CredentialName string    // empty = any
 	Limit          int       // 0 = default 100
-	IncludeBlocked bool      // false = exclude blocked events
-	IncludeSuspect bool      // false = exclude suspect rows
-	SuspectOnly    bool      // true = return only suspect rows (overrides other include flags)
+	// IncludeBlocked controls whether host-blocked and sentinel-leaked
+	// rows are surfaced. When false (the default) Query mirrors Summary
+	// and hides both location='blocked' and location='leaked' so the
+	// table never disagrees with the session-end "N injections" line.
+	// When true, both blocked and leaked rows are returned — the CLI's
+	// `--blocked` flag is the only user-facing toggle.
+	IncludeBlocked bool
 }
 
 // Row represents a single injection record returned by a query.
@@ -32,9 +36,6 @@ type Row struct {
 	BytesBefore    int
 	BytesAfter     int
 	Location       string
-	SuspectFlag    bool
-	AuthSignal     string
-	SignerError    string
 }
 
 // Query returns injection rows matching the given filter, ordered by
@@ -62,16 +63,13 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 		args = append(args, f.CredentialName)
 	}
 
-	switch {
-	case f.SuspectOnly:
-		clauses = append(clauses, "suspect_flag = 1")
-	default:
-		if !f.IncludeBlocked {
-			clauses = append(clauses, "location != 'blocked'")
-		}
-		if !f.IncludeSuspect {
-			clauses = append(clauses, "suspect_flag = 0")
-		}
+	if !f.IncludeBlocked {
+		// Mirror Summary's exclusion list so `veil log` never shows rows
+		// that the session footer counts as zero injections. Blocked rows
+		// are host-policy refusals; leaked rows are sentinel-guard
+		// refusals — neither put a secret on the wire, so both are
+		// hidden unless the operator opts in via --blocked.
+		clauses = append(clauses, "location NOT IN ('blocked', 'leaked')")
 	}
 
 	limit := f.Limit
@@ -92,23 +90,21 @@ func (s *Store) Query(f Filter) ([]Row, error) {
 	for rows.Next() {
 		var r Row
 		var tsMillis int64
-		var suspectInt int
 		if err := rows.Scan(
 			&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,
 			&r.URLPath, &r.CredentialID, &r.CredentialName,
 			&r.AgentPID, &r.AgentCmd, &r.BytesBefore, &r.BytesAfter,
-			&r.Location, &suspectInt, &r.AuthSignal, &r.SignerError,
+			&r.Location,
 		); err != nil {
 			return nil, err
 		}
 		r.Timestamp = time.UnixMilli(tsMillis).UTC()
-		r.SuspectFlag = suspectInt != 0
 		result = append(result, r)
 	}
 	return result, rows.Err()
 }
 
-const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location, suspect_flag, auth_signal, signer_error FROM injections"
+const selectBase = "SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections"
 
 // buildSelectQuery constructs the full SELECT statement from static clause fragments.
 // All clause strings are hardcoded column comparisons (e.g. "ts >= ?"), never user input.
@@ -123,12 +119,25 @@ func buildSelectQuery(clauses []string) string { //nolint:gosec // clauses are s
 	return b.String()
 }
 
+// HasAnyRows reports whether the injections table has ever recorded an
+// event. Used by `veil log` to distinguish a freshly init'd project that
+// has never been `veil run` (no rows ever) from a quiet period (rows
+// exist outside the current --since window).
+func (s *Store) HasAnyRows() (bool, error) {
+	var present int
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM injections)").Scan(&present)
+	if err != nil {
+		return false, err
+	}
+	return present != 0, nil
+}
+
 // Summary returns aggregate information about injections since the given time.
 // It returns the total count of successful injections, a separate blocked
 // count, a separate leaked count (placeholder-leak detections — these are NOT
 // successful injections because the request was refused before any secret
-// reached the wire), distinct hosts (excluding blocked, leaked, and suspect),
-// and the most recent successful injection.
+// reached the wire), distinct hosts (excluding blocked and leaked), and the
+// most recent successful injection.
 //
 // "Successful injection" here means: a real credential replaced a placeholder
 // on an outbound request and the request was forwarded. Leaked rows
@@ -140,10 +149,10 @@ func buildSelectQuery(clauses []string) string { //nolint:gosec // clauses are s
 func (s *Store) Summary(since time.Time) (total int, blocked int, leaked int, hosts []string, lastInjection *Row, err error) {
 	sinceMillis := since.UnixMilli()
 
-	// Total successful count — excludes blocked, leaked, and suspect rows so
-	// callers like the session-end banner only report secrets that actually
-	// made it onto the wire.
-	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked') AND suspect_flag = 0", sinceMillis).Scan(&total)
+	// Total successful count — excludes blocked and leaked rows so callers
+	// like the session-end banner only report secrets that actually made it
+	// onto the wire.
+	err = s.db.QueryRow("SELECT COUNT(*) FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked')", sinceMillis).Scan(&total)
 	if err != nil {
 		return
 	}
@@ -162,9 +171,9 @@ func (s *Store) Summary(since time.Time) (total int, blocked int, leaked int, ho
 		return
 	}
 
-	// Distinct hosts (successful injections only — blocked, leaked, and
-	// suspect rows excluded).
-	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked') AND suspect_flag = 0 ORDER BY host", sinceMillis)
+	// Distinct hosts (successful injections only — blocked and leaked rows
+	// excluded).
+	rows, err := s.db.Query("SELECT DISTINCT host FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked') ORDER BY host", sinceMillis)
 	if err != nil {
 		return
 	}
@@ -180,12 +189,11 @@ func (s *Store) Summary(since time.Time) (total int, blocked int, leaked int, ho
 		return
 	}
 
-	// Most recent successful injection — blocked, leaked, and suspect rows
-	// excluded.
+	// Most recent successful injection — blocked and leaked rows excluded.
 	r := &Row{}
 	var tsMillis int64
 	scanErr := s.db.QueryRow(
-		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked') AND suspect_flag = 0 ORDER BY ts DESC LIMIT 1",
+		"SELECT id, ts, request_id, host, method, url_path, credential_id, credential_name, agent_pid, agent_cmd, bytes_before, bytes_after, location FROM injections WHERE ts >= ? AND location NOT IN ('blocked', 'leaked') ORDER BY ts DESC LIMIT 1",
 		sinceMillis,
 	).Scan(
 		&r.ID, &tsMillis, &r.RequestID, &r.Host, &r.Method,

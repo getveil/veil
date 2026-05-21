@@ -104,6 +104,25 @@ func TestScanUnvaultedSecretLikes_IgnoresPOSIXNames(t *testing.T) {
 	}
 }
 
+// TestScanUnvaultedSecretLikes_NameGateFiltersTrivialValues asserts the
+// IsSecretLike value-shape gate prevents the runtime "unvaulted" warning
+// from firing on trivial-value name matches like LOG_LEVEL_AUTH=info,
+// which used to force users to add --allow-env-secret for every match.
+func TestScanUnvaultedSecretLikes_NameGateFiltersTrivialValues(t *testing.T) {
+	environ := []string{
+		"LOG_LEVEL_AUTH=info",
+		"AUTH_METHOD=oauth",
+		"DB_PASSWORD_PROMPT=true",
+		"KEY_LAYOUT=us",
+		// And a real-shaped secret that must still be reported.
+		"GHCR_TOKEN=ghp_realtoken1234567",
+	}
+	got := scanUnvaultedSecretLikes(environ, nil, nil)
+	if len(got) != 1 || got[0] != "GHCR_TOKEN" {
+		t.Fatalf("got %v, want [GHCR_TOKEN]", got)
+	}
+}
+
 func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 	var buf bytes.Buffer
 	printUnvaultedWarning(&buf, []string{"FOO_TOKEN", "BAR_SECRET"})
@@ -113,5 +132,56 @@ func TestPrintUnvaultedWarning_FormatsLoud(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("warning missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestPrintUnvaultedWarning_GrammarSingularPlural asserts the warning header
+// reads correctly for both N=1 and N>1 cases. Prior to this fix, the message
+// "1 shell env var look like secrets" was ungrammatical at N=1.
+func TestPrintUnvaultedWarning_GrammarSingularPlural(t *testing.T) {
+	cases := []struct {
+		name           string
+		names          []string
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name:  "singular",
+			names: []string{"FOO_TOKEN"},
+			wantContains: []string{
+				"1 shell env var ",
+				"looks",
+				"a secret",
+			},
+			// Must not use the plural verb form. Match with trailing space to
+			// avoid a false positive on the singular "looks".
+			wantNotContain: []string{"look "},
+		},
+		{
+			name:  "plural",
+			names: []string{"FOO_TOKEN", "BAR_SECRET"},
+			wantContains: []string{
+				"2 shell env vars ",
+				"look like secrets",
+			},
+			wantNotContain: []string{"looks"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printUnvaultedWarning(&buf, tc.names)
+			out := buf.String()
+			for _, want := range tc.wantContains {
+				if !strings.Contains(out, want) {
+					t.Errorf("warning missing %q:\n%s", want, out)
+				}
+			}
+			for _, bad := range tc.wantNotContain {
+				if strings.Contains(out, bad) {
+					t.Errorf("warning unexpectedly contains %q:\n%s", bad, out)
+				}
+			}
+		})
 	}
 }

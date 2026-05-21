@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
@@ -73,78 +73,52 @@ func formatPIDList(pids []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// backupKind classifies a backup pair by the kind of file it covers.
-type backupKind int
-
-const (
-	backupKindEnv backupKind = iota
-	backupKindMCP
-)
-
-// backupPair pairs an original file path with its backup. Either may be
-// missing on disk at discovery time; classification runs later.
+// backupPair pairs an original .env file path with its backup sidecar.
+// Either may be missing on disk at discovery time; classification runs
+// later.
 type backupPair struct {
 	original string
 	backup   string
-	kind     backupKind
 }
 
-// envCuratedNames mirrors scanner.curatedNames. Kept local to avoid
-// exporting scanner internals; the list changes rarely.
-var envCuratedNames = []string{
-	".env",
-	".env.local",
-	".env.development",
-	".env.production",
-}
-
-// discoverBackups returns every (original, backup) pair uninstall should
-// consider. Source of truth is vault.meta's vaulted-files registry (which
-// records both path and kind, so non-canonical MCP paths route correctly).
-// Falls back to the legacy curated-name scan plus mcpconfig.Discover() for
-// vaults written before the registry existed; duplicates are deduped.
+// discoverBackups walks the project rooted at root and returns every
+// (original, backup) pair uninstall should consider — one per
+// `*.veil-backup` sidecar found on disk. The pre-v1 vault.meta vaulted-
+// files registry that previously sourced this list was dropped in the
+// launch cuts; the walk is its replacement, with one consequence: backups
+// for files outside the project root (e.g. an init run with --path
+// pointing at a sibling tree) are no longer surfaced and must be removed
+// manually. Symlinked directories are skipped to avoid leaking through
+// attacker-planted links; symlinked leaf backups are returned so the
+// existing symlink-refusal gate produces an explicit error.
 func discoverBackups(root string) ([]backupPair, error) {
 	var pairs []backupPair
-	seen := make(map[string]bool)
-
-	registered, err := vault.ReadVaultedFiles(root)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			// Prune source-tree noise + .veil itself; uses the scanner's
+			// canonical exclude set so the two walkers stay in sync.
+			if path != root {
+				if _, skip := scanner.BaselineExcludeDirs[d.Name()]; skip {
+					return fs.SkipDir
+				}
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), backupSuffix) {
+			return nil
+		}
+		original := strings.TrimSuffix(path, backupSuffix)
+		pairs = append(pairs, backupPair{original: original, backup: path})
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("reading vaulted-files registry: %w", err)
-	}
-	for _, entry := range registered {
-		backup := entry.Path + backupSuffix
-		if _, err := os.Stat(backup); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{original: entry.Path, backup: backup, kind: kindFromVault(entry.Kind)})
-		seen[entry.Path] = true
-	}
-
-	for _, name := range envCuratedNames {
-		orig := filepath.Join(root, name)
-		if seen[orig] {
-			continue
-		}
-		backup := orig + backupSuffix
-		if _, err := os.Stat(backup); err != nil {
-			continue
-		}
-		pairs = append(pairs, backupPair{original: orig, backup: backup, kind: backupKindEnv})
-		seen[orig] = true
-	}
-
-	mcpPath, err := mcpconfigDiscover()
-	if err != nil {
-		return nil, fmt.Errorf("discovering MCP config: %w", err)
-	}
-	if mcpPath != "" && !seen[mcpPath] {
-		if _, err := os.Stat(mcpPath + backupSuffix); err == nil {
-			pairs = append(pairs, backupPair{
-				original: mcpPath,
-				backup:   mcpPath + backupSuffix,
-				kind:     backupKindMCP,
-			})
-		}
+		return nil, fmt.Errorf("walking for backups: %w", err)
 	}
 	return pairs, nil
 }
@@ -176,20 +150,6 @@ func refuseSymlinkedBackupPairs(root string, pairs []backupPair) error {
 		"Remove the symlink (or replace it with a regular file via `cp -L`) and re-run. If you did not create this symlink, investigate before proceeding — it may indicate tampering.",
 	)
 }
-
-// kindFromVault maps a vault.FileKind to the local backupKind. Unknown kinds
-// (e.g. registry entries from a future schema) fall back to env so the
-// classifier path is at least byte-stable.
-func kindFromVault(k vault.FileKind) backupKind {
-	if k == vault.KindMCP {
-		return backupKindMCP
-	}
-	return backupKindEnv
-}
-
-// mcpconfigDiscover wraps mcpconfig.Discover so tests can observe the seam
-// without importing the package into the uninstall_test package.
-var mcpconfigDiscover = func() (string, error) { return mcpconfig.Discover() }
 
 // classification enumerates how a (current, backup) pair relates.
 type classification int
@@ -270,7 +230,7 @@ func expectedOriginalEnv(current []byte, resolver placeholderResolver) []byte {
 // is prefixed with '-' (present in a, missing from b) or '+' (present in b,
 // missing from a). Context lines are prefixed with a single space.
 // Implementation uses a line-by-line LCS — fine for files of typical
-// .env/MCP size (tens to hundreds of lines).
+// .env size (tens to hundreds of lines).
 func renderUnifiedDiff(a, b []byte) string {
 	if bytes.Equal(a, b) {
 		return ""
@@ -336,60 +296,13 @@ func emitDiff(sb *strings.Builder, a, b []string, t [][]int, i, j int) {
 	}
 }
 
-// classifyMCPPair compares the current MCP config file to its backup after
-// reverse-substituting placeholders with real values. Semantics mirror
-// classifyEnvPair but operate on the MCP JSON shape via mcpconfig.
-func classifyMCPPair(original, backup string, resolver placeholderResolver) (classification, string, error) {
-	currentBytes, backupBytes, status, err := readPairBytes(original, backup)
-	if err != nil || status == classOriginalMissing {
-		return status, "", err
-	}
-
-	expected, expErr := expectedOriginalMCP(currentBytes, resolver)
-	if expErr != nil || !bytes.Equal(expected, backupBytes) {
-		return classModified, renderUnifiedDiff(currentBytes, backupBytes), nil
-	}
-	return classUnmodified, "", nil
-}
-
-// expectedOriginalMCP parses the current MCP config bytes, substitutes
-// placeholders with real values in every server's env map and args slice,
-// and re-serializes using mcpconfig's canonical formatting. Args are
-// substituted alongside env so a config that was vaulted with secrets in
-// either location classifies as classUnmodified against its backup.
-func expectedOriginalMCP(current []byte, resolver placeholderResolver) ([]byte, error) {
-	cfg, err := mcpconfig.ParseBytes(current)
-	if err != nil {
-		return nil, err
-	}
-	if resolver != nil {
-		for serverName, server := range cfg.Servers() {
-			for key, value := range server.Env {
-				if real, ok := resolver[value]; ok {
-					cfg.SetEnvValue(serverName, key, real)
-				}
-			}
-			for i, value := range server.Args {
-				if real, ok := resolver[value]; ok {
-					cfg.SetArg(serverName, i, real)
-				}
-			}
-		}
-	}
-	return cfg.Bytes()
-}
-
 // resolverFromVault returns a placeholderResolver mapping each credential's
-// placeholder → real value. If a credential has a Basic-auth username
-// placeholder, that mapping is included too.
+// placeholder → real value.
 func resolverFromVault(v *vault.Vault) placeholderResolver {
 	resolver := make(placeholderResolver)
 	for _, cred := range v.List() {
 		if cred.Placeholder != "" {
 			resolver[cred.Placeholder] = cred.Real
-		}
-		if cred.UsernamePlaceholder != "" {
-			resolver[cred.UsernamePlaceholder] = cred.Username
 		}
 	}
 	return resolver
@@ -484,34 +397,53 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	}
 	plan := make([]planned, 0, len(pairs))
 	for _, p := range pairs {
-		classify := classifyEnvPair
-		if p.kind == backupKindMCP {
-			classify = classifyMCPPair
-		}
-		status, diff, cerr := classify(p.original, p.backup, resolver)
+		status, diff, cerr := classifyEnvPair(p.original, p.backup, resolver)
 		if cerr != nil {
 			return wrapErr(fmt.Sprintf("classifying %s", p.original), cerr)
 		}
 		plan = append(plan, planned{pair: p, status: status, diff: diff})
 	}
 
+	caPaths, caPresent := caCleanupTargets()
+
 	_, _ = fmt.Fprintln(w, "Uninstall plan:")
 	for _, pl := range plan {
-		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), pl.pair.original)
+		_, _ = fmt.Fprintf(w, "  [%s] %s\n", classLabel(pl.status), ui.RedactPath(pl.pair.original))
 		if pl.status == classModified && pl.diff != "" {
 			_, _ = fmt.Fprintln(w, pl.diff)
 		}
 	}
 	if stateExists {
-		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", stateDir)
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", ui.RedactPath(stateDir))
+	}
+	if caPresent {
+		_, _ = fmt.Fprintf(w, "  [wipe]     %s\n", ui.RedactPath(caPaths.dir))
 	}
 
 	if dryRun {
 		return nil
 	}
 
+	// When --yes is used non-interactively, the user never saw the diff —
+	// surface a single warning so scripted runs that clobber post-init edits
+	// don't fail silently. We still proceed (the existing --yes contract is
+	// "skip the prompt"), but the warning tells the operator to re-run
+	// interactively if they want to review the diff first.
+	if yes {
+		modifiedCount := 0
+		for _, pl := range plan {
+			if pl.status == classModified {
+				modifiedCount++
+			}
+		}
+		if modifiedCount > 0 {
+			ui.Warnf(w, "%d %s have user edits that will be overwritten. Re-run without --yes to review the diff.",
+				modifiedCount, plural(modifiedCount, "file", "files"))
+		}
+	}
+
 	if !yes && !promptYN(newLineReader(cmd.InOrStdin()), w, "Proceed with uninstall?", false) {
-		_, _ = fmt.Fprintln(w, "Aborted.")
+		_, _ = fmt.Fprintln(w, "Cancelled.")
 		return nil
 	}
 
@@ -519,6 +451,12 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	// subset where the original was absent (newly placed rather than restored).
 	moved, materialized := 0, 0
 	for _, pl := range plan {
+		// Print a per-file dim line BEFORE the rename so a mid-loop crash
+		// leaves a trail of which files were restored vs. still pending.
+		// Re-running uninstall picks up the unmoved sidecars via
+		// discoverBackups, but the user otherwise has no signal about
+		// partial progress.
+		ui.Dimf(w, "  restoring: %s", displayRelOr(root, pl.pair.original, pl.pair.original))
 		if err := os.Rename(pl.pair.backup, pl.pair.original); err != nil {
 			return wrapErr(fmt.Sprintf("restoring %s", pl.pair.original), err)
 		}
@@ -528,12 +466,23 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 		}
 	}
 
+	caRemoved := false
 	if stateExists {
 		purgeKeystoreEntry(ew, root)
+		// Remove the user-global CA cert + key BEFORE wiping the project
+		// state dir. An orphan "Veil Local Root" cert under
+		// ~/Library/Application Support/veil (macOS) or
+		// ~/.local/share/veil (Linux) is exactly what a security-conscious
+		// user will flag post-uninstall — symmetry with init's
+		// LoadOrCreateCA. Best-effort: any error surfaces as a warning so
+		// state-dir removal still runs.
+		caRemoved = cleanupCAFiles(w, ew)
 		if err := os.RemoveAll(stateDir); err != nil {
 			return wrapErr(fmt.Sprintf("removing %s", stateDir), err)
 		}
 	}
+
+	removeVeilOnlyGitignore(w, root)
 
 	if materialized > 0 {
 		_, _ = fmt.Fprintf(w, "\nMoved %d %s into place (%d newly materialized).\n",
@@ -545,7 +494,60 @@ func runUninstall(cmd *cobra.Command, dryRun, yes, force bool) error {
 	if stateExists {
 		_, _ = fmt.Fprintln(w, "State directory removed; keystore entry purged.")
 	}
+	if caRemoved {
+		printCATrustStoreReminder(w)
+	}
 	return nil
+}
+
+// removeVeilOnlyGitignore deletes .gitignore when its non-empty content is
+// exactly the two lines veil init writes (`/.veil/` and `*.veil-backup`).
+// If the user added other entries (before or after init), the file is left
+// untouched — those entries are theirs. Best-effort: any read or stat
+// failure is silent so uninstall completes cleanly.
+func removeVeilOnlyGitignore(w io.Writer, root string) {
+	gitignorePath := filepath.Join(root, ".gitignore")
+	// Reject symlinks: a hostile cloned repo could swing the path at
+	// another file (~/.bashrc, etc.). os.Lstat sees the link itself.
+	info, err := os.Lstat(gitignorePath)
+	if err != nil {
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	data, err := os.ReadFile(gitignorePath) // #nosec G304 -- project-local gitignore
+	if err != nil {
+		return
+	}
+	if !gitignoreIsVeilOnly(data) {
+		return
+	}
+	if err := os.Remove(gitignorePath); err == nil {
+		ui.Step(w, "removed Veil-only .gitignore")
+	}
+}
+
+// gitignoreIsVeilOnly reports whether the file content is exactly the two
+// Veil-added lines (in either order, with blank-line / trailing-whitespace
+// tolerance) and nothing else. Comments count as non-Veil content.
+func gitignoreIsVeilOnly(data []byte) bool {
+	veilLines := map[string]bool{
+		"/.veil/":       true,
+		"*.veil-backup": true,
+	}
+	seen := make(map[string]bool, 2)
+	for raw := range strings.SplitSeq(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !veilLines[line] {
+			return false
+		}
+		seen[line] = true
+	}
+	return len(seen) == len(veilLines)
 }
 
 // purgeKeystoreEntry best-effort deletes the keystore entry tied to this
@@ -565,6 +567,118 @@ func purgeKeystoreEntry(ew io.Writer, root string) {
 	if err := ks.Delete(pid); err != nil {
 		ui.Warnf(ew, "could not purge keystore entry: %v", err)
 	}
+}
+
+// caCleanupPaths bundles the user-global CA paths uninstall may remove.
+// dir is the containing `ca/` directory; parent is the app-support root
+// (e.g. ~/Library/Application Support/veil) we'll opportunistically
+// rmdir if it ends up empty after the ca/ dir is gone.
+type caCleanupPaths struct {
+	cert   string
+	key    string
+	dir    string
+	parent string
+}
+
+// caCleanupTargets resolves the user-global CA paths and reports whether
+// any of the cert/key files exist on disk. A failure to resolve a path
+// (e.g. unsupported GOOS) returns present=false with no error — callers
+// treat that as "nothing to clean up" since init couldn't have written
+// there either.
+func caCleanupTargets() (caCleanupPaths, bool) {
+	var p caCleanupPaths
+	dir, err := config.CADir()
+	if err != nil {
+		return p, false
+	}
+	cert, err := config.CAFile()
+	if err != nil {
+		return p, false
+	}
+	key, err := config.CAKeyFile()
+	if err != nil {
+		return p, false
+	}
+	p = caCleanupPaths{cert: cert, key: key, dir: dir, parent: filepath.Dir(dir)}
+	present := pathExists(cert) || pathExists(key)
+	return p, present
+}
+
+// cleanupCAFiles removes the user-global CA cert + key, then attempts to
+// rmdir the containing ca/ dir and its parent (app-support root) when
+// each is empty. Returns true when at least one of cert/key existed and
+// was removed — callers use that to gate the trust-store reminder.
+//
+// All filesystem errors are surfaced as warnings via ew so uninstall
+// remains best-effort and continues with state-dir removal. The
+// "already-gone" case is silent: a missing file is not an error.
+func cleanupCAFiles(w, ew io.Writer) bool {
+	paths, present := caCleanupTargets()
+	if !present {
+		return false
+	}
+
+	removed := false
+	for _, p := range []string{paths.cert, paths.key} {
+		err := os.Remove(p)
+		switch {
+		case err == nil:
+			removed = true
+		case errors.Is(err, os.ErrNotExist):
+			// Half-installed CA (only one of cert/key on disk): nothing
+			// to do for the missing side, but the other side was/will be
+			// removed — leave `removed` as set by the successful branch.
+		default:
+			ui.Warnf(ew, "could not remove %s: %v", p, err)
+		}
+	}
+	if !removed {
+		return false
+	}
+	ui.Step(w, fmt.Sprintf("removed CA cert + key under %s", ui.RedactPath(paths.dir)))
+
+	// Best-effort rmdir of the ca/ directory; only succeeds when empty.
+	// os.Remove on a non-empty dir returns ENOTEMPTY — treat that as
+	// "user has other files here, leave it alone" without warning.
+	if err := os.Remove(paths.dir); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmptyErr(err) {
+		ui.Warnf(ew, "could not remove %s: %v", paths.dir, err)
+	}
+	// Same for the parent app-support dir (~/Library/Application Support/veil
+	// or ~/.local/share/veil): rmdir if empty, leave it otherwise.
+	if paths.parent != "" {
+		if err := os.Remove(paths.parent); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmptyErr(err) {
+			ui.Warnf(ew, "could not remove %s: %v", paths.parent, err)
+		}
+	}
+	return true
+}
+
+// printCATrustStoreReminder tells the user how to remove the Veil root
+// from their OS trust store if they ever manually added it. We only call
+// this when at least one CA file was actually removed, so the message
+// doesn't fire spuriously on a clean second-run uninstall.
+func printCATrustStoreReminder(w io.Writer) {
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "If you added the Veil CA to your system trust store, you can now remove it:")
+	_, _ = fmt.Fprintln(w, `  macOS: sudo security delete-certificate -c "Veil Local Root" /Library/Keychains/System.keychain`)
+	_, _ = fmt.Fprintln(w, "  Linux: see docs/RELEASING.md or your distro's CA-trust tool")
+}
+
+// pathExists reports whether a filesystem entry exists at path. Unlike
+// proxy.fileExists this does NOT exclude directories — uninstall wants
+// to clean up the ca/ dir whether or not the leaf files were ever
+// written (e.g. half-installed state).
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// isNotEmptyErr reports whether an os.Remove error indicates the
+// directory wasn't empty. Both syscall.ENOTEMPTY and syscall.EEXIST can
+// surface on different platforms; either means "user has unrelated
+// files here, leave it alone".
+func isNotEmptyErr(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 // classLabel returns a short label for display in the plan table.

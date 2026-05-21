@@ -55,13 +55,6 @@ func TestHostMatches_PortStripped(t *testing.T) {
 	}
 }
 
-func TestExtractURLHost_PostgresURL(t *testing.T) {
-	host := ExtractURLHost("postgres://user:pass@db.prod.internal:5432/mydb")
-	if host != "db.prod.internal" {
-		t.Errorf("expected db.prod.internal, got %q", host)
-	}
-}
-
 func TestExtractURLHost_HTTPS(t *testing.T) {
 	host := ExtractURLHost("https://api.example.com/v1")
 	if host != "api.example.com" {
@@ -84,7 +77,7 @@ func TestExtractURLHost_NoScheme(t *testing.T) {
 }
 
 func TestHostsForCredential_GitHubToken(t *testing.T) {
-	hosts := HostsForCredential("GITHUB_TOKEN", "ghp_abc123def456")
+	hosts := HostsForCredential("GITHUB_TOKEN", "ghp_abc123def456ghi789jkl")
 	if len(hosts) == 0 {
 		t.Fatal("expected hosts for GitHub token")
 	}
@@ -101,16 +94,9 @@ func TestHostsForCredential_GitHubToken(t *testing.T) {
 }
 
 func TestHostsForCredential_OpenAIKey(t *testing.T) {
-	hosts := HostsForCredential("OPENAI_API_KEY", "sk-proj-abc123")
+	hosts := HostsForCredential("OPENAI_API_KEY", "sk-proj-abc123def456ghi789")
 	if len(hosts) != 1 || hosts[0] != "api.openai.com" {
 		t.Errorf("expected [api.openai.com], got %v", hosts)
-	}
-}
-
-func TestHostsForCredential_DatabaseURL(t *testing.T) {
-	hosts := HostsForCredential("DATABASE_URL", "postgres://user:pass@db.prod.internal:5432/mydb")
-	if len(hosts) != 1 || hosts[0] != "db.prod.internal" {
-		t.Errorf("expected [db.prod.internal], got %v", hosts)
 	}
 }
 
@@ -143,9 +129,12 @@ func TestHostsForCredential_NameMatchGitHub(t *testing.T) {
 }
 
 // TestExtractURLHost_RejectsUnknownScheme asserts that schemes outside the
-// allowlist yield empty host regardless of URL syntax validity. This closes
-// SEC-8 from the 2026-04-22 audit: a crafted env var value like
-// "javascript://evil.com" must not widen the proxy's allow-host set.
+// allowlist (http/https only) yield empty host regardless of URL syntax
+// validity. This closes SEC-8 from the 2026-04-22 audit: a crafted env var
+// value like "javascript://evil.com" must not widen the proxy's allow-host
+// set. TCP-protocol schemes (postgres, mysql, redis, mongodb, amqp) are
+// also rejected — Veil's HTTP proxy never sees those connections, so any
+// host derived from them would be inert scoping noise.
 func TestExtractURLHost_RejectsUnknownScheme(t *testing.T) {
 	cases := []string{
 		"javascript://evil.com",
@@ -155,6 +144,11 @@ func TestExtractURLHost_RejectsUnknownScheme(t *testing.T) {
 		"vscode://sourcegraph/auth?token=abc",
 		"ftp://ftp.example.com/file",
 		"ldap://ldap.example.com",
+		"postgres://user:pw@db.internal:5432/mydb",
+		"mysql://root:pw@mysql.internal/db",
+		"redis://:pw@redis.internal:6379/0",
+		"mongodb+srv://user:pw@cluster.mongo.internal/db",
+		"amqp://user:pw@queue.internal:5672/",
 	}
 	for _, value := range cases {
 		t.Run(value, func(t *testing.T) {
@@ -166,8 +160,8 @@ func TestExtractURLHost_RejectsUnknownScheme(t *testing.T) {
 	}
 }
 
-// TestExtractURLHost_AcceptsAllowedSchemes asserts existing scheme handling
-// is preserved for the allowlisted schemes.
+// TestExtractURLHost_AcceptsAllowedSchemes asserts http/https URLs yield
+// their host. These are the only schemes Veil's HTTP proxy can mediate.
 func TestExtractURLHost_AcceptsAllowedSchemes(t *testing.T) {
 	cases := []struct {
 		value    string
@@ -175,10 +169,6 @@ func TestExtractURLHost_AcceptsAllowedSchemes(t *testing.T) {
 	}{
 		{"http://example.com/x", "example.com"},
 		{"https://api.example.com:443/", "api.example.com"},
-		{"postgres://user:pw@db.internal:5432/mydb", "db.internal"},
-		{"mysql://root:pw@mysql.internal/db", "mysql.internal"},
-		{"redis://:pw@redis.internal:6379/0", "redis.internal"},
-		{"mongodb+srv://user:pw@cluster.mongo.internal/db", "cluster.mongo.internal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.value, func(t *testing.T) {
@@ -187,5 +177,26 @@ func TestExtractURLHost_AcceptsAllowedSchemes(t *testing.T) {
 				t.Fatalf("ExtractURLHost(%q) = %q, want %q", tc.value, got, tc.wantHost)
 			}
 		})
+	}
+}
+
+// TestHostsForCredential_GatedByValueShape locks in that the auto-scope
+// path also runs through the unified value-shape gate. Without this,
+// a sub-gate value would receive provider hosts even though
+// (*Registry).Match would have rejected it for vaulting — desynced
+// behavior between detection and host scoping.
+func TestHostsForCredential_GatedByValueShape(t *testing.T) {
+	// Sub-gate value under a provider name hint: would otherwise pick
+	// up Vercel hosts via the declarativeMatcher name-hint path.
+	hosts := HostsForCredential("VERCEL_ENV", "production")
+	if len(hosts) != 0 {
+		t.Errorf("HostsForCredential should not auto-scope sub-gate values; got %v", hosts)
+	}
+
+	// URL-extraction path must still fire for sub-gate values — URLs
+	// are a separate signal from provider matching.
+	urlHosts := HostsForCredential("WEBHOOK_URL", "https://hooks.example.com/path")
+	if len(urlHosts) != 1 || urlHosts[0] != "hooks.example.com" {
+		t.Errorf("HostsForCredential should still extract URL hosts; got %v", urlHosts)
 	}
 }

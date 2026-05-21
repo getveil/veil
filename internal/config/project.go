@@ -76,6 +76,14 @@ func AuditDBFile(root string) string {
 	return filepath.Join(ProjectStateDir(root), "audit.sqlite")
 }
 
+// RunnerMarkerFile is touched on every `veil run` so commands like
+// `veil log` can distinguish "no proxy has ever started" from "proxy ran
+// but produced no injections during this period". The file's contents
+// are immaterial — its existence is the signal.
+func RunnerMarkerFile(root string) string {
+	return filepath.Join(ProjectStateDir(root), "runner-started")
+}
+
 func VaultGitignoreFile(root string) string {
 	return filepath.Join(ProjectStateDir(root), ".gitignore")
 }

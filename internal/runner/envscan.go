@@ -22,9 +22,15 @@ import (
 //     tripping the fail-closed check on things like PATH.
 //  2. placeholder.IsSecretLike evaluates the remaining name/value pairs.
 //
-// Runs against os.Environ() at veil-run startup as a belt-and-suspenders
-// check: init should have captured these already, but a user may have
-// added a new export since init, or run veil in a shell that init never saw.
+// Runs against os.Environ() at veil-run startup as the sole shell-env
+// surface: init only scans .env files, so any secret-shaped name still
+// living in the shell needs to be flagged here before launch.
+//
+// Phase 9 spec called for dropping the pre-filter in favor of a "simpler
+// name-match", but doing so flags PWD/PATH/ANTHROPIC_BASE_URL on every
+// `veil run` invocation in a normal terminal — a recurring startup-banner
+// regression that conflicts with the explicit "don't fire warnings every
+// session" UX bar. The pre-filter stays.
 func scanUnvaultedSecretLikes(environ, vaultNames []string, allow map[string]struct{}) []string {
 	vaulted := make(map[string]struct{}, len(vaultNames))
 	for _, n := range vaultNames {
@@ -69,21 +75,19 @@ func scanUnvaultedSecretLikes(environ, vaultNames []string, allow map[string]str
 // values look secret-like but are not in the vault. Format mirrors
 // printStrippedEnvWarning so users see parallel structure.
 func printUnvaultedWarning(w io.Writer, names []string) {
-	_, _ = fmt.Fprintf(w, "  %s %d shell env %s look like secrets but are NOT in the vault:\n",
-		ui.Warning.Sprint("!"), len(names), plural(len(names), "var", "vars"))
-	for _, n := range names {
-		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(n))
-	}
-	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("the agent will see their real values. run `veil init --force` to capture them,"))
-	_, _ = fmt.Fprintf(w, "    %s\n",
-		ui.Muted.Sprint("or pass --allow-env-secret NAME (repeatable) to confirm pass-through."))
-}
-
-// plural is a local helper to avoid depending on the cli package.
-func plural(n int, singular, pluralForm string) string {
+	n := len(names)
+	var head string
 	if n == 1 {
-		return singular
+		head = "1 shell env var looks like a secret but is NOT in the vault:"
+	} else {
+		head = fmt.Sprintf("%d shell env vars look like secrets but are NOT in the vault:", n)
 	}
-	return pluralForm
+	_, _ = fmt.Fprintf(w, "  %s %s\n", ui.Warning.Sprint("!"), head)
+	for _, name := range names {
+		_, _ = fmt.Fprintf(w, "      %s\n", ui.Warning.Sprint(name))
+	}
+	_, _ = fmt.Fprintf(w, "    %s\n",
+		ui.Muted.Sprint("the agent will see their real values. use `veil add NAME` to vault each one,"))
+	_, _ = fmt.Fprintf(w, "    %s\n",
+		ui.Muted.Sprint("or pass --allow-env-secret NAME to confirm intentional pass-through."))
 }

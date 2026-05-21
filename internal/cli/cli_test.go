@@ -12,18 +12,57 @@ import (
 
 	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/envkeys"
 )
+
+// TestMain probes the test-keystore seam: tests in this package set
+// VEIL_TEST_KEYSTORE=mem expecting writes to route to an in-memory
+// keystore, but the seam is gated behind -tags testkeystore. Without
+// that tag the env var is silently ignored and tests fall through to
+// the real OS keychain — polluting it (and producing exit-154 errors
+// once enough entries accumulate). Fail loud here.
+func TestMain(m *testing.M) {
+	prev, hadPrev := os.LookupEnv(envkeys.TestKeystoreToggle)
+	if err := os.Setenv(envkeys.TestKeystoreToggle, "mem"); err != nil {
+		panic(err)
+	}
+	_, seamActive := MaybeTestKeystoreForTest()
+	if hadPrev {
+		_ = os.Setenv(envkeys.TestKeystoreToggle, prev)
+	} else {
+		_ = os.Unsetenv(envkeys.TestKeystoreToggle)
+	}
+	if !seamActive {
+		fmt.Fprintln(os.Stderr,
+			"FATAL: internal/cli tests require -tags testkeystore. "+
+				"Run via `make test`, not bare `go test`, so tests do not "+
+				"write to the real OS keychain.")
+		os.Exit(1)
+	}
+
+	os.Exit(m.Run())
+}
+
+// pinTestHome pins HOME and XDG_DATA_HOME to a tempdir so init/uninstall's
+// user-global CA writes (~/Library/Application Support/veil/ca/ on macOS,
+// ~/.local/share/veil/ca/ on Linux) land in a sandbox. Without this, tests
+// that run `veil init` create/load the developer's real CA, and tests that
+// run `veil uninstall` will DELETE it — breaking the dev's actual Veil
+// installation when they run `make test`. Apply to any test that exercises
+// init or uninstall through cmd.Execute.
+func pinTestHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+}
 
 // initProject sets up a temporary directory with .git, .env, and runs veil init.
 // It returns the project root path.
 func initProject(t *testing.T) string {
 	t.Helper()
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	// Shell-env scanning would otherwise pull secret-like vars (e.g. CLAUDE_*)
-	// from the test runner's environment into the vault, inflating the
-	// credential count in tests that assert on exact totals.
-	clearShellEnvTestNoise(t)
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -279,27 +318,6 @@ func TestAddForce(t *testing.T) {
 	}
 }
 
-func TestLogEmpty(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"log", "--path", root})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("log failed: %v", err)
-	}
-	output := out.String()
-	if !strings.Contains(output, "No credential injections") {
-		t.Errorf("expected empty log message, got: %s", output)
-	}
-	if !strings.Contains(output, "proxy was active") {
-		t.Errorf("expected proxy-active clarification, got: %s", output)
-	}
-}
-
 func TestLogJSON(t *testing.T) {
 	root := initProject(t)
 
@@ -348,6 +366,7 @@ func TestStatusOutput(t *testing.T) {
 
 func TestListEmpty(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -561,54 +580,6 @@ func TestAddForceUpdatesEnvFile(t *testing.T) {
 	}
 	if !strings.Contains(envStr, "OPENAI_API_KEY=") {
 		t.Error("OPENAI_API_KEY key should still exist in .env")
-	}
-}
-
-func TestListPlaceholder(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"list", "--path", root, "--placeholder"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("list --placeholder failed: %v", err)
-	}
-	output := out.String()
-	if !strings.Contains(output, "PLACEHOLDER") {
-		t.Errorf("expected PLACEHOLDER column header, got: %s", output)
-	}
-	// The placeholder for OPENAI_API_KEY should start with sk-proj- (format-aware).
-	if !strings.Contains(output, "sk-proj-") {
-		t.Errorf("expected placeholder value with sk-proj- prefix, got: %s", output)
-	}
-}
-
-// TestList_MutuallyExclusiveFlagsError is the F-8 regression at the cobra
-// boundary. The cobra error must (1) be returned to the caller and (2) name
-// both flags so cmd/veil/main.go can surface it. Errors that exit run() with
-// IsAlreadyPrinted == false are the ones that get printed; cobra-internal
-// validation errors fall in that bucket.
-func TestList_MutuallyExclusiveFlagsError(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"list", "--path", root, "--placeholder", "--reveal", "--yes"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for --placeholder + --reveal")
-	}
-	msg := err.Error()
-	for _, want := range []string{"placeholder", "reveal", "none of the others"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error missing %q: %v", want, err)
-		}
-	}
-	if IsAlreadyPrinted(err) {
-		t.Error("cobra-internal flag-group error should not be marked as already printed")
 	}
 }
 
@@ -868,29 +839,13 @@ func TestLogWithFilters(t *testing.T) {
 		}
 	})
 
-	// T-8.4: --blocked filter
-	t.Run("blocked_filter", func(t *testing.T) {
-		cmd := NewRoot("test")
-		out := new(bytes.Buffer)
-		cmd.SetOut(out)
-		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--blocked"})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("log --blocked failed: %v", err)
-		}
-		output := out.String()
-		if !strings.Contains(output, "blocked") {
-			t.Error("expected blocked event in output")
-		}
-	})
-
 	// T-8.8: --limit flag
 	t.Run("limit", func(t *testing.T) {
 		cmd := NewRoot("test")
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--blocked", "--limit", "1"})
+		cmd.SetArgs([]string{"log", "--path", root, "--limit", "1"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("log --limit failed: %v", err)
 		}
@@ -917,7 +872,7 @@ func TestLogWithFilters(t *testing.T) {
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--json", "--blocked"})
+		cmd.SetArgs([]string{"log", "--path", root, "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("log --json failed: %v", err)
 		}
@@ -945,7 +900,7 @@ func TestLogWithFilters(t *testing.T) {
 		out := new(bytes.Buffer)
 		cmd.SetOut(out)
 		cmd.SetErr(new(bytes.Buffer))
-		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.openai.com", "--credential", "OPENAI_API_KEY", "--since", "1h", "--limit", "10", "--json", "--blocked"})
+		cmd.SetArgs([]string{"log", "--path", root, "--host", "api.openai.com", "--credential", "OPENAI_API_KEY", "--since", "1h", "--limit", "10", "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("combined filter failed: %v", err)
 		}
@@ -1001,7 +956,7 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandHelp(t *testing.T) {
-	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove", "skip"}
+	subcommands := []string{"init", "run", "status", "add", "list", "log", "remove"}
 	for _, sub := range subcommands {
 		t.Run(sub, func(t *testing.T) {
 			cmd := NewRoot("test")
@@ -1032,7 +987,7 @@ func TestNoArgsShowsHelp(t *testing.T) {
 	if !strings.Contains(output, "Available Commands") {
 		t.Errorf("expected 'Available Commands' in help output, got: %s", output)
 	}
-	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove", "skip"} {
+	for _, sub := range []string{"init", "run", "status", "add", "list", "log", "remove"} {
 		if !strings.Contains(output, sub) {
 			t.Errorf("help should list %q subcommand", sub)
 		}
@@ -1130,7 +1085,7 @@ func TestRemoveCancelled(t *testing.T) {
 
 func TestInitEmptyEnvFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1152,6 +1107,7 @@ func TestInitEmptyEnvFile(t *testing.T) {
 
 func TestInitExportPrefixPreserved(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1185,6 +1141,7 @@ func TestInitExportPrefixPreserved(t *testing.T) {
 
 func TestInitQuotedValuesRoundTrip(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1228,6 +1185,7 @@ func TestInitQuotedValuesRoundTrip(t *testing.T) {
 
 func TestInitNoSecretsInOutput(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1294,326 +1252,42 @@ func TestManyCredentials(t *testing.T) {
 	}
 }
 
-func TestSkipAdd(t *testing.T) {
+// TestStatusShowsLeakCount verifies that when status reports leaks > 0
+// the Leaks line appears with the count. The Phase 6 cut removed the
+// "Run `veil log --suspect` for details" hint that previously followed
+// this line — the count alone is the signal now.
+func TestStatusShowsLeakCount(t *testing.T) {
 	root := initProject(t)
+
+	// Seed a leaked row so Summary returns leaked > 0.
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp: time.Now(),
+		RequestID: "req-leak",
+		Host:      "api.example.com",
+		Method:    "POST",
+		Location:  "leaked",
+	})
+	store.DrainForTest()
+	_ = store.Close()
 
 	cmd := NewRoot("test")
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
+	cmd.SetArgs([]string{"status", "--path", root})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("skip add failed: %v", err)
-	}
-
-	if !strings.Contains(out.String(), "api.anthropic.com") {
-		t.Errorf("expected confirmation output, got %q", out.String())
-	}
-
-	hosts, err := skiphost.Load(config.SkipHostsFile(root))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(hosts) != 1 || hosts[0] != "api.anthropic.com" {
-		t.Errorf("expected [api.anthropic.com], got %v", hosts)
-	}
-}
-
-func TestSkipDuplicate(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd2.SetOut(out)
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("skip duplicate failed: %v", err)
-	}
-
-	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
-	if len(hosts) != 1 {
-		t.Errorf("expected 1 host, got %d", len(hosts))
-	}
-}
-
-func TestSkipList(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	cmd2.SetOut(new(bytes.Buffer))
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "*.internal.com"})
-	_ = cmd2.Execute()
-
-	cmd3 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd3.SetOut(out)
-	cmd3.SetErr(new(bytes.Buffer))
-	cmd3.SetArgs([]string{"skip", "--path", root, "--list"})
-	if err := cmd3.Execute(); err != nil {
-		t.Fatalf("skip list failed: %v", err)
+		t.Fatalf("status: %v", err)
 	}
 	output := out.String()
-	if !strings.Contains(output, "api.anthropic.com") || !strings.Contains(output, "*.internal.com") {
-		t.Errorf("expected both hosts in output, got %q", output)
+	if !strings.Contains(output, "Leaks") {
+		t.Fatalf("status output missing Leaks line:\n%s", output)
 	}
-}
-
-func TestSkipRemove(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "api.anthropic.com"})
-	_ = cmd.Execute()
-
-	cmd2 := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd2.SetOut(out)
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"skip", "--path", root, "--remove", "api.anthropic.com"})
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("skip remove failed: %v", err)
-	}
-
-	hosts, _ := skiphost.Load(config.SkipHostsFile(root))
-	if len(hosts) != 0 {
-		t.Errorf("expected empty list, got %v", hosts)
-	}
-}
-
-func TestSkipRemoveNotFound(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "--remove", "not.there.com"})
-	err := cmd.Execute()
-	if err == nil {
-		t.Error("expected error for removing nonexistent host")
-	}
-}
-
-// Regression: a bare "*" in skip_hosts becomes NO_PROXY=*, which Go's httpproxy
-// (and curl/requests) treat as bypass-all — silently disabling Veil for the
-// project. The skip command must reject it.
-func TestSkipRejectsBareWildcard(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"skip", "--path", root, "*"})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("expected veil skip \"*\" to fail")
-	}
-
-	hosts, err := skiphost.Load(config.SkipHostsFile(root))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(hosts) != 0 {
-		t.Errorf("expected no hosts persisted, got %v", hosts)
-	}
-}
-
-func TestAddWithUserFlag(t *testing.T) {
-	root := initProject(t)
-
-	addCmd := NewRoot("test")
-	addOut := new(bytes.Buffer)
-	addCmd.SetOut(addOut)
-	addCmd.SetErr(new(bytes.Buffer))
-	addCmd.SetArgs([]string{
-		"add", "--path", root, "github-pat",
-		"--user", "johndoe",
-		"--host", "github.com",
-		"--value", "ghp_realtoken",
-	})
-	if err := addCmd.Execute(); err != nil {
-		t.Fatalf("add: %v\n%s", err, addOut.String())
-	}
-	out := addOut.String()
-	if !strings.Contains(out, "User placeholder:") {
-		t.Errorf("output missing user placeholder line:\n%s", out)
-	}
-	if !strings.Contains(out, "Secret placeholder:") {
-		t.Errorf("output missing secret placeholder line:\n%s", out)
-	}
-
-	v, err := openVault(root)
-	if err != nil {
-		t.Fatalf("open vault: %v", err)
-	}
-	c, ok := v.Get("github-pat")
-	if !ok {
-		t.Fatal("credential not stored")
-	}
-	if c.Username != "johndoe" {
-		t.Errorf("Username = %q", c.Username)
-	}
-	if c.UsernamePlaceholder == "" {
-		t.Error("UsernamePlaceholder not set")
-	}
-	if c.UsernamePlaceholder == c.Placeholder {
-		t.Error("UsernamePlaceholder collided with Placeholder")
-	}
-}
-
-func TestAddRejectsEmptyUser(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "x",
-		"--user", "", "--host", "x.test", "--value", "v"})
-	if err := cmd.Execute(); err == nil {
-		t.Error("expected error for empty --user")
-	}
-}
-
-func TestAddRejectsUserWithColon(t *testing.T) {
-	root := initProject(t)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"add", "--path", root, "x",
-		"--user", "bad:user", "--host", "x.test", "--value", "v"})
-	if err := cmd.Execute(); err == nil {
-		t.Error("expected error for colon in --user")
-	}
-}
-
-func TestListShowsBasicTag(t *testing.T) {
-	root := initProject(t)
-
-	// Add a Basic credential.
-	addBasic := NewRoot("test")
-	addBasic.SetOut(new(bytes.Buffer))
-	addBasic.SetErr(new(bytes.Buffer))
-	addBasic.SetArgs([]string{
-		"add", "--path", root, "gh-basic",
-		"--user", "johndoe", "--host", "github.com", "--value", "ghp_real",
-	})
-	if err := addBasic.Execute(); err != nil {
-		t.Fatalf("add basic: %v", err)
-	}
-
-	// Add a bearer credential.
-	addBearer := NewRoot("test")
-	addBearer.SetOut(new(bytes.Buffer))
-	addBearer.SetErr(new(bytes.Buffer))
-	addBearer.SetArgs([]string{
-		"add", "--path", root, "oa-bearer",
-		"--host", "api.openai.com", "--value", "sk-abc",
-	})
-	if err := addBearer.Execute(); err != nil {
-		t.Fatalf("add bearer: %v", err)
-	}
-
-	listCmd := NewRoot("test")
-	listOut := new(bytes.Buffer)
-	listCmd.SetOut(listOut)
-	listCmd.SetErr(new(bytes.Buffer))
-	listCmd.SetArgs([]string{"list", "--path", root})
-	if err := listCmd.Execute(); err != nil {
-		t.Fatalf("list: %v\n%s", err, listOut.String())
-	}
-
-	out := listOut.String()
-	var basicLine, bearerLine string
-	for _, ln := range strings.Split(out, "\n") {
-		if strings.Contains(ln, "gh-basic") {
-			basicLine = ln
-		}
-		if strings.Contains(ln, "oa-bearer") {
-			bearerLine = ln
-		}
-	}
-	if !strings.Contains(basicLine, "(basic)") {
-		t.Errorf("basic row missing (basic) tag: %q", basicLine)
-	}
-	if strings.Contains(bearerLine, "(basic)") {
-		t.Errorf("bearer row incorrectly shows (basic): %q", bearerLine)
-	}
-}
-
-func TestLogShowsSuspectMarker(t *testing.T) {
-	root := initProject(t)
-
-	// Insert a suspect row directly into the audit DB.
-	dbPath := config.AuditDBFile(root)
-	store, err := audit.Open(dbPath)
-	if err != nil {
-		t.Fatalf("audit open: %v", err)
-	}
-	store.Record(audit.Injection{
-		Timestamp:   time.Now(),
-		RequestID:   "req-susp-1",
-		Host:        "api.example.com",
-		Method:      "GET",
-		URLPath:     "/x",
-		Location:    "mismatch_suspected",
-		SuspectFlag: true,
-		AuthSignal:  "authorization_header",
-	})
-	_ = store.Close()
-
-	// Default output should include the suspect row tagged with [!].
-	logCmd := NewRoot("test")
-	logOut := new(bytes.Buffer)
-	logCmd.SetOut(logOut)
-	logCmd.SetErr(new(bytes.Buffer))
-	logCmd.SetArgs([]string{"log", "--path", root})
-	if err := logCmd.Execute(); err != nil {
-		t.Fatalf("log: %v\n%s", err, logOut.String())
-	}
-	if !strings.Contains(logOut.String(), "[!]") {
-		t.Errorf("log output missing [!] marker:\n%s", logOut.String())
-	}
-
-	// --suspect filter returns only suspect rows.
-	suspectCmd := NewRoot("test")
-	susOut := new(bytes.Buffer)
-	suspectCmd.SetOut(susOut)
-	suspectCmd.SetErr(new(bytes.Buffer))
-	suspectCmd.SetArgs([]string{"log", "--path", root, "--suspect"})
-	if err := suspectCmd.Execute(); err != nil {
-		t.Fatalf("log --suspect: %v\n%s", err, susOut.String())
-	}
-	susText := susOut.String()
-	if !strings.Contains(susText, "api.example.com") {
-		t.Errorf("--suspect output missing host:\n%s", susText)
-	}
-
-	// --json output includes `"suspect":true`.
-	jsonCmd := NewRoot("test")
-	jsonOut := new(bytes.Buffer)
-	jsonCmd.SetOut(jsonOut)
-	jsonCmd.SetErr(new(bytes.Buffer))
-	jsonCmd.SetArgs([]string{"log", "--path", root, "--json"})
-	if err := jsonCmd.Execute(); err != nil {
-		t.Fatalf("log --json: %v\n%s", err, jsonOut.String())
-	}
-	if !strings.Contains(jsonOut.String(), `"suspect":true`) {
-		t.Errorf("--json output missing suspect flag:\n%s", jsonOut.String())
+	if strings.Contains(output, "--suspect") {
+		t.Errorf("status output must not reference removed --suspect flag:\n%s", output)
 	}
 }
 

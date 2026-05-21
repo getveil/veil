@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/getveil/veil/internal/audit"
@@ -62,6 +63,13 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	defer func() { _ = auditStore.Close() }()
 
+	// Mark that the runner has started at least once for this project, so
+	// `veil log` on a future invocation can distinguish "proxy ran but
+	// produced no injections" from "veil run has never been executed". The
+	// write is best-effort: a missing marker only degrades the zero-state
+	// hint, never the run itself.
+	_ = vault.WriteFileNoFollow(config.RunnerMarkerFile(cfg.Root), nil, 0o600)
+
 	ca, err := proxy.LoadOrCreateCA()
 	if err != nil {
 		return nil, fmt.Errorf("load or create CA: %w", err)
@@ -77,15 +85,6 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	bundlePath, err := proxy.BuildCABundleIn(sessionDir, ca.CertPEM)
 	if err != nil {
 		return nil, fmt.Errorf("build ca bundle: %w", err)
-	}
-
-	bundlePEM, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return nil, fmt.Errorf("read ca bundle: %w", err)
-	}
-	javaTruststorePath, javaTruststorePassword, err := proxy.BuildJavaTruststoreIn(sessionDir, bundlePEM)
-	if err != nil {
-		return nil, fmt.Errorf("build java truststore: %w", err)
 	}
 
 	// Resolve the child command to a realpath before touching the proxy or
@@ -134,7 +133,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		entries = append(entries, vaultEntry{Name: c.Name, Placeholder: c.Placeholder})
 	}
 	environ := os.Environ()
-	env, strippedVault, strippedInternal := buildChildEnv(environ, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword, cfg.SkipHosts, entries)
+	env, strippedVault, strippedInternal := buildChildEnv(environ, proxyURL, bundlePath, cfg.SkipHosts, entries)
 	if len(strippedVault) > 0 {
 		printStrippedEnvWarning(os.Stderr, strippedVault)
 	}
@@ -194,10 +193,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	// Reclaim foreground process group so veil can write to the terminal.
 	reclaimForeground(ttyFd)
 
-	exitCode := 0
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
-		exitCode = exitErr.ExitCode()
-	}
+	exitCode := exitCodeFromWait(waitErr)
 
 	printSessionFooter(os.Stderr, auditStore, sessionStart, time.Since(sessionStart), exitCode)
 
@@ -220,9 +216,8 @@ type vaultEntry struct {
 }
 
 // buildChildEnv constructs the env slice exec'd into the agent. It strips
-// pre-existing proxy/CA vars (replaced with Veil's loopback proxy + bundle),
-// merges any caller-set JAVA_TOOL_OPTIONS with Veil's truststore flags, and
-// removes vars matching vault-credential names (replacing them with the
+// pre-existing proxy/CA vars (replaced with Veil's loopback proxy + bundle)
+// and removes vars matching vault-credential names (replacing them with the
 // credential's placeholder so the child still has a value under that name).
 // Veil's own control vars (envkeys.VeilInternalKeys) are stripped without
 // reinjection — VEIL_PASSPHRASE in particular would let the agent decrypt
@@ -231,7 +226,7 @@ type vaultEntry struct {
 // Returns the child env, the names that were stripped because they matched a
 // vault credential (original casing, for the loud user-facing warning), and
 // the names of Veil-internal vars that were stripped (for a muted notice).
-func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, javaTruststorePassword string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
+func buildChildEnv(environ []string, proxyURL, bundlePath string, skipHosts []string, vaultEntries []vaultEntry) ([]string, []string, []string) {
 	vaultMap := make(map[string]string, len(vaultEntries))
 	for _, e := range vaultEntries {
 		if e.Name == "" {
@@ -240,25 +235,14 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 		vaultMap[strings.ToUpper(e.Name)] = e.Placeholder
 	}
 
-	veilJavaFlags := proxy.JavaToolOptionsFlags(javaTruststorePath, javaTruststorePassword)
-	javaToolOpts := veilJavaFlags
-
 	stripped := make([]string, 0, len(environ))
 	strippedVault := make([]string, 0)
 	strippedInternal := make([]string, 0)
 	reinject := make([]string, 0)
 	for _, kv := range environ {
-		key, value, ok := strings.Cut(kv, "=")
+		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
 			stripped = append(stripped, kv)
-			continue
-		}
-		// JAVA_TOOL_OPTIONS is dropped from the passthrough set; its value is
-		// merged into the Veil-injected JAVA_TOOL_OPTIONS below.
-		if strings.EqualFold(key, envkeys.JavaToolOptions) {
-			if existing := strings.TrimSpace(value); existing != "" {
-				javaToolOpts = existing + " " + veilJavaFlags
-			}
 			continue
 		}
 		if isAnyEnvKey(key, envkeys.ProxyKeys) || isAnyEnvKey(key, envkeys.CAKeys) {
@@ -291,7 +275,6 @@ func buildChildEnv(environ []string, proxyURL, bundlePath, javaTruststorePath, j
 	for _, k := range envkeys.CAKeys {
 		env = append(env, k+"="+bundlePath)
 	}
-	env = append(env, envkeys.JavaToolOptions+"="+javaToolOpts)
 	// Re-injected placeholders go last for readability. The proxy/CA filter
 	// above skips matching names before the vault branch, so there is no
 	// collision with the proxy/CA vars we just appended.
@@ -383,6 +366,27 @@ func formatExitSummary(exitCode int) string {
 		return "session complete"
 	}
 	return fmt.Sprintf("session ended (exit %d)", exitCode)
+}
+
+// exitCodeFromWait derives a shell-conventional exit code from a Wait() error.
+// A signal-terminated child becomes 128+signo (matching every Unix shell:
+// 130 for SIGINT, 143 for SIGTERM) rather than the raw -1 that
+// (*exec.ExitError).ExitCode() returns for signaled processes — "exit -1" in
+// the session footer was meaningless to users grepping logs for "exit 130".
+// nil err → 0. Non-ExitError wait failures (e.g. forking errors that surface
+// at Wait time on some platforms) collapse to ExitGeneric (1).
+func exitCodeFromWait(waitErr error) int {
+	if waitErr == nil {
+		return 0
+	}
+	exitErr, ok := waitErr.(*exec.ExitError)
+	if !ok {
+		return 1
+	}
+	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exitErr.ExitCode()
 }
 
 // auditFooterSource is the audit-store surface the session footer needs:

@@ -55,7 +55,7 @@ func TestFailClosedGuard_LeakedBody(t *testing.T) {
 	// Allow the background flusher (100ms ticker) to persist the audit row.
 	time.Sleep(250 * time.Millisecond)
 
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 50})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -108,166 +108,12 @@ func TestFailClosedGuard_LeakedHeader(t *testing.T) {
 	}
 }
 
-// TestProxy_FailsClosedOnSignerFailure verifies that when the SigV4 signer
-// reports a signer_failed outcome (e.g. because the SDK signed the request
-// with an AKID Veil doesn't know, but Veil still owns the host), the proxy
-// returns a 502 with the X-Veil-Error header set and does NOT forward the
-// original broken-placeholder request upstream.
-func TestProxy_FailsClosedOnSignerFailure(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	// A credential whose AllowedHosts covers the upstream: this means
-	// Veil "owns" the host for SigV4, so an Authorization with an unknown
-	// AKID must fail-closed (not pass through unmediated).
-	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
-	hostOnly := strings.Split(upstreamHost, ":")[0]
-	cred := &vault.Credential{
-		ID:                        "c1",
-		Name:                      "aws-prod",
-		Scheme:                    "aws",
-		Real:                      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-		AWSAccessKeyID:            "AKIAREAL000000000000",
-		AWSAccessKeyIDPlaceholder: "AKIAPH00000000000000",
-		AllowedHosts:              []string{hostOnly, upstreamHost},
-	}
-	srv, _, _ := testSetup(t, cred)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/", nil)
-	req.Header.Set("X-Amz-Date", "20150830T123600Z")
-	// Authorization bears an AKID that is NOT in the vault. Because Veil
-	// owns the host, the signer must fail-closed.
-	req.Header.Set("Authorization",
-		"AWS4-HMAC-SHA256 Credential=AKIAUNKNOWNXXXXXXXX/20150830/us-east-1/service/aws4_request, "+
-			"SignedHeaders=host;x-amz-date, Signature=xx")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0 when signer fails", got)
-	}
-	if got := resp.Header.Get("X-Veil-Error"); got != SignerErrUnknownAccessKeyID {
-		t.Errorf("X-Veil-Error = %q, want %q", got, SignerErrUnknownAccessKeyID)
-	}
-}
-
-// TestFailClosedGuard_LeakedBasicAuth verifies that a placeholder embedded
-// inside the base64-encoded payload of an Authorization: Basic header is
-// caught by the fail-closed guard. Without base64-decoding the credential,
-// the raw header bytes do not contain the sentinel and the request would
-// otherwise leak the placeholder to the upstream host.
-func TestFailClosedGuard_LeakedBasicAuth(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	srv, _, store := testSetup(t)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/test", nil)
-	encoded := base64.StdEncoding.EncodeToString([]byte("user:sk-proj-VEILleakedBasic"))
-	req.Header.Set("Authorization", "Basic "+encoded)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0 when basic-auth leak detected", got)
-	}
-
-	// Allow the background flusher (100ms ticker) to persist the audit row.
-	time.Sleep(250 * time.Millisecond)
-
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	var leakRow *audit.Row
-	for i := range rows {
-		if rows[i].Location == "leaked" {
-			leakRow = &rows[i]
-			break
-		}
-	}
-	if leakRow == nil {
-		t.Fatalf("no 'leaked' audit row found; got %d rows", len(rows))
-	}
-	if leakRow.Method != http.MethodGet {
-		t.Errorf("leak row Method = %q, want GET", leakRow.Method)
-	}
-}
-
-// TestFailClosedGuard_LeakedBasicAuth_UserHalf verifies that the fail-closed
-// guard catches the placeholder when it is in the user half of user:pass,
-// not the password half.
-func TestFailClosedGuard_LeakedBasicAuth_UserHalf(t *testing.T) {
-	var upstreamHits int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamHits, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	srv, _, _ := testSetup(t)
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = srv.Stop() }()
-
-	client := httpClient(srv.Addr())
-	req, _ := http.NewRequest(http.MethodGet, upstream.URL+"/test", nil)
-	encoded := base64.StdEncoding.EncodeToString([]byte("VEIL_USER_LEAK:somepass"))
-	req.Header.Set("Authorization", "Basic "+encoded)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d (body=%q), want 502", resp.StatusCode, string(body))
-	}
-	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
-		t.Fatalf("upstream received %d requests; must be 0", got)
-	}
-}
-
 // TestFailClosedGuard_BasicAuthNoLeakPasses verifies that a normal Basic
 // auth request without any placeholder sentinel is forwarded successfully
 // (the fail-closed guard does not regress on benign Basic credentials).
+// Veil v1 no longer mediates Basic auth, so the header is passed through
+// untouched — this test guards against a future regression that would
+// trip the body/header scan on benign base64 payloads.
 func TestFailClosedGuard_BasicAuthNoLeakPasses(t *testing.T) {
 	var upstreamHits int32
 	var seenAuth string
@@ -390,7 +236,7 @@ func TestFailClosedGuard_LeakAuditUsesRawURL(t *testing.T) {
 	// Allow the background flusher to persist the audit row.
 	time.Sleep(250 * time.Millisecond)
 
-	rows, err := store.Query(audit.Filter{IncludeBlocked: true, IncludeSuspect: true, Limit: 50})
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 50})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -418,7 +264,8 @@ func TestFailClosedGuard_LeakAuditUsesRawURL(t *testing.T) {
 // application/json) is rejected with 502 — NOT silently truncated and
 // forwarded. Previously the code did io.ReadAll(io.LimitReader(req.Body,
 // bodyCap+1)) but then proceeded to inject and forward the truncated body,
-// corrupting legitimate requests larger than 10 MiB without surfacing an error.
+// corrupting legitimate requests larger than the cap without surfacing an
+// error.
 func TestFailClosedGuard_OversizedInjectableBody(t *testing.T) {
 	var upstreamHits int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -446,10 +293,10 @@ func TestFailClosedGuard_OversizedInjectableBody(t *testing.T) {
 		t.Fatalf("test body has wrong size: %d, want %d", len(body), bodyCap+100)
 	}
 
-	// Use a longer timeout because shipping a >10 MiB POST through the loopback
+	// Use a longer timeout because shipping a >64 MiB POST through the loopback
 	// proxy can legitimately take longer than the 5-second default in httpClient.
 	client := httpClient(srv.Addr())
-	client.Timeout = 30 * time.Second
+	client.Timeout = 60 * time.Second
 
 	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -472,8 +319,8 @@ func TestFailClosedGuard_OversizedInjectableBody(t *testing.T) {
 	if !strings.Contains(string(respBody), "exceeds") || !strings.Contains(string(respBody), "inject limit") {
 		t.Errorf("response body = %q, want it to mention exceeds/inject limit", string(respBody))
 	}
-	if got := resp.Header.Get("X-Veil-Error"); got == "" {
-		t.Errorf("X-Veil-Error header is empty; expected the error class to be set")
+	if got := resp.Header.Get("X-Veil-Error"); got != "body_too_large" {
+		t.Errorf("X-Veil-Error = %q, want body_too_large", got)
 	}
 }
 
@@ -508,11 +355,11 @@ func TestFailClosedGuard_BoundaryBodyExactlyAtCap(t *testing.T) {
 		t.Fatalf("test body has wrong size: %d, want %d", len(body), bodyCap)
 	}
 
-	// Use a longer timeout because a 10 MiB POST is much larger than the
+	// Use a longer timeout because a 64 MiB POST is much larger than the
 	// 5-second default in httpClient and may legitimately exceed it on
 	// slow CI runners.
 	client := httpClient(srv.Addr())
-	client.Timeout = 30 * time.Second
+	client.Timeout = 60 * time.Second
 
 	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -533,5 +380,130 @@ func TestFailClosedGuard_BoundaryBodyExactlyAtCap(t *testing.T) {
 	}
 	if receivedLen != bodyCap {
 		t.Errorf("upstream received %d bytes; want %d (no truncation)", receivedLen, bodyCap)
+	}
+}
+
+// TestFailClosedGuard_LargeBodyPassesThrough verifies that a ~32 MiB JSON
+// body — well above the historical 10 MiB cap but well below the current
+// 64 MiB cap — is forwarded successfully without being rejected as
+// body_too_large. This is the regression test for the cap bump: Claude Code
+// and Cursor routinely POST large JSON contexts in real-world agent traffic
+// and were hitting the old limit.
+func TestFailClosedGuard_LargeBodyPassesThrough(t *testing.T) {
+	const targetSize = 32 << 20 // 32 MiB
+	if targetSize >= bodyCap {
+		t.Fatalf("test invariant: targetSize (%d) must be strictly less than bodyCap (%d)",
+			targetSize, bodyCap)
+	}
+
+	var upstreamHits int32
+	var receivedLen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		b, _ := io.ReadAll(r.Body)
+		receivedLen = len(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv, _, _ := testSetup(t)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// Build a 32 MiB JSON body (no placeholder; just a large blob the proxy
+	// must read into memory, scan, and forward unchanged).
+	overhead := []byte(`{"data":"`)
+	tail := []byte(`"}`)
+	padLen := targetSize - len(overhead) - len(tail)
+	pad := bytes.Repeat([]byte("A"), padLen)
+	body := append(append([]byte{}, overhead...), pad...)
+	body = append(body, tail...)
+	if len(body) != targetSize {
+		t.Fatalf("test body has wrong size: %d, want %d", len(body), targetSize)
+	}
+
+	client := httpClient(srv.Addr())
+	client.Timeout = 60 * time.Second
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (body=%q), want 200 — 32 MiB body must pass through under the 64 MiB cap",
+			resp.StatusCode, string(respBody))
+	}
+	if got := resp.Header.Get("X-Veil-Error"); got != "" {
+		t.Errorf("X-Veil-Error = %q, want empty (no error)", got)
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 1 {
+		t.Fatalf("upstream received %d requests; want 1", got)
+	}
+	if receivedLen != targetSize {
+		t.Errorf("upstream received %d bytes; want %d (no truncation)", receivedLen, targetSize)
+	}
+}
+
+// TestFailClosedGuard_BodyJustOverCapRejected verifies that a body that is
+// strictly greater than bodyCap — even by just a few bytes — fails closed
+// with 502 + X-Veil-Error: body_too_large. The boundary test above asserts
+// that exactly bodyCap bytes is allowed; this asserts the reject threshold
+// is bodyCap+1 with the new 64 MiB cap. Combined with the oversize test at
+// bodyCap+100, this nails down both edges of the boundary.
+func TestFailClosedGuard_BodyJustOverCapRejected(t *testing.T) {
+	var upstreamHits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv, _, _ := testSetup(t)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// bodyCap+1 bytes (one byte over the cap).
+	overhead := []byte(`{"data":"`)
+	tail := []byte(`"}`)
+	padLen := bodyCap + 1 - len(overhead) - len(tail)
+	pad := bytes.Repeat([]byte("A"), padLen)
+	body := append(append([]byte{}, overhead...), pad...)
+	body = append(body, tail...)
+	if len(body) != bodyCap+1 {
+		t.Fatalf("test body has wrong size: %d, want %d", len(body), bodyCap+1)
+	}
+
+	client := httpClient(srv.Addr())
+	client.Timeout = 60 * time.Second
+
+	req, _ := http.NewRequest(http.MethodPost, upstream.URL+"/test", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d (body=%q), want 502 — body of bodyCap+1 must be rejected",
+			resp.StatusCode, string(respBody))
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+		t.Fatalf("upstream received %d requests; must be 0 when body exceeds inject limit", got)
+	}
+	if got := resp.Header.Get("X-Veil-Error"); got != "body_too_large" {
+		t.Errorf("X-Veil-Error = %q, want body_too_large", got)
 	}
 }

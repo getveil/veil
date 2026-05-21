@@ -1,6 +1,8 @@
 package envkeys
 
-import "testing"
+import (
+	"testing"
+)
 
 // TestProxyKeysCoverage guards against silent drift: a new proxy-related
 // env var must be added here, so the runner's strip logic stays in sync.
@@ -55,9 +57,6 @@ func TestToggleConstants(t *testing.T) {
 	if TestKeystoreToggle != "VEIL_TEST_KEYSTORE" {
 		t.Errorf("TestKeystoreToggle = %q, want VEIL_TEST_KEYSTORE", TestKeystoreToggle)
 	}
-	if MCPConfigOverride != "VEIL_MCP_CONFIG_PATH" {
-		t.Errorf("MCPConfigOverride = %q, want VEIL_MCP_CONFIG_PATH", MCPConfigOverride)
-	}
 	if Passphrase != "VEIL_PASSPHRASE" {
 		t.Errorf("Passphrase = %q, want VEIL_PASSPHRASE", Passphrase)
 	}
@@ -71,9 +70,8 @@ func TestToggleConstants(t *testing.T) {
 // attack.
 func TestVeilInternalKeysCoverage(t *testing.T) {
 	want := map[string]bool{
-		"VEIL_PASSPHRASE":      true,
-		"VEIL_TEST_KEYSTORE":   true,
-		"VEIL_MCP_CONFIG_PATH": true,
+		"VEIL_PASSPHRASE":    true,
+		"VEIL_TEST_KEYSTORE": true,
 	}
 	got := make(map[string]bool, len(VeilInternalKeys))
 	for _, k := range VeilInternalKeys {

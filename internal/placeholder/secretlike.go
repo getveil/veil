@@ -3,10 +3,75 @@ package placeholder
 import (
 	"math"
 	"regexp"
+	"strings"
 )
 
 // secretNamePattern matches common secret-related key names.
 var secretNamePattern = regexp.MustCompile(`(?i)(key|secret|token|password|passwd|pwd|auth|credential|dsn)`)
+
+// publicEnvPrefixes are env-var name prefixes (case-insensitive) used by
+// front-end build systems to mark values that ship to the client bundle.
+// Anything carrying such a prefix is intentionally public and must not be
+// vaulted, even if the value looks high-entropy.
+var publicEnvPrefixes = []string{
+	"NEXT_PUBLIC_",
+	"VITE_",
+	"REACT_APP_",
+	"EXPO_PUBLIC_",
+	"PUBLIC_",
+}
+
+// hasPublicEnvPrefix reports whether name starts (case-insensitively) with
+// any well-known front-end build-system public-bundle prefix. Such names
+// are intentionally exposed to the client and must not be classified as
+// secrets regardless of value shape.
+func hasPublicEnvPrefix(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range publicEnvPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// stubValueSubstrings are case-insensitive substrings whose presence in a
+// value marks it as a developer placeholder rather than a real secret.
+var stubValueSubstrings = []string{
+	"your_",
+	"_here",
+	"replace_me",
+	"replaceme",
+	"changeme",
+	"change_me",
+	"fill_in",
+	"your-api-key",
+	"dummy",
+	"fake",
+	"example",
+	"placeholder",
+	"todo",
+	"fixme",
+}
+
+// stubValueStructural matches values that are entirely a template
+// placeholder (angle-bracketed, double-curly-templated, or shell-expanded)
+// or that contain four or more consecutive 'x' characters.
+var stubValueStructural = regexp.MustCompile(`(?i)(^<.+>$|^\{\{.+\}\}$|^\$\{.+\}$|xxxx+)`)
+
+// isStubValue reports whether value looks like a developer placeholder
+// (any case-insensitive substring in stubValueSubstrings, or any structural
+// template pattern). Stub values must short-circuit secret detection so
+// they are never vaulted as real credentials.
+func isStubValue(value string) bool {
+	lower := strings.ToLower(value)
+	for _, s := range stubValueSubstrings {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return stubValueStructural.MatchString(value)
+}
 
 // Calibrated thresholds for the entropy-based secret heuristic. The original
 // 3.0 bits/char floor was too low — long file paths and English sentences
@@ -19,40 +84,53 @@ const (
 	secretMinLength   = 20
 	secretMinEntropy  = 4.5
 	secretMinDistinct = 12
+
+	// nameMatchMinLength is the minimum value length required for a
+	// name-pattern-only match to count as a secret. Values shorter than
+	// this floor are treated as non-secrets (e.g., LOG_LEVEL_AUTH=info,
+	// DB_PASSWORD_PROMPT=true) even when their name matches the regex.
+	nameMatchMinLength = 12
+
+	// nameMatchMinDistinct rules out repetitive values such as
+	// "xxxxxxxxxxxx" that would otherwise clear the length floor.
+	nameMatchMinDistinct = 6
 )
 
-// IsSecretLike determines whether a name/value pair likely represents a secret.
-// It returns true if:
-//   - The value matches any registered provider pattern.
-//   - The value is a URL with a password in a supported scheme.
-//   - The key name matches common secret-related patterns.
-//   - The value is long, has high Shannon entropy, AND has enough distinct
-//     bytes to rule out repetitive strings and typical file paths.
+// IsSecretLike determines whether a name/value pair likely represents a
+// secret. Returns true when any of:
+//   - the value matches a registered provider pattern,
+//   - the key name matches a secret-name hint AND the value clears the
+//     name-pattern value-shape floor (length + distinct bytes),
+//   - the value clears the length + entropy + distinct-byte floor.
+//
+// Two pre-gates short-circuit detection: a name that carries a front-end
+// build-system public-bundle prefix (NEXT_PUBLIC_, VITE_, ...) and a
+// value that looks like a developer stub (your_, placeholder, ...).
+// Both ALWAYS return false regardless of value shape.
 func IsSecretLike(name, value string) bool {
-	// 1. Check provider patterns (Priority-sorted).
-	for _, p := range DefaultRegistry().All() {
-		if p.Match(name, value) {
+	if hasPublicEnvPrefix(name) {
+		return false
+	}
+	if isStubValue(value) {
+		return false
+	}
+	// 1. Provider patterns — routed through Registry.Match so the unified
+	// value-shape pre-gate applies before any per-provider Match is consulted.
+	if DefaultRegistry().Match(name, value) != nil {
+		return true
+	}
+	// 2. Key name heuristic, gated by value shape.
+	if secretNamePattern.MatchString(name) {
+		if len(value) >= nameMatchMinLength && distinctBytes(value) >= nameMatchMinDistinct {
 			return true
 		}
 	}
-
-	// 2. Check URL with password.
-	if isURLWithPassword(value) {
-		return true
-	}
-
-	// 3. Check key name heuristic.
-	if secretNamePattern.MatchString(name) {
-		return true
-	}
-
-	// 4. Length + entropy + distinct-byte check.
+	// 3. Length + entropy + distinct-byte check.
 	if len(value) >= secretMinLength &&
 		shannonEntropy(value) >= secretMinEntropy &&
 		distinctBytes(value) >= secretMinDistinct {
 		return true
 	}
-
 	return false
 }
 

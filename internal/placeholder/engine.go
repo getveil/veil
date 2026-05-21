@@ -1,8 +1,8 @@
 // Package placeholder generates structurally-valid fake values for secrets.
 //
 // It supports provider-specific patterns (OpenAI, Anthropic, GitHub, Stripe,
-// AWS, Slack), URL-aware password replacement, and a character-class fallback
-// that preserves the structural shape of any secret value.
+// Slack) and a character-class fallback that preserves the structural shape
+// of any secret value.
 package placeholder
 
 import (
@@ -23,12 +23,11 @@ var rng io.Reader = rand.Reader
 //
 // Design decisions:
 //   - "VEIL" (4 uppercase ASCII letters) is short enough to fit into even the
-//     most constrained placeholder body (32 hex chars for Twilio/Datadog; 16
-//     upper-alnum for AWS access-key IDs) and long enough that a collision
-//     with random content of a real secret is vanishingly unlikely
-//     (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex bodies where VEIL is
-//     not a valid character at all — the whole string would have to bear the
-//     sentinel, which cannot happen for a hex secret).
+//     most constrained placeholder body (short hex-only providers) and long
+//     enough that a collision with random content of a real secret is
+//     vanishingly unlikely (36^-4 ≈ 1 in 1.7M for upper-alnum; lower for hex
+//     bodies where VEIL is not a valid character at all — the whole string
+//     would have to bear the sentinel, which cannot happen for a hex secret).
 //   - Placement: immediately after the provider prefix. Tokens like
 //     "sk_live_VEIL_<N random>" remain structurally valid (VEIL is
 //     alphanumeric) and preserve total length; the sentinel sits in the
@@ -36,11 +35,10 @@ var rng io.Reader = rand.Reader
 //     to a casual observer.
 //   - Charset impact: VEIL is valid for alphanumeric, upper-alphanumeric,
 //     and base64-ish charsets, so most providers are undisturbed. For hex
-//     bodies (Twilio, Postmark, Datadog) VEIL introduces non-hex characters;
-//     this is deliberate — the audit explicitly endorses trading slight
-//     shape-conformance for guaranteed detectability, and a leaked
-//     sentinel-bearing token is easier to catch than a plausible
-//     sentinel-free one.
+//     bodies VEIL introduces non-hex characters; this is deliberate — the
+//     audit explicitly endorses trading slight shape-conformance for
+//     guaranteed detectability, and a leaked sentinel-bearing token is
+//     easier to catch than a plausible sentinel-free one.
 const Sentinel = "VEIL"
 
 // ContainsSentinel reports whether s carries the placeholder sentinel — i.e.
@@ -100,13 +98,9 @@ func Generate(name, value string, existing Set) (string, error) {
 }
 
 // generateOnce produces a single candidate placeholder without collision
-// checks. The URL and provider branches embed Sentinel at a
-// branch-appropriate offset; the charclass fallback has no provider prefix,
-// so we sentinelize at offset 0.
+// checks. The provider branch embeds Sentinel at a branch-appropriate offset;
+// the charclass fallback has no provider prefix, so we sentinelize at offset 0.
 func generateOnce(name, value string) (string, error) {
-	if ph, ok := tryURL(value); ok {
-		return ph, nil
-	}
 	if p := DefaultRegistry().Match(name, value); p != nil {
 		return p.Generate(name, value), nil
 	}

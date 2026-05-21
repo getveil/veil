@@ -1,46 +1,69 @@
-# Veil MVP Spec
+# Veil v1 Scope Contract
 
-What ships today, what a developer can rely on, and where the edges are. For mechanism — how the proxy, vault, and audit log work — see [`ARCHITECTURE.md`](ARCHITECTURE.md). For the threat boundary, see [`THREAT_MODEL.md`](THREAT_MODEL.md). This document is the scope contract.
+What ships in Veil v1, what a developer can rely on, and where the edges
+are. For the threat boundary, see [`THREAT_MODEL.md`](THREAT_MODEL.md).
+This document is the scope contract — load-bearing exclusions are listed
+explicitly so users do not have to infer them.
 
 ---
 
 ## 1. What ships
 
-A single Go binary, `veil`. Local mediation of agent egress via an in-process HTTPS MITM proxy started by `veil run` and torn down when the agent exits. macOS and Linux. No daemon, no cloud, no account, no network dependency at runtime.
-
-The MVP free tier is this binary. Everything below is what that binary does today.
+A single Go binary, `veil`. Local mediation of agent egress via an
+in-process HTTPS MITM proxy started by `veil run` and torn down when the
+agent exits. macOS and Linux. No daemon, no cloud, no account, no network
+dependency at runtime.
 
 ---
 
-## 2. What you get, by outcome
+## 2. What v1 covers
 
-Mapped to the four outcomes Veil targets.
+**Credentials.** HTTP `Authorization: Bearer` only, sourced from `.env`
+files in the project root. The proxy rewrites placeholders with the real
+value at request time. Bearer in headers and Bearer in URL query strings
+are mediated.
 
-**Agents don't hold credentials.** `veil init` migrates secrets out of `.env` files and MCP configs into a per-project encrypted vault and replaces them with format-aware placeholders — correct prefix, length, and charset, so agents treat them as real. The proxy rewrites placeholders with the real value at request time. HTTP Bearer and HTTP Basic are mediated end-to-end (Authorization, Proxy-Authorization, OAuth 2.0 `client_secret_basic`, `.npmrc` `_auth`, Artifactory/Nexus, `twine`, `docker push`, `git push` over HTTPS). **AWS SigV4** (including STS session-token credentials) and **GitHub Apps** (api.github.com and GitHub Enterprise Server) are also mediated end-to-end: Veil re-signs the request at the proxy with the real SecretAccessKey or RSA private key. The remaining keyed-crypto schemes — HMAC webhook signatures, mTLS client certs — are not silently dropped; the transform-mismatch detector flags them (see §5).
+**Providers (curated Bearer formats).** OpenAI, Anthropic, Stripe (secret
+keys only), Slack, Google, GitHub PATs, Resend, Vercel, Replicate, Hugging
+Face, GitLab, SendGrid, Supabase. Each has its own placeholder shape so
+agents treat the placeholder as a real key.
 
-**Agents can only do what you've authorized.** Host-scoping is the authorization primitive today. A credential fires only against the hosts on its allow-list, derived automatically from the provider registry, the URL it was first seen on, or manual configuration. No declarative policy language — that's Part II in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+**Unknown Bearer secrets.** `.env` values that look high-entropy and have
+a credential-like name (e.g. `API_KEY`, `_TOKEN`) are detected and
+reported by `veil init`, but are *not* automatically vaulted — a
+credential with no inferred host has nowhere to fire on injection. To
+vault and scope one, run `veil add NAME --value-stdin --host <host>`.
 
-**Every action is on the record.** Every credential swap, blocked event, mismatch-detector flag, and signer failure is written to a local SQLite database (schema v3, columns including `suspect_flag`, `auth_signal`, and `signer_error`). The DB is chmod'd `0600`, parent directory `0700`, on every `veil run`. Queryable via `veil log` with `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed`. This is the same event shape every Part II audit subscriber will read from — see [`ARCHITECTURE.md`](ARCHITECTURE.md#audit-plane).
+**Authorization primitive.** Host-scoping. A credential fires only against
+the hosts on its allow-list, derived automatically from the provider
+registry or set manually via `veil add --host`.
 
-**Same rules everywhere.** macOS and Linux. Any tool that respects `HTTP_PROXY` / `HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`, `gh`, `npm`, `pip`, `twine`, `docker push`. Subprocesses inherit the proxy environment, so MCP servers, test runners, and deploy scripts launched by the agent are mediated too.
+**Audit.** Every credential swap and blocked event is written to a local
+SQLite database. The DB is chmod'd `0600`, parent directory `0700`, on
+every `veil run`. Queryable via `veil log` with `--since`, `--host`,
+`--credential`, `--limit`, `--json`, `--blocked` (blocked and
+sentinel-leaked events are hidden by default; `--blocked` includes them).
+
+**Substrate.** macOS and Linux. Any tool that respects `HTTP_PROXY` /
+`HTTPS_PROXY` — Claude Code, Cursor, Copilot, Windsurf, `curl`, `wget`,
+`gh`. Subprocesses inherit the proxy environment.
 
 ---
 
 ## 3. CLI surface
 
-The public contract. Names and flags below are stable for the MVP series.
+The public contract. Names and flags below are stable for the v1 series.
 
 | Command | Behavior |
 |---|---|
-| `veil init` | Scan the project for `.env` files and MCP configs, vault any secrets found, write placeholders back, install the local CA. |
-| `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. |
+| `veil init` | Scan the project for `.env` files, vault any Bearer secrets found, write placeholders back, generate the local CA on disk (no system-trust install — the CA is injected per session at `veil run` time). Flags: `--force`, `--yes`, `--dry-run`, `--path`. |
+| `veil run <command>` | Start the proxy on a random loopback port, inject `HTTP_PROXY` / `HTTPS_PROXY` / CA bundle env vars into the child, run `<command>`. Proxy exits when the child exits. Flag: `--skip <host>` (repeatable, ephemeral). |
 | `veil status` | Show proxy state, managed credential count, recent activity. |
-| `veil add <name>` | Add a credential to the vault. Flags select the scheme: `--user` for HTTP Basic, `--scheme aws` for AWS SigV4 (with `--aws-access-key-id` and `--aws-session-token-file`/`--aws-session-token-stdin`), `--scheme github_app` for GitHub App JWT (with `--github-app-id`, `--github-installation-id`). Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. |
-| `veil list` | List managed credentials by name. Basic credentials tagged `(basic)`. Values are never printed unless `--reveal` is passed. |
-| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--suspect`, `--blocked`, `--signer-failed`. `--suspect` rows are marked `[!]`. |
-| `veil skip <host>` | Add a host to the per-project `NO_PROXY` list. `--list` shows the current list; `--remove <host>` deletes an entry. |
-| `veil remove <name>` | Delete a credential from the vault. |
-| `veil uninstall` | Reverse `veil init`: restore original `.env` and MCP files from backups, wipe vault and audit state. `--dry-run` previews the plan. |
+| `veil add <name>` | Add a Bearer credential to the vault. Secret via `--value` (unsafe; lands in shell history) or `--value-stdin`. `--host` (repeatable) scopes the credential. `--force` overwrites an existing entry. |
+| `veil list` | List managed credentials by name. Values are never printed. |
+| `veil log` | Query the audit log. Filters: `--since`, `--host`, `--credential`, `--limit`, `--json`, `--blocked` (include host-blocked and sentinel-leaked events; hidden by default). |
+| `veil remove <name>` | Delete a credential from the vault. `--force` / `--yes` to skip confirmation. |
+| `veil uninstall` | Reverse `veil init`: restore original `.env` files from backups, wipe vault and audit state. `--dry-run` previews the plan; `--yes` / `--force` skip confirmation. |
 
 ---
 
@@ -49,48 +72,54 @@ The public contract. Names and flags below are stable for the MVP series.
 - **macOS** — uses the system Keychain for the vault master key. No additional setup.
 - **Linux with Secret Service** (GNOME Keyring, KWallet) — probed at startup. If available, used transparently.
 - **Linux without Secret Service** — vault master key is held in an age-encrypted file under `~/.local/state/veil/`, scrypt-protected. Every vault operation requires `VEIL_PASSPHRASE` in the environment.
-- **CA trust** — `veil init` installs Veil's root CA into the user's trust store. Required for HTTPS interception.
+- **CA trust** — `veil init` generates Veil's root CA and writes it to disk under Veil's state directory. It is **not** added to the OS, browser, or system trust store. At `veil run` time, Veil assembles a per-session CA bundle and injects it into the child process via `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`, and `REQUESTS_CA_BUNDLE`. Trust is session-scoped: only the child and its subprocesses honour the CA. Clients that bypass these env vars (Java `cacerts`, Firefox NSS, native macOS apps using SecureTransport, statically-linked Go binaries with embedded roots) will not trust Veil and their requests will fail TLS verification through the proxy. This is intentional — it bounds the CA's blast radius to processes Veil launched.
 
-The vault is **per project**, keyed by project root path. Switching projects switches vaults.
-
----
-
-## 5. Gaps you should plan around
-
-These are the live edges of MVP coverage. Each links to where it's addressed in the roadmap.
-
-| Gap | Why it exists today | Where it's solved |
-|---|---|---|
-| Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement | Kernel enforcement — [`ARCHITECTURE.md`](ARCHITECTURE.md) Part II |
-| HTTP/2 (gRPC), QUIC, raw TCP, SSH | Proxy is HTTP/1.1 CONNECT only | Per-protocol handlers / kernel interception — Part II |
-| HMAC webhook signing | Credential is a signing key, never on the wire | Native signer adapters — Part II. Surfaced today by transform-mismatch detector. AWS SigV4 and GitHub App JWT are now re-signed natively (see §2). |
-| mTLS client certs | Used in TLS handshake, never at HTTP layer | Architectural |
-| OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us | Ephemeral brokering — Part II |
-| Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded | Decompression risk exceeds the gap |
-| Request bodies > 10 MiB | Performance boundary | Configurable in a future release |
-| Windows | No proxy substrate yet | Part II |
-
-The transform-mismatch detector deserves a specific note: when a request to a credentialed host carries an auth-shaped signal (Authorization / Proxy-Authorization / Cookie / `X-*-{token,auth,key,sig,signature}` / auth-shaped query params) but no injection fires, Veil emits a structured WARN and flags the audit row. `veil log --suspect` surfaces these. It is **a signal, not enforcement** — the real secret still exists wherever the agent read it from.
+The vault is **per project**, keyed by project root path. Switching
+projects switches vaults.
 
 ---
 
-## 6. Out of scope — by design
+## 5. Out of scope — by design
 
-These are not "not yet." We hold them as load-bearing exclusions.
+These are not "not yet." They are load-bearing exclusions for v1: each
+one represents either a feature whose security guarantee Veil cannot
+make today, or a market Veil is intentionally not entering.
 
-- **MCP supply-chain scanning.** MCPScan, Invariant Labs, Snyk's agent-scan serve that market.
-- **Agent-behavior / prompt observability.** Prompt Security, Lakera, Lasso serve that market.
+| Excluded | Why |
+|---|---|
+| HTTP Basic auth | Mixed-token format prevents safe rewriting; users continue to manage Basic creds manually. |
+| Keyed cryptography (AWS SigV4, GitHub App JWTs, HMAC webhook signing, mTLS) | The credential never appears on the wire — only a transform of it does. Veil cannot rewrite what it cannot match. |
+| OAuth offline token exchange (`gcloud`, Azure CLI) | Secret exchanged for a bearer before the request reaches us. |
+| Shell-environment secrets (no `.env`) | v1 scans `.env` files only. Secrets exported in `~/.zshrc` or `~/.bashrc` are not migrated. |
+| MCP config files | v1 does not parse MCP server configs. Tokens in those files remain in place. |
+| Non-HTTP protocols (raw TCP, SSH, QUIC, gRPC) | Proxy is HTTP/1.1 CONNECT only. |
+| Windows | No proxy substrate yet. |
+| Docker daemon (macOS Docker Desktop) | Daemon runs in a Linux VM that does not inherit shell `HTTPS_PROXY`. Out of scope for v1. |
+| MCP supply-chain scanning | A different market (MCPScan, Invariant, Snyk agent-scan). |
+| Agent-behavior / prompt observability | A different market (Prompt Security, Lakera, Lasso). |
 
-[`ARCHITECTURE.md`](ARCHITECTURE.md) Part IV explains why the moat depends on staying narrow.
+These exclusions are also reflected in the threat-model boundary — see
+[`THREAT_MODEL.md`](THREAT_MODEL.md).
+
+---
+
+## 6. Known runtime gaps
+
+| Gap | Behavior |
+|---|---|
+| Agent clears `HTTP_PROXY` / `HTTPS_PROXY` | Cooperative enforcement. Out of scope. |
+| Compressed request bodies | Fail-closed: non-`identity` `Content-Encoding` rejected with 502, not forwarded. |
+| Request bodies > 10 MiB | Not scanned. |
+| Binary or unknown Content-Type | Passes through unscanned. |
 
 ---
 
 ## 7. Success criteria
 
-A shipped MVP means all of the following hold:
+A shipped v1 means all of the following hold:
 
 - A developer goes from `veil init` to `veil run claude` in under two minutes.
-- An AI coding agent (Claude Code, Cursor, Copilot, Windsurf) makes API calls through the proxy without ever seeing real credentials.
+- An AI coding agent (Claude Code, Cursor, Copilot, Windsurf) makes API calls through the proxy without ever seeing real Bearer credentials for the supported providers.
 - Every credential injection is recorded with destination, credential name, and timestamp.
 - Placeholder values are structurally valid — agents do not error or prompt the user about malformed keys.
 - Proxy adds less than 50 ms of latency to mediated requests.

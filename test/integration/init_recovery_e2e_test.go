@@ -10,14 +10,11 @@ import (
 )
 
 // vaultMetaShape mirrors internal/vault.vaultMeta enough to inspect the
-// registry from a black-box test. Field tags match the production JSON.
+// stored project_id from a black-box test. Field tags match the production
+// JSON.
 type vaultMetaShape struct {
-	ProjectID    string `json:"project_id"`
-	Version      int    `json:"version"`
-	VaultedFiles []struct {
-		Path string `json:"path"`
-		Kind string `json:"kind"`
-	} `json:"vaulted_files"`
+	ProjectID string `json:"project_id"`
+	Version   int    `json:"version"`
 }
 
 func readVaultMeta(t *testing.T, projDir string) vaultMetaShape {
@@ -71,9 +68,17 @@ func TestE2E_InitOrphanBackupFromPriorInstall(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 	envPath := filepath.Join(projDir, ".env")
-	originalSecret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-	original := "AWS_SECRET_ACCESS_KEY=" + originalSecret + "\n"
-	priorPlaceholder := "AWS_SECRET_ACCESS_KEY=veil-prior-placeholder-xxxxxxxxxxxxxxx\n"
+	// Use a named-provider secret (GitHub PAT) so the vault-eligibility gate
+	// lets it through. AWS_SECRET_ACCESS_KEY (SigV4) is no longer vaulted by
+	// v0.1.x init.
+	originalSecret := "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"
+	original := "GITHUB_TOKEN=" + originalSecret + "\n"
+	// Prior placeholder carries the VEIL sentinel inside a ghp_-shaped body
+	// — what Generate would have produced — without the literal substring
+	// "placeholder", which would trip the stub-value pre-gate in
+	// placeholder.IsSecretLike and hide the orphan signal from the new
+	// content-based detector.
+	priorPlaceholder := "GITHUB_TOKEN=ghp_VEILpriorAaBbCcDd1122334455AaBbCcDd1122\n"
 
 	if err := os.WriteFile(envPath+".veil-backup", []byte(original), 0600); err != nil {
 		t.Fatalf("seed backup: %v", err)
@@ -100,8 +105,8 @@ func TestE2E_InitOrphanBackupFromPriorInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("veil list after orphan recovery: %v\n%s", err, listOut)
 	}
-	if !strings.Contains(string(listOut), "AWS_SECRET_ACCESS_KEY") {
-		t.Errorf("vault list missing AWS_SECRET_ACCESS_KEY after orphan recovery; got:\n%s", listOut)
+	if !strings.Contains(string(listOut), "GITHUB_TOKEN") {
+		t.Errorf("vault list missing GITHUB_TOKEN after orphan recovery; got:\n%s", listOut)
 	}
 }
 
@@ -180,15 +185,13 @@ func TestE2E_InitMultipleEnvFiles(t *testing.T) {
 		}
 	}
 
+	// vault.meta must still load cleanly (sanity: project_id present). The
+	// pre-v1 vaulted-files registry that this test used to assert against
+	// was dropped in the launch cuts — the .veil-backup sidecars on disk
+	// are now the source of truth for which files init touched.
 	m := readVaultMeta(t, projDir)
-	registered := map[string]bool{}
-	for _, entry := range m.VaultedFiles {
-		registered[filepath.Base(entry.Path)] = true
-	}
-	for _, f := range fixtures {
-		if !registered[f.name] {
-			t.Errorf("vault.meta missing entry for %s; got: %+v", f.name, m.VaultedFiles)
-		}
+	if m.ProjectID == "" {
+		t.Errorf("vault.meta missing project_id after multi-file init")
 	}
 
 	listCmd := exec.Command(veilBin, "list", "--path", projDir)
@@ -224,7 +227,9 @@ func TestE2E_InitForceReVaultsCleanly(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 	envPath := filepath.Join(projDir, ".env")
-	original := "API_TOKEN=tok_originalvalue1234567890abcdef\n"
+	// Use a named-provider secret (GitHub PAT) so the vault-eligibility gate
+	// lets it through. Generic tok_* values have no matching provider in v0.1.x.
+	original := "GITHUB_TOKEN=ghp_originalvalue1234567890abcdefABCD\n"
 	if err := os.WriteFile(envPath, []byte(original), 0644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
@@ -237,7 +242,7 @@ func TestE2E_InitForceReVaultsCleanly(t *testing.T) {
 	// with --force to refresh the vault. (Manually mutating the .env
 	// here is a stand-in for any state-divergence the user may see after
 	// an interruption or unrelated edit.)
-	rotated := "API_TOKEN=tok_rotatedvalue9876543210xyzaa\n"
+	rotated := "GITHUB_TOKEN=ghp_rotatedvalue9876543210xyzaaBBBB\n"
 	if err := os.WriteFile(envPath, []byte(rotated), 0644); err != nil {
 		t.Fatalf("simulate user rotation: %v", err)
 	}
@@ -248,10 +253,10 @@ func TestE2E_InitForceReVaultsCleanly(t *testing.T) {
 	}
 
 	got := mustReadFile(t, envPath)
-	if strings.Contains(got, "tok_rotatedvalue9876543210xyzaa") {
+	if strings.Contains(got, "ghp_rotatedvalue9876543210xyzaaBBBB") {
 		t.Errorf(".env still contains the rotated secret after --force re-vault:\n%s", got)
 	}
-	if strings.Contains(got, "tok_originalvalue1234567890abcdef") {
+	if strings.Contains(got, "ghp_originalvalue1234567890abcdefABCD") {
 		t.Errorf(".env contains the stale original secret after --force re-vault:\n%s", got)
 	}
 
@@ -261,9 +266,9 @@ func TestE2E_InitForceReVaultsCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("veil list after forced re-init: %v\n%s", err, listOut)
 	}
-	count := strings.Count(string(listOut), "API_TOKEN")
+	count := strings.Count(string(listOut), "GITHUB_TOKEN")
 	if count != 1 {
-		t.Errorf("expected exactly one API_TOKEN entry after --force re-vault, got %d:\n%s", count, listOut)
+		t.Errorf("expected exactly one GITHUB_TOKEN entry after --force re-vault, got %d:\n%s", count, listOut)
 	}
 }
 

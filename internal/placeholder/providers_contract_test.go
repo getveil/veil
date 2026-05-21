@@ -14,6 +14,20 @@ type sample struct {
 	value   string
 }
 
+// variedBody returns n varied alphanumeric characters so a token body
+// clears the distinct-byte floor in passesValueShapeGate. Real tokens
+// are random alphanumerics — using Repeat("a", N) here produces 1-byte
+// bodies that are pathological for the gate even though no production
+// token would ever look like that.
+func variedBody(n int) string {
+	const alphabet = "abcdef0123456789"
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = alphabet[i%len(alphabet)]
+	}
+	return string(b)
+}
+
 // providerSamples supplies a match-triggering input for each known provider.
 // Every entry here must correspond to a registered provider; every registered
 // provider must have an entry here. Run TestAllRegisteredProvidersHaveSamples_Dynamic
@@ -21,29 +35,20 @@ type sample struct {
 // hardcoded list.
 var providerSamples = map[string]sample{
 	// Hand-written providers.
-	"openai":    {"OPENAI_API_KEY", "sk-proj-" + strings.Repeat("a", 40)},
-	"anthropic": {"ANTHROPIC_API_KEY", "sk-ant-api03-" + strings.Repeat("a", 95)},
-	"github":    {"GITHUB_TOKEN", "ghp_" + strings.Repeat("a", 36)},
-	"stripe":    {"STRIPE_KEY", "sk_live_" + strings.Repeat("a", 24)},
-	"aws":       {"AWS_ACCESS_KEY_ID", "AKIA" + strings.Repeat("A", 16)},
-	"slack":     {"SLACK_TOKEN", "xoxb-" + strings.Repeat("a", 50)},
-	"twilio":    {"TWILIO_AUTH_TOKEN", "SK" + strings.Repeat("a", 32)},
-	"supabase":  {"SUPABASE_KEY", "sbp_" + strings.Repeat("a", 36)},
-	"sendgrid":  {"SENDGRID_API_KEY", "SG." + strings.Repeat("a", 22) + "." + strings.Repeat("b", 43)},
+	"openai":    {"OPENAI_API_KEY", "sk-proj-" + variedBody(40)},
+	"anthropic": {"ANTHROPIC_API_KEY", "sk-ant-api03-" + variedBody(95)},
+	"github":    {"GITHUB_TOKEN", "ghp_" + variedBody(36)},
+	"stripe":    {"STRIPE_KEY", "sk_live_" + variedBody(24)},
+	"slack":     {"SLACK_TOKEN", "xoxb-" + variedBody(50)},
+	"supabase":  {"SUPABASE_KEY", "sbp_" + variedBody(36)},
+	"sendgrid":  {"SENDGRID_API_KEY", "SG." + variedBody(22) + "." + variedBody(43)},
 	// Format providers (declarative — registered in provider_formats.go).
-	"google":      {"GOOGLE_API_KEY", "AIza" + strings.Repeat("a", 35)},
-	"replicate":   {"REPLICATE_API_TOKEN", "r8_" + strings.Repeat("a", 37)},
-	"huggingface": {"HF_TOKEN", "hf_" + strings.Repeat("a", 34)},
-	"vercel":      {"VERCEL_TOKEN", "vercel_" + strings.Repeat("a", 20)},
-	"gitlab":      {"GITLAB_TOKEN", "glpat-" + strings.Repeat("a", 20)},
-	"npm":         {"NPM_TOKEN", "npm_" + strings.Repeat("a", 32)},
-	"resend":      {"RESEND_API_KEY", "re_" + strings.Repeat("a", 20)},
-	"postmark":    {"POSTMARK_SERVER_TOKEN", strings.Repeat("a", 36)},
-	"datadog":     {"DD_API_KEY", strings.Repeat("a", 32)},
-	"pypi":        {"TWINE_PASSWORD", "pypi-" + strings.Repeat("a", 40)},
-	"docker_hub":  {"DOCKER_HUB_TOKEN", "dckr_pat_" + strings.Repeat("a", 36)},
-	"quay":        {"QUAY_TOKEN", strings.Repeat("a", 32)},
-	"gcr":         {"GCR_JSON_KEY", strings.Repeat("a", 32)},
+	"google":      {"GOOGLE_API_KEY", "AIza" + variedBody(35)},
+	"replicate":   {"REPLICATE_API_TOKEN", "r8_" + variedBody(37)},
+	"huggingface": {"HF_TOKEN", "hf_" + variedBody(34)},
+	"vercel":      {"VERCEL_TOKEN", "vercel_" + variedBody(20)},
+	"gitlab":      {"GITLAB_TOKEN", "glpat-" + variedBody(20)},
+	"resend":      {"RESEND_API_KEY", "re_" + variedBody(20)},
 }
 
 // providerRegexes validates the structural shape of Generate output. Add
@@ -79,10 +84,53 @@ func TestProviderContract(t *testing.T) {
 	}
 }
 
+// TestSupabaseSBPPrefixUnderGenericName asserts that a Supabase personal
+// access token (sbp_<36 alnum>) stored under an arbitrary key name (not a
+// SUPABASE_* name) is still recognised by the Supabase provider. This locks
+// in the sbp_ prefix path independently from the SUPABASE_* name-hint path
+// covered by providerSamples["supabase"].
+func TestSupabaseSBPPrefixUnderGenericName(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	p, ok := reg.Get("supabase")
+	if !ok {
+		t.Fatal("supabase provider not registered")
+	}
+	value := "sbp_" + strings.Repeat("a", 36)
+	if !p.Match("MY_DB_TOKEN", value) {
+		t.Fatalf("Supabase provider should match sbp_ value under generic name; value=%q", value)
+	}
+	if !p.VaultEligible {
+		t.Fatal("supabase provider must be vault-eligible")
+	}
+	hasSupabaseHost := false
+	for _, h := range p.Hosts {
+		if strings.Contains(h, "supabase") {
+			hasSupabaseHost = true
+			break
+		}
+	}
+	if !hasSupabaseHost {
+		t.Fatalf("supabase provider Hosts missing supabase entry: %v", p.Hosts)
+	}
+}
+
+// TestRemovedLowSignalProviders asserts that the four key-name-only
+// providers (no value-shape check, just a substring on the env key) have
+// been removed. These were a noise source — DD_API_KEY in particular
+// matched any env var containing "DD_API", including unrelated ones.
+func TestRemovedLowSignalProviders(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	for _, name := range []string{"postmark", "datadog", "quay", "gcr"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("provider %q must not be registered (low-signal: matches on key name only)", name)
+		}
+	}
+}
+
 // TestAllRegisteredProvidersHaveSamples_Dynamic drives the contract off
 // Registry.Names() instead of a hardcoded list. Adding a new provider via
-// register()/registerFormat() without also adding a providerSamples entry
-// now fails this test loudly instead of being silently ignored.
+// register() without also adding a providerSamples entry now fails this
+// test loudly instead of being silently ignored.
 func TestAllRegisteredProvidersHaveSamples_Dynamic(t *testing.T) {
 	reg := placeholder.DefaultRegistry()
 	names := reg.Names()
@@ -107,5 +155,31 @@ func TestAllRegisteredProvidersHaveSamples_Dynamic(t *testing.T) {
 		if _, ok := registered[name]; !ok {
 			t.Errorf("providerSamples has entry %q but no such provider is registered (remove stale entry)", name)
 		}
+	}
+}
+
+// TestProviderSamples_ClearShapeGate locks in that every registered
+// provider's representative sample value passes through the
+// (*Registry).Match pre-gate. Without this, a new provider could be
+// added with a Repeat("a", N)-style sample that fails the distinct-byte
+// floor — the provider's own Match would still match the sample
+// directly (used by TestProviderContract above), but the sample would
+// never route through Registry.Match in production. This guarantees
+// the contract holds end-to-end.
+func TestProviderSamples_ClearShapeGate(t *testing.T) {
+	reg := placeholder.DefaultRegistry()
+	for name, s := range providerSamples {
+		t.Run(name, func(t *testing.T) {
+			p := reg.Match(s.keyName, s.value)
+			if p == nil {
+				t.Errorf("provider %q sample (name=%q value=%q) does not match through Registry.Match — likely fails the shape gate",
+					name, s.keyName, s.value)
+				return
+			}
+			if p.Name != name {
+				t.Errorf("provider %q sample matched a different provider %q via Registry.Match",
+					name, p.Name)
+			}
+		})
 	}
 }

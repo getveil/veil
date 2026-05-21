@@ -8,31 +8,59 @@ func TestIsSecretLike_ProviderMatch(t *testing.T) {
 	}
 }
 
-func TestIsSecretLike_URLWithPassword(t *testing.T) {
-	if !IsSecretLike("DATABASE_URL", "postgres://user:secret@host:5432/db") {
-		t.Fatal("expected true for URL with password")
+func TestIsSecretLike_SecretKeyName_GatedByValueShape(t *testing.T) {
+	// Name pattern alone is no longer enough — a trivial value must not
+	// trigger vaulting. These all match the secret regex but have
+	// length-or-distinct values below the gate floor.
+	noLonger := []struct{ name, value string }{
+		{"API_KEY", "short"},
+		{"DB_PASSWORD", "abc"},
+		{"AUTH_TOKEN", "xyz"},
+		{"MY_SECRET", "val"},
+		{"CREDENTIAL_FILE", "path"},
+		{"DSN", "val"},
+		{"LOG_LEVEL_AUTH", "info"},
+		{"AUTH_METHOD", "oauth"},
+		{"DB_PASSWORD_PROMPT", "true"},
+		{"PWD_THEME", "bracketed"},
+	}
+	for _, kv := range noLonger {
+		if IsSecretLike(kv.name, kv.value) {
+			t.Errorf("%s=%q: expected false after value-shape gate", kv.name, kv.value)
+		}
+	}
+
+	// Name match with a value that clears len>=12 AND distinct>=6 still passes.
+	stillSecret := []struct{ name, value string }{
+		{"API_KEY", "abcdef123456"},                // len=12, distinct=12
+		{"DB_PASSWORD", "ghp_realtoken1234567890"}, // realistic token
+		{"AUTH_TOKEN", "xoxb-1234-5678-abcdef"},    // slack-style
+	}
+	for _, kv := range stillSecret {
+		if !IsSecretLike(kv.name, kv.value) {
+			t.Errorf("%s=%q: expected true (passes value-shape gate)", kv.name, kv.value)
+		}
 	}
 }
 
-func TestIsSecretLike_SecretKeyName(t *testing.T) {
-	// Short value but secret-like key name.
-	if !IsSecretLike("API_KEY", "short") {
-		t.Fatal("expected true for secret-like key name")
+func TestIsSecretLike_NameMatchValueShapeBoundary(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        bool
+		why         string
+	}{
+		{"API_KEY", "12345678901a", true, "len=12, distinct=11 — passes both floors"},
+		{"API_KEY", "12345678901", false, "len=11 — fails length floor"},
+		{"API_KEY", "aaaaaaaaaaaa", false, "len=12, distinct=1 — fails distinct floor"},
+		{"API_KEY", "aabbccdd1111", false, "len=12, distinct=5 (a,b,c,d,1) — fails distinct floor by one"},
+		{"API_KEY", "aabbccdd1122", true, "len=12, distinct=6 (a,b,c,d,1,2) — meets distinct floor exactly"},
+		{"API_KEY", "aabbccddeexx", true, "len=12, distinct=6 (a,b,c,d,e,x) — meets distinct floor"},
 	}
-	if !IsSecretLike("DB_PASSWORD", "abc") {
-		t.Fatal("expected true for PASSWORD key name")
-	}
-	if !IsSecretLike("AUTH_TOKEN", "xyz") {
-		t.Fatal("expected true for AUTH key name")
-	}
-	if !IsSecretLike("MY_SECRET", "val") {
-		t.Fatal("expected true for SECRET key name")
-	}
-	if !IsSecretLike("CREDENTIAL_FILE", "path") {
-		t.Fatal("expected true for CREDENTIAL key name")
-	}
-	if !IsSecretLike("DSN", "val") {
-		t.Fatal("expected true for DSN key name")
+	for _, tc := range cases {
+		got := IsSecretLike(tc.name, tc.value)
+		if got != tc.want {
+			t.Errorf("%s=%q: got %v want %v (%s)", tc.name, tc.value, got, tc.want, tc.why)
+		}
 	}
 }
 
@@ -162,6 +190,147 @@ func TestIsSecretLike_HighEntropyLong_StillFlagged(t *testing.T) {
 	if !IsSecretLike("UNKNOWN", value) {
 		t.Fatalf("expected true for high-entropy long string (entropy=%.2f, distinct=%d)",
 			shannonEntropy(value), distinctBytes(value))
+	}
+}
+
+// TestIsSecretLike_PublicPrefixDenylist asserts that env-var names with
+// well-known public-bundle prefixes are never classified secret-like, even
+// when the value would otherwise pass every downstream gate.
+func TestIsSecretLike_PublicPrefixDenylist(t *testing.T) {
+	// High-entropy value that would otherwise flag via gate 4.
+	hi := "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"
+
+	denied := []string{
+		"NEXT_PUBLIC_API_KEY",
+		"next_public_api_key", // case-insensitive
+		"Next_Public_Token",
+		"VITE_API_KEY",
+		"vite_supabase_anon_key",
+		"REACT_APP_API_KEY",
+		"react_app_token",
+		"EXPO_PUBLIC_API_KEY",
+		"expo_public_token",
+		"PUBLIC_API_KEY",
+		"public_token",
+	}
+	for _, name := range denied {
+		if IsSecretLike(name, hi) {
+			t.Errorf("%s=<hi-entropy>: expected false (public-prefix denylist)", name)
+		}
+	}
+
+	// Negative: names that contain the prefix string but don't START with it
+	// (or lack the trailing underscore) must still flag.
+	allowed := []string{
+		"PUBLICATION_TOKEN",       // PUBLIC followed by ATION, not "_"
+		"MY_PUBLIC_TOKEN",         // PUBLIC_ not at start
+		"PRIVATE_NEXT_PUBLIC_KEY", // NEXT_PUBLIC_ not at start
+	}
+	for _, name := range allowed {
+		if !IsSecretLike(name, hi) {
+			t.Errorf("%s=<hi-entropy>: expected true (no public-prefix match)", name)
+		}
+	}
+}
+
+// TestIsSecretLike_StubValueDenylist asserts that values containing common
+// placeholder substrings or structural template markers are never classified
+// secret-like.
+func TestIsSecretLike_StubValueDenylist(t *testing.T) {
+	// Substring matches (case-insensitive). Use API_KEY so the name-gate
+	// would otherwise admit these.
+	substrings := []string{
+		"your_secret_token_value", // your_
+		"YOUR_SECRET_TOKEN_VALUE", // case-insensitive
+		"api_key_here_xxx0000",    // _here  (also xxxx structural, both apply)
+		"replace_me",
+		"REPLACE_ME",
+		"dummy_credential",
+		"fake_token_value",
+		"example_secret_value",
+		"placeholder_token",
+		"TODO_set_real_token",
+		"FIXME_set_real_token",
+	}
+	for _, v := range substrings {
+		if IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected false (stub-value substring)", v)
+		}
+	}
+
+	// Structural patterns (case-insensitive).
+	structural := []string{
+		"<your-token>",
+		"<TOKEN>",
+		"<a>", // minimal angle-bracketed
+		"{{TOKEN}}",
+		"{{api_key}}",
+		"${TOKEN}",
+		"${api_key}",
+		"xxxxxxxxxxxxxxxx", // many x
+		"XXXX",             // exactly 4 X (case-insensitive)
+		"prefixxxxsuffix",  // 4 consecutive x mid-string
+	}
+	for _, v := range structural {
+		if IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected false (stub-value structural)", v)
+		}
+	}
+
+	// Negative: real-looking values still flag.
+	allowed := []string{
+		"abcdef123456",        // passes name-gate
+		"axxbxxc456789012",    // only pairs of x — no 4-in-a-row
+		"<tag-but-trailing>x", // not entirely angle-bracketed
+		"{{token}}suffix",     // not entirely templated
+	}
+	for _, v := range allowed {
+		if !IsSecretLike("API_KEY", v) {
+			t.Errorf("API_KEY=%q: expected true (no stub match)", v)
+		}
+	}
+}
+
+// TestIsSecretLike_ProviderMatchWins exercises the provider gate: a value
+// matching a registered provider classifies as a secret regardless of
+// name-shape or entropy floors.
+func TestIsSecretLike_ProviderMatchWins(t *testing.T) {
+	if !IsSecretLike("OPENAI_API_KEY", "sk-proj-abc123def456ghi") {
+		t.Fatal("expected provider-shaped value to be secret-like")
+	}
+}
+
+// TestIsSecretLike_NameHeuristicWithShape exercises the key-name gate:
+// secret-named keys with shape-passing values classify as secrets.
+func TestIsSecretLike_NameHeuristicWithShape(t *testing.T) {
+	if !IsSecretLike("MY_AUTH_TOKEN", "abcdef123456") {
+		t.Fatal("expected secret-named key with shape-passing value to be secret-like")
+	}
+}
+
+// TestIsSecretLike_EntropyGate exercises the length+entropy+distinct gate
+// when neither provider nor name match fires.
+func TestIsSecretLike_EntropyGate(t *testing.T) {
+	if !IsSecretLike("UNKNOWN", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8") {
+		t.Fatal("expected high-entropy long string to be secret-like")
+	}
+}
+
+// TestIsSecretLike_NegativeCases covers non-secret inputs and the two
+// short-circuit pre-gates (public-prefix name, stub value).
+func TestIsSecretLike_NegativeCases(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"HOSTNAME", "myserver"},
+		{"GREETING", "hello"},
+		{"NEXT_PUBLIC_API_KEY", "aB3$dE7&hI1!kL5@nO9#qR2%tU6^wX0*yZ4(cD8"}, // public-prefix
+		{"API_KEY", "your_token_here"},                                     // stub
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if IsSecretLike(tc.name, tc.value) {
+				t.Errorf("expected false for %s=%q", tc.name, tc.value)
+			}
+		})
 	}
 }
 

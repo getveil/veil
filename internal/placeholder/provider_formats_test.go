@@ -16,6 +16,13 @@ func TestFormatProviders(t *testing.T) {
 		wantLen    int // 0 = same as input
 		charset    string
 		wantHosts  []string
+		// matchKeyValue is the value paired with matchKey for the
+		// "name-hint matches" subtest. Empty string means the legacy
+		// behaviour ("anything") — set to a shape-passing value for
+		// providers that require the value to also clear a credential
+		// shape gate (Stripe, Resend), which intentionally refuse to
+		// vault on the name hint alone.
+		matchKeyValue string
 	}{
 		{
 			name:       "openai",
@@ -40,15 +47,16 @@ func TestFormatProviders(t *testing.T) {
 			wantHosts:  []string{"api.anthropic.com"},
 		},
 		{
-			name:       "stripe",
-			matchKey:   "STRIPE_SECRET_KEY",
-			matchValue: "sk_live_" + strings.Repeat("a", 24),
-			noMatchKey: "OTHER_KEY",
-			genInput:   "sk_live_" + strings.Repeat("a", 24),
-			wantPrefix: "sk_live_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"api.stripe.com", "files.stripe.com"},
+			name:          "stripe",
+			matchKey:      "STRIPE_SECRET_KEY",
+			matchKeyValue: "sk_live_" + strings.Repeat("a", 24),
+			matchValue:    "sk_live_" + strings.Repeat("a", 24),
+			noMatchKey:    "OTHER_KEY",
+			genInput:      "sk_live_" + strings.Repeat("a", 24),
+			wantPrefix:    "sk_live_",
+			wantLen:       0,
+			charset:       "alphanumeric",
+			wantHosts:     []string{"api.stripe.com", "files.stripe.com"},
 		},
 		{
 			name:       "slack",
@@ -117,92 +125,16 @@ func TestFormatProviders(t *testing.T) {
 			wantHosts:  []string{"gitlab.com"},
 		},
 		{
-			name:       "npm",
-			matchKey:   "NPM_TOKEN",
-			matchValue: "npm_abcdefghijklmnopqrstuvwxyz123456",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "npm_abcdefghijklmnopqrstuvwxyz123456",
-			wantPrefix: "npm_",
-			wantLen:    36,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"registry.npmjs.org"},
-		},
-		{
-			name:       "resend",
-			matchKey:   "RESEND_API_KEY",
-			matchValue: "re_abcdefghijklmnopqrst",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "re_abcdefghijklmnopqrst",
-			wantPrefix: "re_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"api.resend.com"},
-		},
-		{
-			name:       "postmark",
-			matchKey:   "POSTMARK_SERVER_TOKEN",
-			matchValue: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
-			wantPrefix: "",
-			wantLen:    36,
-			charset:    "hex",
-			wantHosts:  []string{"api.postmarkapp.com"},
-		},
-		{
-			name:       "datadog",
-			matchKey:   "DD_API_KEY",
-			matchValue: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-			wantPrefix: "",
-			wantLen:    32,
-			charset:    "hex",
-			wantHosts:  []string{"api.datadoghq.com", "*.datadoghq.com"},
-		},
-		{
-			name:       "pypi",
-			matchKey:   "TWINE_PASSWORD",
-			matchValue: "pypi-AgEIcHlwaS5vcmcabcdefghijklmnopqrstuvwxyz",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "pypi-AgEIcHlwaS5vcmcabcdefghijklmnopqrstuvwxyz",
-			wantPrefix: "pypi-",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"pypi.org", "upload.pypi.org", "test.pypi.org", "upload.test.pypi.org"},
-		},
-		{
-			name:       "docker_hub",
-			matchKey:   "DOCKER_HUB_TOKEN",
-			matchValue: "dckr_pat_abcdefghijklmnopqrstuvwxyz12",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "dckr_pat_abcdefghijklmnopqrstuvwxyz12",
-			wantPrefix: "dckr_pat_",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"docker.io", "registry-1.docker.io", "index.docker.io", "auth.docker.io"},
-		},
-		{
-			name:       "quay",
-			matchKey:   "QUAY_TOKEN",
-			matchValue: "somequaytokenvalue1234567890abcdef",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "somequaytokenvalue1234567890abcdef",
-			wantPrefix: "",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"quay.io"},
-		},
-		{
-			name:       "gcr",
-			matchKey:   "GCR_JSON_KEY",
-			matchValue: "some-gcr-credential-value",
-			noMatchKey: "OTHER_KEY",
-			genInput:   "some-gcr-credential-value",
-			wantPrefix: "",
-			wantLen:    0,
-			charset:    "alphanumeric",
-			wantHosts:  []string{"gcr.io", "*.gcr.io", "*-docker.pkg.dev"},
+			name:          "resend",
+			matchKey:      "RESEND_API_KEY",
+			matchKeyValue: "re_abcdefghijklmnopqrst",
+			matchValue:    "re_abcdefghijklmnopqrst",
+			noMatchKey:    "OTHER_KEY",
+			genInput:      "re_abcdefghijklmnopqrst",
+			wantPrefix:    "re_",
+			wantLen:       0,
+			charset:       "alphanumeric",
+			wantHosts:     []string{"api.resend.com"},
 		},
 	}
 
@@ -211,8 +143,18 @@ func TestFormatProviders(t *testing.T) {
 			prov := mustProvider(t, tt.name)
 
 			t.Run("match_key", func(t *testing.T) {
-				if !prov.Match(tt.matchKey, "anything") {
-					t.Fatalf("should match key %s", tt.matchKey)
+				// Stripe / Resend require the value to also carry a real
+				// secret-key prefix; providers without that gate match on
+				// the name hint alone, but the value must still be
+				// credential-shaped (clears passesValueShapeGate) — using
+				// a varied >=20-char fallback so the name-hint subtest
+				// reaches the per-provider matcher's name path.
+				valueForKey := tt.matchKeyValue
+				if valueForKey == "" {
+					valueForKey = "abcdef0123456789abcdef" // 22 chars, distinct=16
+				}
+				if !prov.Match(tt.matchKey, valueForKey) {
+					t.Fatalf("should match key %s with value %q", tt.matchKey, valueForKey)
 				}
 			})
 
@@ -287,5 +229,160 @@ func TestFormatProviders(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestProviderFormats_AreVaultEligible(t *testing.T) {
+	names := []string{
+		"openai", "anthropic", "stripe", "slack", "google",
+		"replicate", "huggingface", "vercel", "gitlab", "resend",
+	}
+	r := DefaultRegistry()
+	for _, name := range names {
+		p, ok := r.Get(name)
+		if !ok {
+			t.Errorf("provider %q not registered", name)
+			continue
+		}
+		if !p.VaultEligible {
+			t.Errorf("%s must declare VaultEligible: true", name)
+		}
+		if len(p.Hosts) == 0 {
+			t.Errorf("%s must declare a non-empty Hosts set", name)
+		}
+	}
+}
+
+// TestStripe_PublishableKeyNotVaulted is a regression test for the Stripe
+// false positive: STRIPE_PUBLISHABLE_KEY=pk_live_<...> matched the legacy
+// declarative provider via the STRIPE name hint and got auto-vaulted, even
+// though Stripe publishable keys (pk_*) are intentionally public. The new
+// hand-written matcher requires the value to start with one of the secret
+// prefixes (sk_/rk_) before the STRIPE name hint can fire.
+func TestStripe_PublishableKeyNotVaulted(t *testing.T) {
+	prov := mustProvider(t, "stripe")
+
+	value := "pk_live_" + strings.Repeat("a", 24)
+
+	if prov.Match("STRIPE_PUBLISHABLE_KEY", value) {
+		t.Fatalf("Stripe provider should NOT match publishable key under STRIPE_PUBLISHABLE_KEY=%q", value)
+	}
+	// Even with the secret-shaped name, a pk_ value must not vault.
+	if prov.Match("STRIPE_SECRET_KEY", value) {
+		t.Fatalf("Stripe provider should NOT match pk_ value even under STRIPE_SECRET_KEY")
+	}
+}
+
+// TestResend_ShortPrefixedValueGatedAtRegistry is the regression test
+// for the Resend false positive: REDIRECT_URI=re_login_callback_url
+// matched the legacy "re_" prefix and got auto-vaulted. The shape gate
+// now lives at Registry.Match (passesValueShapeGate); assert the
+// contract at that layer. Per-provider Match still returns true for
+// re_-prefixed values — the gate's job is to keep short re_-prefixed
+// strings (paths, config tokens, callback identifiers) from reaching
+// the matcher at all.
+func TestResend_ShortPrefixedValueGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
+
+	// Under 20 chars — must not match through Registry.Match even though
+	// the re_ prefix is present.
+	short := "re_login_callback"
+	if len(short) >= 20 {
+		t.Fatalf("test setup: value %q must be < 20 chars to exercise the gate", short)
+	}
+	if p := reg.Match("REDIRECT_URI", short); p != nil {
+		t.Fatalf("Registry.Match should NOT match short re_ value REDIRECT_URI=%q; got %s", short, p.Name)
+	}
+	// Same value under a RESEND-named key must also not match.
+	if p := reg.Match("RESEND_REDIRECT", short); p != nil {
+		t.Fatalf("Registry.Match should NOT match short re_ value RESEND_REDIRECT=%q; got %s", short, p.Name)
+	}
+	// Sanity: a realistic-length, varied-body re_ value still matches
+	// through Registry.Match (clears the shape gate).
+	long := "re_abcdef0123456789abcdef0123456789abcdef"
+	if p := reg.Match("REDIRECT_URI", long); p == nil || p.Name != "resend" {
+		t.Fatalf("Registry.Match should match real-length re_ value %q to resend; got %v", long, p)
+	}
+}
+
+// TestResend_NameHintRequiresShape is a tighter sibling to
+// TestResend_ShortPrefixedValueNotVaulted: even when the key name contains
+// RESEND, a value that doesn't carry the re_ prefix at all must not match.
+func TestResend_NameHintRequiresShape(t *testing.T) {
+	prov := mustProvider(t, "resend")
+
+	// No re_ prefix at all — name hint alone must not fire.
+	if prov.Match("RESEND_FROM_EMAIL", "team@example.com") {
+		t.Fatal("Resend provider should NOT match on name hint alone (value lacks re_ prefix)")
+	}
+}
+
+// TestSupabase_SBPPrefixDetected_UnderGenericName locks in the sbp_ prefix
+// path: a Supabase personal access token (sbp_<36 alnum>) stored under an
+// arbitrary key name (e.g. MY_DB_TOKEN) must be classified as a Supabase
+// credential. Without the prefix path, only SUPABASE_*-named values or
+// real Supabase JWTs would be recognised.
+func TestSupabase_SBPPrefixDetected_UnderGenericName(t *testing.T) {
+	prov := mustProvider(t, "supabase")
+
+	value := "sbp_" + strings.Repeat("a", 36)
+	if !prov.Match("MY_DB_TOKEN", value) {
+		t.Fatalf("Supabase provider should match sbp_ value under generic key name MY_DB_TOKEN=%q", value)
+	}
+	// Verify host wiring is intact.
+	hasSupabaseHost := false
+	for _, h := range prov.Hosts {
+		if strings.Contains(h, "supabase") {
+			hasSupabaseHost = true
+		}
+	}
+	if !hasSupabaseHost {
+		t.Fatalf("supabase provider Hosts missing supabase entry: %v", prov.Hosts)
+	}
+	// Generate must produce a non-empty placeholder that carries the
+	// sentinel and the sbp_ prefix (so the placeholder is re-detectable
+	// by Match on a subsequent veil init pass).
+	gen := prov.Generate("MY_DB_TOKEN", value)
+	if gen == "" {
+		t.Fatal("Supabase Generate returned empty placeholder for sbp_ value")
+	}
+	if !strings.HasPrefix(gen, "sbp_") {
+		t.Fatalf("Supabase Generate for sbp_ input must preserve sbp_ prefix; got %q", gen)
+	}
+	if !strings.Contains(gen, Sentinel) {
+		t.Fatalf("Supabase Generate for sbp_ input must contain sentinel %q; got %q", Sentinel, gen)
+	}
+	// Round-trip: the generated placeholder must itself match Match so a
+	// re-run of veil init doesn't re-vault the placeholder as a fresh
+	// secret.
+	if !prov.Match("ANOTHER_NAME", gen) {
+		t.Fatalf("generated sbp_ placeholder %q does not round-trip through Match", gen)
+	}
+}
+
+// TestProviderMatchers_RejectShortNameHintValues is the regression test
+// for the SLACK / VERCEL name-hint false positive: SLACK_CHANNEL=general,
+// VERCEL_ENV=production, VERCEL_URL=my-app.vercel.app, and
+// VERCEL_REGION=iad1 are all injected automatically by deployment
+// platforms and were being offered for vaulting (and auto-vaulted under
+// --yes / piped stdin) via the declarativeMatcher's name-hint path. The
+// Registry-level shape gate must reject them before any per-provider
+// Match is consulted.
+func TestProviderMatchers_RejectShortNameHintValues(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"SLACK_CHANNEL", "general"},
+		{"VERCEL_ENV", "production"},
+		{"VERCEL_URL", "my-app.vercel.app"},
+		{"VERCEL_REGION", "iad1"},
+	}
+	reg := DefaultRegistry()
+	for _, c := range cases {
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("%s=%q matched provider %s via Registry.Match — should fail shape gate",
+				c.name, c.value, p.Name)
+		}
+		if IsSecretLike(c.name, c.value) {
+			t.Errorf("%s=%q classified secret-like — should fail all gates", c.name, c.value)
+		}
 	}
 }

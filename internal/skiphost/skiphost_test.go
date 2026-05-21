@@ -34,13 +34,27 @@ func TestValidate(t *testing.T) {
 		{"contains newline", "foo\nbar.com", true},
 		// Reject: control characters.
 		{"contains control char", "foo\x00bar.com", true},
+		// Reject (C4): URL-shaped values. The proxy matches NO_PROXY against
+		// bare hostnames, so a credential scoped to "https://api.com/" never
+		// fires. Catch the typo at input rather than silently shipping a
+		// dead credential.
+		{"contains scheme https", "https://api.com", true},
+		{"contains scheme http", "http://api.com", true},
+		{"trailing slash", "api.com/", true},
+		{"contains path", "api.com/v1/things", true},
+		{"scheme delimiter only", "://api.com", true},
 		// Accept: legitimate NO_PROXY forms that Veil already supports.
 		{"plain hostname", "api.anthropic.com", false},
 		{"single label", "localhost", false},
 		{"wildcard subdomain", "*.internal.corp.com", false},
 		{"leading dot", ".internal.com", false},
 		{"ipv4", "192.168.1.1", false},
-		{"cidr", "10.0.0.0/8", false},
+		// CIDR notation (e.g. 10.0.0.0/8) contains "/" and is rejected by
+		// the new URL-path guard. Documented as a tradeoff: Veil never
+		// claimed CIDR matching for skip-host comparisons (HostMatches in
+		// internal/placeholder/hosts.go does exact / wildcard suffix only),
+		// so accepting it was misleading. See C4 in the UX review.
+		{"cidr (now rejected)", "10.0.0.0/8", true},
 		{"host with port", "api.example.com:8443", false},
 		{"trims surrounding whitespace", "  api.example.com  ", false},
 	}
@@ -93,7 +107,7 @@ func TestAdd_RejectsInvalid(t *testing.T) {
 func TestLoad_FiltersInvalidEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
-	content := "# Managed by veil skip\napi.anthropic.com\n*\n\n...\n*.internal.corp.com\nfoo,bar\n"
+	content := "# Managed by veil init\napi.anthropic.com\n*\n\n...\n*.internal.corp.com\nfoo,bar\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +154,7 @@ func TestLoad_EmptyFile(t *testing.T) {
 func TestLoad_WithEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skip_hosts")
-	content := "# Managed by veil skip\napi.anthropic.com\n*.internal.corp.com\n"
+	content := "# Managed by veil init\napi.anthropic.com\n*.internal.corp.com\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -225,41 +239,5 @@ func TestAdd_Duplicate(t *testing.T) {
 	hosts, _ := Load(path)
 	if len(hosts) != 1 {
 		t.Errorf("expected 1 host, got %d", len(hosts))
-	}
-}
-
-func TestRemove_Existing(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "skip_hosts")
-
-	_, _ = Add(path, "api.anthropic.com")
-	_, _ = Add(path, "*.internal.corp.com")
-
-	removed, err := Remove(path, "api.anthropic.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !removed {
-		t.Error("expected removed=true")
-	}
-
-	hosts, _ := Load(path)
-	if len(hosts) != 1 || hosts[0] != "*.internal.corp.com" {
-		t.Errorf("expected [*.internal.corp.com], got %v", hosts)
-	}
-}
-
-func TestRemove_NotFound(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "skip_hosts")
-
-	_, _ = Add(path, "api.anthropic.com")
-
-	removed, err := Remove(path, "not.there.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if removed {
-		t.Error("expected removed=false for nonexistent host")
 	}
 }

@@ -18,9 +18,11 @@ const (
 	choiceSelect
 )
 
-// promptYNS asks a Y/n/select question. Default is Y (empty input = yes).
+// promptYNS asks a Y/n/s question. Default is Y (empty input = yes).
+// Accepts "s" or "select" for the multi-select branch so users who type
+// out the full word still get the legacy behavior.
 func promptYNS(r io.Reader, w io.Writer, question string) ynsChoice {
-	_, _ = fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint("(Y/n/select):"))
+	_, _ = fmt.Fprintf(w, "%s %s ", question, ui.Bold.Sprint("(Y/n/s):"))
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		return choiceYes

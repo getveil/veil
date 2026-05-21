@@ -10,30 +10,51 @@ import (
 func TestProviderSupabase(t *testing.T) {
 	prov := mustProvider(t, "supabase")
 
-	// A real-looking Supabase anon key (JWT).
-	anonKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByb2plY3RpZCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNjg2MDAwMDAwLCJleHAiOjE4NDM2ODAwMDB9.abc123def456ghijklmnopqrstuvwxyz01234567890AB"
+	// A real-looking Supabase anon key (JWT). iss includes "supabase.co" so the
+	// JWT body alone is enough to trigger the provider — the tightened
+	// isJWTWithAlg requires either SUPABASE in the key name or iss containing
+	// "supabase.co" in the JWT payload.
+	anonPayload := `{"iss":"https://abcdefg.supabase.co/auth/v1","ref":"abcdefg","role":"anon","iat":1686000000,"exp":1843680000}`
+	anonKey := jwtHeader + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(anonPayload)) + "." +
+		"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
 
 	t.Run("match_name_anon", func(t *testing.T) {
-		if !prov.Match("SUPABASE_ANON_KEY", "anything") {
-			t.Fatal("should match SUPABASE in name")
+		// Name-hint path requires value to look like a JWT (3 dot segments).
+		if !prov.Match("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.dGVzdHNpZ25hdHVyZWFiY2RlZmdoaWprbG1ub3Bx") {
+			t.Fatal("should match SUPABASE in name with JWT-shaped value")
 		}
 	})
 
 	t.Run("match_name_service_role", func(t *testing.T) {
-		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", "anything") {
-			t.Fatal("should match SUPABASE in name")
+		if !prov.Match("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.dGVzdHNpZ25hdHVyZWFiY2RlZmdoaWprbG1ub3Bx") {
+			t.Fatal("should match SUPABASE in name with JWT-shaped value")
 		}
 	})
 
-	t.Run("match_jwt_value", func(t *testing.T) {
+	t.Run("match_jwt_supabase_iss", func(t *testing.T) {
 		if !prov.Match("SOME_OTHER_KEY", anonKey) {
-			t.Fatal("should match JWT value with alg field")
+			t.Fatal("should match JWT whose payload iss contains supabase.co")
 		}
 	})
 
 	t.Run("no_match", func(t *testing.T) {
 		if prov.Match("OTHER_KEY", "some-value") {
 			t.Fatal("should not match unrelated key/value")
+		}
+	})
+
+	t.Run("no_match_unrelated_jwt", func(t *testing.T) {
+		// JWTs from Auth0/Cognito/Firebase/etc. share the {alg,typ:JWT}
+		// header shape with Supabase. Matching on header shape alone
+		// caused Supabase placeholders to be injected for unrelated
+		// providers; the iss check rules these out.
+		auth0Payload := `{"iss":"https://example.auth0.com/","sub":"auth0|abc","aud":"client123"}`
+		auth0JWT := jwtHeader + "." +
+			base64.RawURLEncoding.EncodeToString([]byte(auth0Payload)) + "." +
+			"abc123def456ghijklmnopqrstuvwxyz01234567890AB"
+		if prov.Match("AUTH0_TOKEN", auth0JWT) {
+			t.Fatal("should not match Auth0 JWT (iss does not contain supabase.co)")
 		}
 	})
 
@@ -50,7 +71,7 @@ func TestProviderSupabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("header not valid base64url: %v", err)
 		}
-		var header map[string]interface{}
+		var header map[string]any
 		if err := json.Unmarshal(headerJSON, &header); err != nil {
 			t.Fatalf("header not valid JSON: %v", err)
 		}
@@ -66,12 +87,12 @@ func TestProviderSupabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("payload not valid base64url: %v", err)
 		}
-		var payload map[string]interface{}
+		var payload map[string]any
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			t.Fatalf("payload not valid JSON: %v", err)
 		}
-		if payload["iss"] != "supabase" {
-			t.Fatalf("expected iss supabase, got: %v", payload["iss"])
+		if payload["iss"] != "https://placeholder.supabase.co/auth/v1" {
+			t.Fatalf("expected iss https://placeholder.supabase.co/auth/v1, got: %v", payload["iss"])
 		}
 		if _, ok := payload["ref"]; !ok {
 			t.Fatal("expected ref field in payload")
@@ -93,7 +114,7 @@ func TestProviderSupabase(t *testing.T) {
 		result := prov.Generate("", anonKey)
 		parts := strings.Split(result, ".")
 		payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
-		var payload map[string]interface{}
+		var payload map[string]any
 		_ = json.Unmarshal(payloadJSON, &payload)
 
 		role, ok := payload["role"].(string)
@@ -124,4 +145,49 @@ func TestProviderSupabase(t *testing.T) {
 			t.Fatalf("expected *.supabase.co in hosts, got: %v", prov.Hosts)
 		}
 	})
+}
+
+// TestSupabaseNameMatchGatedAtRegistry ensures the name-only fallback
+// in isJWTWithAlg won't flag CI / config metadata vars whose name
+// happens to contain "SUPABASE" but whose value is clearly not a
+// credential. The check now lives at Registry.Match
+// (passesValueShapeGate) rather than inside isJWTWithAlg.
+func TestSupabaseNameMatchGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
+	cases := []struct{ name, value string }{
+		{"SUPABASE_REGION", "us-east-1"},
+		{"SUPABASE_PROJECT_REF", "abcd1234"},
+		// Long non-JWT values that clear the shape gate but lack JWT structure.
+		{"SUPABASE_PROJECT_URL", "https://xyzabcdef.supabase.co"},
+		{"SUPABASE_DB_URL", "postgresql://postgres:password@db.xyzabcdef.supabase.co:5432/postgres"},
+	}
+	for _, c := range cases {
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("Registry.Match should not match Supabase metadata %s=%q; got %s", c.name, c.value, p.Name)
+		}
+	}
+}
+
+// TestSupabasePlaceholderRoundTripsThroughMatch verifies the placeholder
+// generated by the Supabase provider is itself re-recognised by Match when
+// stored under an arbitrary key name. Without this property, a user who
+// re-runs `veil init --force` on a previously-vaulted .env can lose
+// value-based detection for Supabase JWTs stored under non-SUPABASE_* names.
+func TestSupabasePlaceholderRoundTripsThroughMatch(t *testing.T) {
+	prov := mustProvider(t, "supabase")
+
+	generated := prov.Generate("SB_TOKEN", "")
+	if !prov.Match("DIFFERENT_KEY_NAME", generated) {
+		t.Fatalf("generated placeholder must round-trip through Match via value-based path; got: %s", generated)
+	}
+}
+
+func TestProviderSupabase_IsVaultEligible(t *testing.T) {
+	p, ok := DefaultRegistry().Get("supabase")
+	if !ok {
+		t.Fatal("supabase provider not registered")
+	}
+	if !p.VaultEligible {
+		t.Fatal("supabase provider must declare VaultEligible: true")
+	}
 }

@@ -2,69 +2,28 @@
 package scanner
 
 import (
-	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 )
 
-// curatedNames is the list of .env file basenames we look for.
-var curatedNames = []string{
-	".env",
-	".env.local",
-	".env.development",
-	".env.production",
-}
-
-// excludeSuffixes lists suffixes that mark a file as an example/sample.
-var excludeSuffixes = []string{
-	".example",
-	".sample",
-}
-
-// Scan discovers .env files in root by checking a curated list of names.
-// It returns absolute paths sorted alphabetically. Files matching example/sample
-// patterns are excluded. If no files are found, an empty slice is returned.
+// Scan discovers .env files anywhere beneath root. The walk honors a
+// hardcoded baseline of excluded directories (node_modules, .git, .veil,
+// vendor, target, dist, build, .next, .nuxt, .turbo, .cache, .pnpm-store,
+// .yarn) and skips symlinked directories without descending. Symlinked
+// .env files ARE included so the action layer can refuse them explicitly.
 //
-// Uses os.Lstat (not os.Stat) so symlinks are reported as symlinks rather than
-// silently followed. Symlinks ARE included in the result set — it is the
-// caller's job to refuse them at the action layer, so the user sees a clear
-// error instead of having their symlink replaced and cleartext materialized
-// into the project tree.
+// Returns absolute paths sorted alphabetically. An empty slice is returned
+// when no files are found.
 func Scan(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	root = abs
-	var found []string
-	for _, name := range curatedNames {
-		if isExcluded(name) {
-			continue
-		}
-		p := filepath.Join(root, name)
-		info, err := os.Lstat(p)
-		if err != nil {
-			continue
-		}
-		if info.IsDir() {
-			continue
-		}
-		found = append(found, p)
+	paths, err := walkProject(abs)
+	if err != nil {
+		return nil, err
 	}
-	sort.Strings(found)
-	if found == nil {
-		found = []string{}
+	if paths == nil {
+		return []string{}, nil
 	}
-	return found, nil
-}
-
-// isExcluded returns true if the name matches an exclusion pattern.
-func isExcluded(name string) bool {
-	for _, suffix := range excludeSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
+	return paths, nil
 }

@@ -2,22 +2,22 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
-	"github.com/getveil/veil/internal/proxy"
 	"github.com/getveil/veil/internal/skiphost"
+	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
 )
 
 func TestInitHappyPath(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 
@@ -96,10 +96,20 @@ func TestInitHappyPath(t *testing.T) {
 	if !strings.Contains(outStr, "✓") {
 		t.Errorf("expected checkmark in output, got: %s", outStr)
 	}
+	if !strings.Contains(outStr, "Next:") {
+		t.Errorf("expected Next: hint in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil run claude") {
+		t.Errorf("expected veil run claude hint in output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil status") {
+		t.Errorf("expected veil status hint in output, got: %s", outStr)
+	}
 }
 
 func TestInitDryRun(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -162,6 +172,7 @@ func TestInitDryRun(t *testing.T) {
 // would conclude that --dry-run had vaulted secrets when nothing changed.
 func TestInitDryRun_SummaryQualified(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -212,6 +223,7 @@ func TestInitDryRun_SummaryQualified(t *testing.T) {
 
 func TestInitForce(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -254,6 +266,7 @@ func TestInitForce(t *testing.T) {
 // entry for the project.
 func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -304,6 +317,7 @@ func TestInitReinitDoesNotOrphanKeystoreEntries(t *testing.T) {
 // leak an orphan entry (F-15).
 func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
@@ -353,13 +367,15 @@ func TestInitForceCleansPriorKeystoreEntry(t *testing.T) {
 // entries belonging to this project.
 func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "SECRET_KEY=super-secret-value-1234567890abcdef\n"
+	// Use a named-provider secret so the vault-eligibility gate lets it through.
+	envContent := "GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -391,11 +407,12 @@ func TestUninstallEmptiesKeystoreForProject(t *testing.T) {
 
 func TestInitNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	// Ensure no MCP config is discovered either.
-	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
-	// Strip CI/dev-shell secret-like exports so the shell-env scan also finds
-	// nothing, ensuring the early-exit gate fires for the "no sources" case.
-	clearShellEnvTestNoise(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Linux uses XDG_DATA_HOME for the CA dir; pin it inside HOME so the
+	// CA-cert assertion below also works on Linux without leaking into the
+	// developer's real ~/.local/share.
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -413,13 +430,87 @@ func TestInitNoEnvFiles(t *testing.T) {
 	}
 
 	outStr := out.String()
-	if !strings.Contains(outStr, "no .env files, MCP configs, or shell-exported secrets found") {
+	if !strings.Contains(outStr, "no .env files found") {
 		t.Errorf("expected no-sources message, got: %s", outStr)
+	}
+
+	// .veil/ state dir must exist so a subsequent `veil add` can open the
+	// vault. Without this the no-env path is a silent dead end.
+	stateDir := filepath.Join(tmpDir, ".veil")
+	if info, err := os.Stat(stateDir); err != nil || !info.IsDir() {
+		t.Error(".veil/ directory not created in no-env-files path")
+	}
+
+	// vault.bin must exist; otherwise withVault would fail on next command.
+	if _, err := os.Stat(filepath.Join(stateDir, "vault.bin")); err != nil {
+		t.Error("vault.bin not created in no-env-files path")
+	}
+
+	// CA cert must exist so `veil run` works without re-running init.
+	caPath, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("config.CAFile: %v", err)
+	}
+	if _, err := os.Stat(caPath); err != nil {
+		t.Errorf("CA cert not created at %s: %v", caPath, err)
+	}
+
+	// "Next:" block must guide the user to `veil add`.
+	if !strings.Contains(outStr, "Next:") {
+		t.Errorf("expected Next: block, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil add") {
+		t.Errorf("expected `veil add` hint, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "veil run") {
+		t.Errorf("expected `veil run` hint, got: %s", outStr)
+	}
+}
+
+// TestInitNoEnvFiles_DryRun verifies --dry-run on the no-env-files branch
+// still prints the no-sources notice and the dry-run preview, but creates
+// no .veil/ state dir and no CA cert.
+func TestInitNoEnvFiles_DryRun(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--dry-run"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run init with no .env files should not error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, ".veil")); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create .veil/, got err=%v", err)
+	}
+	caPath, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("config.CAFile: %v", err)
+	}
+	if _, err := os.Stat(caPath); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create CA cert, got err=%v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "Dry-run preview") {
+		t.Errorf("expected dry-run preview line, got: %s", outStr)
 	}
 }
 
 func TestInitAlreadyInitialized(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -458,6 +549,7 @@ func TestInitAlreadyInitialized(t *testing.T) {
 
 func TestInitGitignoreAppend(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -500,413 +592,9 @@ func TestInitGitignoreAppend(t *testing.T) {
 	}
 }
 
-func TestInitWithMCPConfig(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create .env with a secret.
-	envContent := "OPENAI_API_KEY=sk-proj-1234567890abcdef\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a fake MCP config directory and file.
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Override the MCP config discovery path for testing.
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Assert summary mentions both .env and MCP config.
-	outStr := out.String()
-	if !strings.Contains(outStr, "MCP configs processed:") {
-		t.Errorf("expected MCP config in summary, got: %s", outStr)
-	}
-
-	// Assert MCP config was rewritten (token replaced).
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpStr := string(mcpData)
-	if strings.Contains(mcpStr, "ghp_test1234567890abcdef1234567890abcdef") {
-		t.Error("GITHUB_TOKEN was not replaced with a placeholder")
-	}
-	if !strings.Contains(mcpStr, "GITHUB_TOKEN") {
-		t.Error("GITHUB_TOKEN key is missing from config")
-	}
-
-	// Assert backup was created.
-	backupPath := mcpConfigPath + ".veil-backup"
-	backupData, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatal("backup file not created")
-	}
-	if !strings.Contains(string(backupData), "ghp_test1234567890abcdef1234567890abcdef") {
-		t.Error("backup should contain original token")
-	}
-}
-
-func TestInitMCPOnlyNoEnvFiles(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// No .env files — only MCP config.
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	outStr := out.String()
-	if !strings.Contains(outStr, "Secrets vaulted:") {
-		t.Errorf("expected secrets vaulted line, got: %s", outStr)
-	}
-	if !strings.Contains(outStr, "MCP configs processed:") {
-		t.Errorf("expected MCP config in summary, got: %s", outStr)
-	}
-}
-
-func TestInitMCPDryRun(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a .env so init doesn't bail early (before MCP support is wired).
-	envContent := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	originalContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(originalContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init --dry-run failed: %v", err)
-	}
-
-	// MCP config should be UNCHANGED.
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(mcpData) != originalContent {
-		t.Errorf("MCP config should be unchanged in dry-run, got: %q", string(mcpData))
-	}
-
-	// No backup should exist.
-	backupPath := mcpConfigPath + ".veil-backup"
-	if _, err := os.Stat(backupPath); err == nil {
-		t.Error("backup file should not exist in dry-run mode")
-	}
-
-	// Output should mention what would be vaulted.
-	outStr := out.String()
-	if !strings.Contains(outStr, "would vault") {
-		t.Errorf("expected dry-run output, got: %s", outStr)
-	}
-}
-
-func TestInitMCPForceWithExistingBackup(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	envContent := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	// First init.
-	cmd1 := NewRoot("test")
-	cmd1.SetOut(new(bytes.Buffer))
-	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir})
-	if err := cmd1.Execute(); err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	// Backup should exist now.
-	backupPath := mcpConfigPath + ".veil-backup"
-	if _, err := os.Stat(backupPath); err != nil {
-		t.Fatal("backup should exist after first init")
-	}
-
-	// Restore original MCP config for re-migration.
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Second init with --force.
-	cmd2 := NewRoot("test")
-	cmd2.SetOut(new(bytes.Buffer))
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"init", "--force", "--path", tmpDir})
-
-	if err := cmd2.Execute(); err != nil {
-		t.Fatalf("init --force failed: %v", err)
-	}
-
-	// MCP config should have been re-migrated (token replaced again).
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(mcpData), "ghp_test1234567890abcdef1234567890abcdef") {
-		t.Error("GITHUB_TOKEN should have been replaced on --force re-migration")
-	}
-}
-
-func TestInitMCPCredentialNameFormat(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create .env so init proceeds.
-	envContent := "HOSTNAME=myserver\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Open vault and verify credential name format.
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("opening vault: %v", err)
-	}
-
-	cred, found := v.Get("mcp:github:GITHUB_TOKEN")
-	if !found {
-		t.Fatal("credential mcp:github:GITHUB_TOKEN not found in vault")
-	}
-	if cred.Source != "init" {
-		t.Errorf("expected source %q, got %q", "init", cred.Source)
-	}
-	if cred.Real != "ghp_test1234567890abcdef1234567890abcdef" {
-		t.Errorf("unexpected real value: %s", cred.Real)
-	}
-}
-
-func TestInitMCPReclaimsOrphanedBackup(t *testing.T) {
-	// F-12 regression: an orphaned .veil-backup (no entry in vault.meta) means
-	// the prior Veil install was uninstalled or its state was wiped. Init must
-	// treat that backup as the source of truth and re-vault from it, rather
-	// than silently skipping (which would yield fewer secrets in the vault than
-	// the user expected).
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	originalContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_test1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	// The "current" file is what a stale prior init left behind: placeholders
-	// instead of real values. The backup carries the real pre-Veil bytes.
-	staleCurrent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_VEIL_oldplaceholder"
-      }
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(staleCurrent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(mcpConfigPath+".veil-backup", []byte(originalContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	errBuf := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(errBuf)
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init with orphan backup failed: %v", err)
-	}
-
-	if !strings.Contains(errBuf.String(), "orphaned backup") {
-		t.Errorf("expected 'orphaned backup' notice on stderr, got: %s", errBuf.String())
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
-	if !ok {
-		t.Fatal("GITHUB_TOKEN not vaulted; orphan reclaim should have re-vaulted from backup")
-	}
-	if cred.Real != "ghp_test1234567890abcdef1234567890abcdef" {
-		t.Errorf("vaulted real value should come from the backup; got %q", cred.Real)
-	}
-}
-
 func TestInitYes_VaultsAll(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nGITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz1234\n"), 0644)
@@ -937,6 +625,7 @@ func TestInitYes_VaultsAll(t *testing.T) {
 
 func TestInitInteractive_SkipFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
@@ -966,6 +655,7 @@ func TestInitInteractive_SkipFile(t *testing.T) {
 
 func TestInitInteractive_SkipToken(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\nSTRIPE_KEY=sk_live_12345678901234567890abcd\n"), 0644)
@@ -993,10 +683,7 @@ func TestInitInteractive_SkipToken(t *testing.T) {
 
 func TestInitInteractive_SkipHosts(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	// Clear known test-runner env noise so shell-env scan has nothing to
-	// prompt about — otherwise the stdin script below would feed its inputs
-	// into the shell-env prompt instead of the skip-hosts prompt.
-	clearShellEnvTestNoise(t)
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	_ = os.WriteFile(filepath.Join(dir, ".env"), []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n"), 0644)
@@ -1021,6 +708,7 @@ func TestInitInteractive_SkipHosts(t *testing.T) {
 
 func TestInitForce_WipesVault(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, ".git"), 0755)
 	envContent := []byte("OPENAI_API_KEY=sk-proj-1234567890abcdef\n")
@@ -1070,6 +758,7 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 	// vault rather than silently skipping (which would leave the placeholder
 	// in .env unvaulted on the second pass).
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1077,8 +766,12 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 	}
 	envPath := filepath.Join(tmpDir, ".env")
 	// "Current" .env is what a stale prior init left: a placeholder, not the
-	// real secret. The orphan backup carries the true pre-Veil bytes.
-	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_oldplaceholder\n"), 0644); err != nil {
+	// real secret. The orphan backup carries the true pre-Veil bytes. The
+	// placeholder carries the "VEIL" sentinel inside a ghp_-shaped payload
+	// — what a prior Generate would have produced — without the literal
+	// substring "placeholder" (which would trip the stub-value pre-gate in
+	// placeholder.IsSecretLike and skip the orphan signal).
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_VEIL_aBcD9876aBcD9876aBcD9876aBcD9876ABCD9876\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	original := []byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
@@ -1124,6 +817,7 @@ func TestInitEnvReclaimsOrphanedBackup(t *testing.T) {
 
 func TestInitEnvCreatesBackupBeforeRewrite(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
@@ -1244,24 +938,34 @@ func TestAppendGitignoreCreatesWhenMissing(t *testing.T) {
 	if info.Mode()&os.ModeSymlink != 0 {
 		t.Error("created .gitignore must not be a symlink")
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("created .gitignore should be 0600, got %o", perm)
+	// .gitignore contents (/.veil/, *.veil-backup) are not sensitive, so
+	// match the conventional 0644 rather than the tight 0600 used for the
+	// vault. A world-unreadable .gitignore confused early E2E testers and
+	// diverges from every other repo's convention.
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("created .gitignore should be 0644, got %o", perm)
 	}
 }
 
-func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
+// TestInit_LeavesAWSValuesAlone verifies that AWS credentials in a .env
+// file are not vaulted and their cleartext values remain unchanged on
+// disk. AWS SigV4 was cut in the v1 launch; AWS_* names get classified as
+// unrecognized and skipped. A vaultable provider key (GITHUB_TOKEN) is
+// included to prove init still ran end-to-end and produced a non-empty
+// vault — without it, an init that does nothing at all would pass.
+func TestInit_LeavesAWSValuesAlone(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
+	pinTestHome(t)
 
 	tmpDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"AWS_SESSION_TOKEN=FwoGZXIvYXdzEJr//////////wEaDPexample\n" +
-		"DATABASE_URL=postgres://u:pw@h/db\n"
+		"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n"
 	envPath := filepath.Join(tmpDir, ".env")
 	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
 		t.Fatal(err)
@@ -1282,227 +986,32 @@ func TestInit_CorrelatesAWSTripleInEnvFile(t *testing.T) {
 		t.Fatalf("openVault: %v", err)
 	}
 
-	awsCred, ok := v.Get("AWS_ACCESS_KEY_ID")
-	if !ok {
-		t.Fatalf("vault missing AWS_ACCESS_KEY_ID; names = %v", v.Names())
-	}
-	if awsCred.Scheme != "aws" {
-		t.Errorf("Scheme = %q, want aws", awsCred.Scheme)
-	}
-	if awsCred.AWSAccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
-		t.Errorf("AWSAccessKeyID = %q", awsCred.AWSAccessKeyID)
-	}
-	if awsCred.Real != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
-		t.Errorf("Real (secret access key) = %q", awsCred.Real)
-	}
-	if awsCred.AWSSessionToken != "FwoGZXIvYXdzEJr//////////wEaDPexample" {
-		t.Errorf("AWSSessionToken = %q", awsCred.AWSSessionToken)
-	}
-	if awsCred.AWSAccessKeyIDPlaceholder == "" {
-		t.Error("AWSAccessKeyIDPlaceholder is empty")
-	}
-	if awsCred.AWSSessionTokenPlaceholder == "" {
-		t.Error("AWSSessionTokenPlaceholder is empty")
-	}
-	if len(awsCred.AllowedHosts) != 1 || awsCred.AllowedHosts[0] != "*.amazonaws.com" {
-		t.Errorf("AllowedHosts = %v, want [*.amazonaws.com]", awsCred.AllowedHosts)
-	}
-
-	for _, name := range []string{"AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+	// AWS creds must NOT be vaulted — the AWS provider/correlator were removed.
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
 		if _, found := v.Get(name); found {
-			t.Errorf("unexpected bearer credential %q in vault (should be absorbed into aws group)", name)
+			t.Errorf("unexpected credential %q in vault: AWS is not vaulted post-launch-cut", name)
 		}
 	}
 
-	if _, ok := v.Get("DATABASE_URL"); !ok {
-		t.Error("vault missing DATABASE_URL")
+	// GITHUB_TOKEN proves init actually ran and the vault is non-empty.
+	if _, ok := v.Get("GITHUB_TOKEN"); !ok {
+		t.Error("vault missing GITHUB_TOKEN (init did not vault any provider key)")
 	}
 
+	// AWS values in .env must be unchanged (not replaced with placeholders).
 	envData, err := os.ReadFile(envPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	envStr := string(envData)
 	for _, real := range []string{
-		"AKIAIOSFODNN7EXAMPLE",
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"AKIAIOSFODNN7REDACTD",
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY",
 		"FwoGZXIvYXdzEJr//////////wEaDPexample",
 	} {
-		if strings.Contains(envStr, real) {
-			t.Errorf(".env still contains real value %q:\n%s", real, envStr)
+		if !strings.Contains(envStr, real) {
+			t.Errorf(".env should still contain original AWS value %q (not vaulted):\n%s", real, envStr)
 		}
-	}
-}
-
-func TestInit_CorrelatesTwoAWSAccountsInEnvFile(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "PROD_AWS_ACCESS_KEY_ID=AKIAPRODEXAMPLE00001\n" +
-		"PROD_AWS_SECRET_ACCESS_KEY=prod/secret/access/key/example00001\n" +
-		"DEV_AWS_ACCESS_KEY_ID=AKIADEVEXAMPLE000001\n" +
-		"DEV_AWS_SECRET_ACCESS_KEY=dev/secret/access/key/example000001\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	for _, groupName := range []string{"PROD_AWS_ACCESS_KEY_ID", "DEV_AWS_ACCESS_KEY_ID"} {
-		c, ok := v.Get(groupName)
-		if !ok {
-			t.Errorf("missing aws credential %q", groupName)
-			continue
-		}
-		if c.Scheme != "aws" {
-			t.Errorf("%s.Scheme = %q, want aws", groupName, c.Scheme)
-		}
-	}
-	for _, leaked := range []string{"PROD_AWS_SECRET_ACCESS_KEY", "DEV_AWS_SECRET_ACCESS_KEY"} {
-		if _, ok := v.Get(leaked); ok {
-			t.Errorf("unexpected bearer credential %q (should be absorbed)", leaked)
-		}
-	}
-	prodCred, _ := v.Get("PROD_AWS_ACCESS_KEY_ID")
-	if prodCred.AWSAccessKeyID != "AKIAPRODEXAMPLE00001" {
-		t.Errorf("PROD AWSAccessKeyID = %q", prodCred.AWSAccessKeyID)
-	}
-	if prodCred.Real != "prod/secret/access/key/example00001" {
-		t.Errorf("PROD secret cross-paired: %q", prodCred.Real)
-	}
-	devCred, _ := v.Get("DEV_AWS_ACCESS_KEY_ID")
-	if devCred.AWSAccessKeyID != "AKIADEVEXAMPLE000001" {
-		t.Errorf("DEV AWSAccessKeyID = %q", devCred.AWSAccessKeyID)
-	}
-	if devCred.Real != "dev/secret/access/key/example000001" {
-		t.Errorf("DEV secret cross-paired: %q", devCred.Real)
-	}
-}
-
-func TestInit_PartialAWSFallsThroughToBearer(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	c, ok := v.Get("AWS_ACCESS_KEY_ID")
-	if !ok {
-		t.Fatal("vault missing AWS_ACCESS_KEY_ID")
-	}
-	if c.Scheme != "" {
-		t.Errorf("Scheme = %q, want empty (bearer)", c.Scheme)
-	}
-	if c.AWSAccessKeyID != "" {
-		t.Errorf("AWSAccessKeyID = %q on bearer credential", c.AWSAccessKeyID)
-	}
-}
-
-func TestInit_FakeAWSValueStaysBearer(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "AWS_ACCESS_KEY_ID=fake-access-key-test\n" +
-		"AWS_SECRET_ACCESS_KEY=fake-secret-key-for-testing-purposes\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
-		c, ok := v.Get(name)
-		if !ok {
-			t.Errorf("missing credential %q", name)
-			continue
-		}
-		if c.Scheme != "" {
-			t.Errorf("%s.Scheme = %q, want empty (bearer, not aws)", name, c.Scheme)
-		}
-	}
-}
-
-func TestInit_DryRunShowsGroupedAWS(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-	envPath := filepath.Join(tmpDir, ".env")
-	if err := os.WriteFile(envPath, []byte(envContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := NewRoot("test")
-	out := new(bytes.Buffer)
-	cmd.SetOut(out)
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--dry-run", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	outStr := out.String()
-	if !strings.Contains(outStr, "would vault (aws)") {
-		t.Errorf("dry-run output missing grouped AWS line:\n%s", outStr)
-	}
-
-	gotBytes, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(gotBytes) != envContent {
-		t.Errorf(".env changed in dry-run:\n got = %q\nwant = %q", string(gotBytes), envContent)
 	}
 }
 
@@ -1551,92 +1060,50 @@ func TestInit_NoNonInteractiveNoticeBeforeRootResolution(t *testing.T) {
 	}
 }
 
-func TestInit_VaultedAWSCredentialResignsViaProxy(t *testing.T) {
+// TestInit_NoNonInteractiveNoticeWhenNoEnvFiles verifies that init does not
+// print the "Non-interactive mode: vaulting all detected secrets" announce
+// when the scanner returns zero .env files. Otherwise the user sees a
+// contradictory pair of lines — a "vaulting all detected" promise followed
+// immediately by "no .env files found" — describing an action that did not
+// happen.
+func TestInit_NoNonInteractiveNoticeWhenNoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	clearShellEnvTestNoise(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 
 	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	envContent := "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte(envContent), 0644); err != nil {
+
+	// Provide a non-TTY *os.File for stdin so detectInteractive falls
+	// into the auto-detected non-interactive branch (where announce=true).
+	// A *bytes.Buffer would be treated as interactive and bypass the bug.
+	pr, pw, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = pr.Close() }()
+	_ = pw.Close()
 
 	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	cmd.SetIn(pr)
+	cmd.SetArgs([]string{"init", "--path", tmpDir})
+
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
+		t.Fatalf("init with no .env files should not error: %v", err)
 	}
 
-	v, err := openVault(tmpDir)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
+	outStr := out.String()
+	if !strings.Contains(outStr, "no .env files found") {
+		t.Fatalf("expected no-sources message in output, got: %s", outStr)
 	}
-	cred, ok := v.Get("AWS_ACCESS_KEY_ID")
-	if !ok {
-		t.Fatal("vault missing AWS_ACCESS_KEY_ID")
-	}
-	if cred.Scheme != "aws" {
-		t.Fatalf("cred.Scheme = %q, want aws", cred.Scheme)
-	}
-	if cred.AWSAccessKeyIDPlaceholder == "" {
-		t.Fatal("cred missing AWSAccessKeyIDPlaceholder")
-	}
-
-	// Build an injector keyed by the placeholder AKID — this mirrors what
-	// the proxy does when an agent emits a SigV4 request signed with the
-	// placeholder credentials.
-	injector := proxy.NewInjector(
-		map[string]*vault.Credential{cred.AWSAccessKeyIDPlaceholder: cred},
-		nil, 0, "test",
-	)
-
-	// Construct a plausible SigV4 request using the placeholder AKID. The
-	// Signature value is intentionally "ignored" — the proxy signer discards
-	// and recomputes it. This is the same fixture shape used by
-	// TestSignAWSSigV4_GetVanilla in internal/proxy/sigv4_signer_test.go.
-	header := http.Header{}
-	header.Set("Host", "example.amazonaws.com")
-	header.Set("X-Amz-Date", "20150830T123600Z")
-	header.Set("Authorization",
-		"AWS4-HMAC-SHA256 "+
-			"Credential="+cred.AWSAccessKeyIDPlaceholder+"/20150830/us-east-1/service/aws4_request, "+
-			"SignedHeaders=host;x-amz-date, "+
-			"Signature=ignored")
-
-	_, newHeader, _, injections := injector.ProcessRequest(
-		"req-spotcheck",
-		"GET",
-		"https://example.amazonaws.com/",
-		header,
-		nil,
-	)
-
-	var resigned bool
-	for _, inj := range injections {
-		if inj.Location == proxy.LocationAWSSigV4Resigned {
-			resigned = true
-			break
-		}
-	}
-	if !resigned {
-		t.Fatalf("expected aws_sigv4_resigned injection, got: %+v", injections)
-	}
-
-	newAuth := newHeader.Get("Authorization")
-	if !strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyID+"/") {
-		t.Errorf("Authorization should contain real AKID after re-sign, got: %s", newAuth)
-	}
-	if strings.Contains(newAuth, "Credential="+cred.AWSAccessKeyIDPlaceholder+"/") {
-		t.Errorf("Authorization still contains placeholder AKID, got: %s", newAuth)
-	}
-	if strings.Contains(newAuth, "Signature=ignored") {
-		t.Errorf("Authorization signature was not recomputed, got: %s", newAuth)
+	if strings.Contains(outStr, "vaulting all detected secrets") {
+		t.Errorf("non-interactive announce printed when no .env files found:\n%s", outStr)
 	}
 }
 
@@ -1650,6 +1117,7 @@ func TestInit_VaultedAWSCredentialResignsViaProxy(t *testing.T) {
 // sentinel and surfaces an actionable error instead.
 func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	resetTestKeystoreForTest(t)
 
 	dir := t.TempDir()
@@ -1748,12 +1216,13 @@ func TestInitForce_PreservesOriginalSecretsWhenEnvAlreadyVaulted(t *testing.T) {
 // refuse the operation before any destructive step.
 func TestInitRefusesSymlinkedEnv(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	// External target outside the project — the "safe" location the user
 	// deliberately picked to keep secrets out of source control.
 	externalDir := t.TempDir()
 	target := filepath.Join(externalDir, "secrets")
-	originalTarget := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	originalTarget := "OPENAI_API_KEY=sk-proj-real-secret-ABCDEF1234567890\n"
 	if err := os.WriteFile(target, []byte(originalTarget), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1814,273 +1283,6 @@ func TestInitRefusesSymlinkedEnv(t *testing.T) {
 	}
 }
 
-// TestInitVaultsMCPArgsToken covers H2: real MCP configs commonly pass
-// credentials via positional args (e.g. `args: ["--token", "ghp_..."]`).
-// Before the fix, processMCPConfig only scanned server.Env, so the token
-// stayed cleartext in claude_desktop_config.json after veil init.
-func TestInitVaultsMCPArgsToken(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// .env so init has work to do besides the MCP config.
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	originalToken := "ghp_test1234567890abcdef1234567890abcdef"
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github", "--token", "` + originalToken + `"]
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpStr := string(mcpData)
-	if strings.Contains(mcpStr, originalToken) {
-		t.Errorf("token survived in args; cleartext leaked in MCP config:\n%s", mcpStr)
-	}
-	// The benign flanking arg must be preserved verbatim.
-	if !strings.Contains(mcpStr, `"--token"`) {
-		t.Errorf("--token flag arg lost during rewrite:\n%s", mcpStr)
-	}
-
-	backupData, err := os.ReadFile(mcpConfigPath + ".veil-backup")
-	if err != nil {
-		t.Fatalf("backup not created: %v", err)
-	}
-	if !strings.Contains(string(backupData), originalToken) {
-		t.Error("backup should contain the original token")
-	}
-}
-
-// TestInitVaultsMCPArgsDSN covers the other H2 variant: a postgres-style DSN
-// embedded as a positional arg. The existing IsSecretLike already detects
-// URL-with-password values, but processMCPConfig never inspected args so the
-// DSN (and its embedded password) stayed cleartext after init.
-func TestInitVaultsMCPArgsDSN(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	originalPassword := "s3cret-db-password-xyz"
-	originalDSN := "postgres://app_user:" + originalPassword + "@db.internal.example.com:5432/prod"
-	mcpContent := `{
-  "mcpServers": {
-    "postgres": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres", "` + originalDSN + `"]
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpStr := string(mcpData)
-	if strings.Contains(mcpStr, originalPassword) {
-		t.Errorf("DSN password leaked in MCP config:\n%s", mcpStr)
-	}
-	// Structural fidelity: the placeholder DSN must still parse back as a
-	// postgres URL anchored at the same host so the MCP server still routes.
-	if !strings.Contains(mcpStr, "postgres://app_user:") {
-		t.Errorf("DSN structure not preserved (username/scheme):\n%s", mcpStr)
-	}
-	if !strings.Contains(mcpStr, "@db.internal.example.com:5432/prod") {
-		t.Errorf("DSN structure not preserved (host/path):\n%s", mcpStr)
-	}
-
-	backupData, err := os.ReadFile(mcpConfigPath + ".veil-backup")
-	if err != nil {
-		t.Fatalf("backup not created: %v", err)
-	}
-	if !strings.Contains(string(backupData), originalDSN) {
-		t.Error("backup should contain the original DSN with the real password")
-	}
-}
-
-// TestInitSkipsBenignMCPArgs covers the false-positive boundary: non-secret
-// args (subcommand strings, low-entropy flag values) must not get vaulted.
-// Using empty key for IsSecretLike means args are vaulted only when their
-// value alone trips a provider/URL/entropy signal — flag names like
-// "--port" don't drag innocent values into the vault.
-func TestInitSkipsBenignMCPArgs(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	mcpContent := `{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/data", "--port", "3306"]
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// File must be byte-identical: nothing in the filesystem server's args
-	// is secret-shaped, so no .veil-backup should have been written.
-	mcpData, err := os.ReadFile(mcpConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(mcpData) != mcpContent {
-		t.Errorf("MCP config mutated despite no secret-shaped args:\ngot:  %q\nwant: %q", mcpData, mcpContent)
-	}
-	if _, err := os.Stat(mcpConfigPath + ".veil-backup"); err == nil {
-		t.Error("backup must not be created when there are no MCP secrets")
-	}
-}
-
-// TestInitForce_RefusesPlaceholderInMCPArgs covers the --force re-vault
-// scenario for args. Once init has replaced a real secret in args with a
-// sentinel-bearing placeholder, a subsequent --force run must refuse rather
-// than overwrite the backup and keystore with the placeholder, which would
-// destroy every copy of the original secret Veil controlled.
-func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-
-	tmpDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Need an .env so init proceeds to vault the MCP config; otherwise the
-	// "nothing to do" short-circuit may run instead.
-	if err := os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(mcpDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	originalToken := "ghp_5KsHJk2lQmN8pR4tWxY7zA1bC3dE5fG7hI9j"
-	mcpContent := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github", "--token", "` + originalToken + `"]
-    }
-  }
-}`
-	mcpConfigPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpConfigPath, []byte(mcpContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpConfigPath)
-
-	// First init: vaults the token from args.
-	cmd1 := NewRoot("test")
-	cmd1.SetOut(new(bytes.Buffer))
-	cmd1.SetErr(new(bytes.Buffer))
-	cmd1.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
-	if err := cmd1.Execute(); err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	backupPath := mcpConfigPath + ".veil-backup"
-	backupBefore, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("first init did not create backup: %v", err)
-	}
-	if !strings.Contains(string(backupBefore), originalToken) {
-		t.Fatalf("first init backup missing original token: %s", backupBefore)
-	}
-
-	// Re-run with --force: refusePlaceholderInputs must catch the sentinel
-	// in args and abort before the destructive rewrite.
-	cmd2 := NewRoot("test")
-	cmd2.SetOut(new(bytes.Buffer))
-	cmd2.SetErr(new(bytes.Buffer))
-	cmd2.SetArgs([]string{"init", "--path", tmpDir, "--force", "--yes"})
-	if err := cmd2.Execute(); err == nil {
-		t.Fatal("expected --force to refuse re-vaulting placeholder-laden MCP args, got nil error")
-	}
-
-	// Backup and the previously-vaulted token must still be intact.
-	backupAfter, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatalf("backup gone after --force: %v", err)
-	}
-	if !bytes.Equal(backupBefore, backupAfter) {
-		t.Errorf("--force destroyed backup:\nbefore: %q\nafter:  %q", backupBefore, backupAfter)
-	}
-}
-
 // TestInitRefusesPrePlantedBackupSymlink covers the regression where a
 // hostile cloned repo pre-plants `.env.veil-backup` as a symlink pointing
 // at e.g. ~/.ssh/authorized_keys. Prior to the writeBackup hardening,
@@ -2090,7 +1292,7 @@ func TestInitForce_RefusesPlaceholderInMCPArgs(t *testing.T) {
 // symlink isn't filtered out before the destructive write runs.
 func TestInitRefusesPrePlantedBackupSymlink(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	t.Setenv("VEIL_MCP_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+	t.Setenv("HOME", t.TempDir())
 
 	// Stand-in for the attacker's chosen exfiltration target (e.g. ~/.ssh/
 	// authorized_keys). Pre-populate it with a known marker so we can prove
@@ -2107,7 +1309,7 @@ func TestInitRefusesPrePlantedBackupSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	envPath := filepath.Join(projectDir, ".env")
-	envContent := "OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"
+	envContent := "OPENAI_API_KEY=sk-proj-real-secret-ABCDEF1234567890\n"
 	if err := os.WriteFile(envPath, []byte(envContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2179,102 +1381,408 @@ func TestReclaimOrphanedBackupRefusesSymlink(t *testing.T) {
 	}
 }
 
-// TestInitRefusesSymlinkedParentDir covers C3: a parent directory of the
-// MCP config that is itself a symlink redirects the leaf write to an
-// attacker-controlled location, even though the leaf Lstat passes (Lstat
-// follows parent symlinks). The fix walks each parent component from the
-// trust anchor down and refuses if any is a symlink.
-func TestInitRefusesSymlinkedParentDir(t *testing.T) {
+func TestFilterInputs_NoOpWhenOnlyOneInput(t *testing.T) {
+	// With exactly one input, the upfront filter must NOT prompt
+	// (matches today's filterInputs short-circuit).
+	in := strings.NewReader("")
+	out := new(bytes.Buffer)
+	envs := filterInputs(in, out, "/tmp/root",
+		[]string{"/tmp/root/.env"},
+		true,
+	)
+	if len(envs) != 1 {
+		t.Errorf("expected pass-through, got envs=%v", envs)
+	}
+	if out.Len() > 0 {
+		t.Errorf("filterInputs printed unexpectedly: %q", out.String())
+	}
+}
+
+func TestFilterInputs_NonInteractivePassThrough(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	in := strings.NewReader("")
+	out := new(bytes.Buffer)
+	gotEnvs := filterInputs(in, out, "/tmp", envs, false)
+	if len(gotEnvs) != 2 {
+		t.Errorf("non-interactive must pass through: %v", gotEnvs)
+	}
+}
+
+func TestFilterInputs_AcceptAll(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	in := strings.NewReader("y\n")
+	out := new(bytes.Buffer)
+	gotEnvs := filterInputs(in, out, "/tmp", envs, true)
+	if len(gotEnvs) != 2 {
+		t.Errorf("expected accept-all, got %v", gotEnvs)
+	}
+}
+
+func TestFilterInputs_DeclineDropsAll(t *testing.T) {
+	envs := []string{"/tmp/a/.env", "/tmp/b/.env"}
+	in := strings.NewReader("n\n")
+	out := new(bytes.Buffer)
+	gotEnvs := filterInputs(in, out, "/tmp", envs, true)
+	if len(gotEnvs) != 0 {
+		t.Errorf("decline must drop all, got %v", gotEnvs)
+	}
+}
+
+func TestInit_DiscoversMonorepoEnvFiles(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
 
-	// Build a fake home where the platform-canonical Claude config dir
-	// is a symlink to an attacker-chosen directory. We need
-	// os.UserHomeDir to return our fake home so mcpconfig.ParentAnchor
-	// anchors the walk there, NOT at the developer's real home.
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
+	root := t.TempDir()
 
-	// Resolve the OS-specific Claude config subpath the same way init's
-	// symlink guard does, so the layout matches whatever platform the
-	// test is running on (.config/Claude on Linux, Library/Application
-	// Support/Claude on macOS).
-	anchor, subpath, ok, err := mcpconfig.ParentAnchor()
+	// Layout:
+	//   .env                       (vault)
+	//   apps/api/.env              (vault)
+	//   packages/db/.env.local     (vault)
+	//   apps/web/.env.example      (skip — sample suffix)
+	//   apps/web/.gitignore        (excludes web/.env)
+	//   apps/web/.env              (skip — gitignored)
+	//   node_modules/.env          (skip — baseline)
+	writeEnv := func(rel, content string) {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEnv(".env", "GITHUB_TOKEN=ghp_abcdef0123456789abcdef0123456789abcd\n")
+	writeEnv(filepath.Join("apps", "api", ".env"), "OPENAI_API_KEY=sk-proj-abcdef0123456789abcdef0123456789abcdef0\n")
+	writeEnv(filepath.Join("packages", "db", ".env.local"), "STRIPE_API_KEY=sk_test_abcdef0123456789abcdef\n")
+	writeEnv(filepath.Join("apps", "web", ".env.example"), "OPENAI_API_KEY=sk-proj-EXAMPLE\n")
+	writeEnv(filepath.Join("apps", "web", ".gitignore"), ".env\n")
+	writeEnv(filepath.Join("apps", "web", ".env"), "SECRET=should-be-ignored\n")
+	writeEnv(filepath.Join("node_modules", "pkg", ".env"), "X=leaked\n")
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+
+	// The three real .env files should now contain placeholders.
+	for _, rel := range []string{".env", filepath.Join("apps", "api", ".env"), filepath.Join("packages", "db", ".env.local")} {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", rel, err)
+		}
+		if bytes.Contains(data, []byte("ghp_abcdef0123456789abcdef0123456789abcd")) ||
+			bytes.Contains(data, []byte("sk-proj-abcdef0123456789abcdef0123456789abcdef0")) ||
+			bytes.Contains(data, []byte("sk_test_abcdef0123456789abcdef")) {
+			t.Errorf("%s still contains real secret after init", rel)
+		}
+	}
+
+	// The skipped files should be untouched.
+	for _, rel := range []string{filepath.Join("apps", "web", ".env.example"), filepath.Join("apps", "web", ".env"), filepath.Join("node_modules", "pkg", ".env")} {
+		_, err := os.Stat(filepath.Join(root, rel+".veil-backup"))
+		if err == nil {
+			t.Errorf("%s.veil-backup exists; file should not have been processed", rel)
+		}
+	}
+
+	// Apps/web/.env still holds its original value.
+	data, err := os.ReadFile(filepath.Join(root, "apps", "web", ".env"))
 	if err != nil {
-		t.Fatalf("ParentAnchor: %v", err)
+		t.Fatalf("reading apps/web/.env: %v", err)
 	}
-	if !ok || len(subpath) == 0 {
-		t.Skip("no canonical Claude config path on this platform")
+	if !bytes.Contains(data, []byte("should-be-ignored")) {
+		t.Errorf("gitignored apps/web/.env was modified: %s", string(data))
 	}
-	if anchor != fakeHome {
-		t.Fatalf("ParentAnchor anchor %q != fakeHome %q (HOME override not picked up)", anchor, fakeHome)
-	}
+}
 
-	// Materialize all but the last subpath component as real dirs; the
-	// last component is the malicious symlink.
-	parentDir := filepath.Join(append([]string{fakeHome}, subpath[:len(subpath)-1]...)...)
-	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+// TestInit_DoesNotScanShellEnv verifies that init does NOT pull secret-like
+// names from os.Environ() into the vault. The shell-env scanning path was
+// cut in the v1 launch (see docs/LAUNCH_CUTS.md Phase 4) — the runner's
+// scanUnvaultedSecretLikes warning at `veil run` startup is the only
+// remaining surface for shell-exported secrets.
+func TestInit_DoesNotScanShellEnv(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	t.Setenv("OPENAI_API_KEY", "sk-proj-shell-1234567890abcdef")
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The malicious redirect: <Claude dir> is a symlink to /tmp/attacker/.
-	attackerDir := t.TempDir()
-	exfilSentinel := filepath.Join(attackerDir, "claude_desktop_config.json")
-	if err := os.WriteFile(exfilSentinel, []byte(`{"mcpServers":{"x":{"command":"x","env":{"OPENAI_API_KEY":"sk-real-secret-xxxxxxxx"}}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	claudeSymlink := filepath.Join(parentDir, subpath[len(subpath)-1])
-	if err := os.Symlink(attackerDir, claudeSymlink); err != nil {
-		t.Skipf("symlink: %v", err)
-	}
-
-	// Pin discovery to the symlinked-parent path so the test exercises the
-	// real discovery code path (not the override hook). The leaf is a
-	// regular file at the resolved location, so a leaf-only Lstat passes —
-	// the parent-walk is the only line of defense.
-	t.Setenv("VEIL_MCP_CONFIG_PATH", "") // ensure default discovery
-	// Sanity: discovery sees the leaf via the symlinked parent.
-	discovered, err := mcpconfig.Discover()
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-	if discovered == "" {
-		t.Fatalf("discovery returned empty — fake home layout is wrong")
-	}
-
-	projectDir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(projectDir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Need a vaultable .env so init actually runs the MCP phase.
-	envPath := filepath.Join(projectDir, ".env")
-	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-proj-real-secret-xxxxxxxxxxxx\n"), 0o600); err != nil {
+	// A .env with a different (.env-only) key so init has something to process
+	// — we want to reach past the early-exit gate, then assert the shell value
+	// was NOT picked up.
+	envPath := filepath.Join(tmpDir, ".env")
+	if err := os.WriteFile(envPath, []byte("HOSTNAME=myserver\nDATABASE_URL=postgres://u:pw@h/db\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := NewRoot("test")
 	out := new(bytes.Buffer)
-	errBuf := new(bytes.Buffer)
 	cmd.SetOut(out)
-	cmd.SetErr(errBuf)
-	cmd.SetArgs([]string{"init", "--path", projectDir, "--yes"})
-
-	execErr := cmd.Execute()
-	if execErr == nil {
-		t.Fatal("expected init to refuse symlinked parent dir, got nil error")
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\n%s", err, out.String())
 	}
 
-	// Critical: no .veil-backup must have been written next to the
-	// attacker's file. If it was, the cleartext MCP config has been
-	// duplicated into the attacker dir.
-	if _, err := os.Stat(exfilSentinel + ".veil-backup"); err == nil {
-		t.Errorf("attacker dir received a cleartext .veil-backup: refusal must precede any write")
-	}
-
-	// And the attacker's "config" must be unmodified (no placeholder rewrite).
-	got, err := os.ReadFile(exfilSentinel)
+	v, err := openVault(tmpDir)
 	if err != nil {
+		t.Fatalf("openVault: %v", err)
+	}
+	if _, ok := v.Get("OPENAI_API_KEY"); ok {
+		t.Errorf("vault has OPENAI_API_KEY; shell-env scanning should be gone (names=%v)", v.Names())
+	}
+
+	outStr := out.String()
+	for _, forbidden := range []string{"Scanning shell environment", "shell-exported", "from shell"} {
+		if strings.Contains(outStr, forbidden) {
+			t.Errorf("output mentions %q; shell-env phase should be gone:\n%s", forbidden, outStr)
+		}
+	}
+}
+
+// TestInit_RejectsScanShellEnvFlag verifies the removed --scan-shell-env
+// flag is no longer accepted. Cobra returns an "unknown flag" error.
+func TestInit_RejectsScanShellEnvFlag(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte("sk-real-secret")) {
-		t.Errorf("attacker file was rewritten — placeholder substitution leaked through symlinked parent")
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", tmpDir, "--yes", "--scan-shell-env"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error from removed --scan-shell-env flag, got nil")
+	}
+	// Pin the specific flag name so a rename like `--shell-scan` still trips
+	// the test instead of passing on any "unknown flag" error.
+	if !strings.Contains(err.Error(), "scan-shell-env") {
+		t.Errorf("expected 'scan-shell-env' in error, got: %v", err)
+	}
+}
+
+// TestInit_WarnsWhenPathOutsideCWDProjectRoot verifies that when --path points
+// at a directory outside the cwd's project root, the user sees an advisory at
+// the end of init explaining how to roll back. Otherwise a user who typo'd a
+// path lands with a .veil/ they can't easily find or undo.
+func TestInit_WarnsWhenPathOutsideCWDProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	// The cwd's project root — what FindProjectRoot will land on for ".".
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	// The OUTSIDE project — has its own .git and .env so init succeeds.
+	outsideProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outsideProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(outsideProject, ".env")
+	if err := os.WriteFile(envPath, []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", outsideProject, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --path <outside> failed: %v", err)
+	}
+
+	outStr := out.String()
+	if !strings.Contains(outStr, "outside the current project root") {
+		t.Errorf("expected 'outside the current project root' notice, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "veil uninstall --path") {
+		t.Errorf("expected uninstall hint, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, outsideProject) && !strings.Contains(outStr, ui.RedactPath(outsideProject)) {
+		t.Errorf("expected the outside path to be mentioned in the notice, got:\n%s", outStr)
+	}
+}
+
+// TestInit_DoesNotWarnWhenPathInsideCWDProjectRoot verifies that the new
+// advisory is suppressed when the --path is a subdirectory of the cwd
+// project root — that's a perfectly reasonable monorepo workflow and
+// emitting the notice would be noise.
+func TestInit_DoesNotWarnWhenPathInsideCWDProjectRoot(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	// Subdirectory inside the cwd project.
+	sub := filepath.Join(cwdProject, "apps", "api")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".env"), []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", sub, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --path <subdir> failed: %v", err)
+	}
+	if strings.Contains(out.String(), "outside the current project root") {
+		t.Errorf("must not emit out-of-project notice for a subdirectory, got:\n%s", out.String())
+	}
+}
+
+// TestInit_DoesNotWarnWhenPathFlagOmitted verifies the advisory is gated on
+// the user actually passing --path. With no flag the path resolves from cwd
+// and the "outside" comparison would be a tautology.
+func TestInit_DoesNotWarnWhenPathFlagOmitted(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	cwdProject := t.TempDir()
+	if err := os.Mkdir(filepath.Join(cwdProject, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdProject, ".env"), []byte("GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef1234\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwdProject)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init without --path failed: %v", err)
+	}
+	if strings.Contains(out.String(), "outside the current project root") {
+		t.Errorf("must not emit out-of-project notice without --path, got:\n%s", out.String())
+	}
+}
+
+// TestAnnounceFileBackedKeystore_WithoutPassphraseErrors verifies that when
+// the keystore fell back to FileKeystore AND VEIL_PASSPHRASE is unset, the
+// announce helper surfaces a warning and returns a typed error so the caller
+// short-circuits before the first vault op (which would have produced an
+// opaque ErrKeystoreUnavailable instead). The wrapped sentinel is
+// ErrPassphraseMissing (narrower than ErrKeystoreUnavailable) so the CLI can
+// distinguish "user forgot to set passphrase" from "wrong / corrupt
+// passphrase" and recommend different remediation for each.
+func TestAnnounceFileBackedKeystore_WithoutPassphraseErrors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_PASSPHRASE", "")
+
+	fallback := filepath.Join(t.TempDir(), "master.key.age")
+	ks := vault.NewFileKeystore(fallback)
+	var buf bytes.Buffer
+	err := announceFileBackedKeystore(&buf, ks)
+	if err == nil {
+		t.Fatal("expected announceFileBackedKeystore to error when passphrase is unset")
+	}
+	if !errors.Is(err, vault.ErrPassphraseMissing) {
+		t.Errorf("expected wrapped ErrPassphraseMissing, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "No system keyring found") {
+		t.Errorf("warning should mention 'No system keyring found', got:\n%s", out)
+	}
+	if !strings.Contains(out, "VEIL_PASSPHRASE") {
+		t.Errorf("warning should mention VEIL_PASSPHRASE, got:\n%s", out)
+	}
+}
+
+// TestAnnounceFileBackedKeystore_WithPassphraseInfoOnly verifies that when
+// the keystore is file-backed AND VEIL_PASSPHRASE is set, the helper prints
+// an informational note (so the user knows they're in file-backed mode) but
+// does not return an error.
+func TestAnnounceFileBackedKeystore_WithPassphraseInfoOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("VEIL_PASSPHRASE", "hunter2")
+
+	fallback := filepath.Join(t.TempDir(), "master.key.age")
+	ks := vault.NewFileKeystore(fallback)
+	var buf bytes.Buffer
+	if err := announceFileBackedKeystore(&buf, ks); err != nil {
+		t.Fatalf("announceFileBackedKeystore with passphrase set: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Using file-backed keystore") {
+		t.Errorf("expected info note about file-backed mode, got:\n%s", out)
+	}
+	if strings.Contains(out, "No system keyring found") {
+		t.Errorf("must not surface the unset-passphrase warning when passphrase IS set, got:\n%s", out)
+	}
+}
+
+// TestAnnounceFileBackedKeystore_NonFileNoOp verifies that for the happy-path
+// system-keyring keystore the helper prints nothing and returns nil.
+func TestAnnounceFileBackedKeystore_NonFileNoOp(t *testing.T) {
+	ks := vault.NewMemKeystore()
+	var buf bytes.Buffer
+	if err := announceFileBackedKeystore(&buf, ks); err != nil {
+		t.Fatalf("announce should no-op for non-file keystore: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("announce should print nothing for non-file keystore, got: %q", buf.String())
+	}
+}
+
+// TestInit_ForceFlagDescribesDestructiveScope verifies that the --force flag's
+// help text names the destructive surfaces it touches (vault entries and
+// .veil-backup files). The original "reinitialize even if .veil/ exists"
+// undersold the blast radius: --force also clears keystore entries for the
+// prior projectID, overwrites same-named credentials, and replaces existing
+// .veil-backup sidecars for any file being re-vaulted.
+func TestInit_ForceFlagDescribesDestructiveScope(t *testing.T) {
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --help failed: %v", err)
+	}
+
+	// Locate the --force flag's help line. cobra renders flags as
+	//   --force   <description>
+	// possibly wrapped across lines, so scan for the line that begins the
+	// flag and accept the rest of the help text following it.
+	output := out.String()
+	idx := strings.Index(output, "--force")
+	if idx == -1 {
+		t.Fatalf("--force flag missing from help output:\n%s", output)
+	}
+	forceSection := output[idx:]
+
+	// The new description should name at least the vault and backup
+	// surfaces so users know --force is not just "skip the already-init
+	// check".
+	for _, want := range []string{"vault", "backup"} {
+		if !strings.Contains(forceSection, want) {
+			t.Errorf("--force description should mention %q to convey destructive scope, got:\n%s", want, forceSection)
+		}
 	}
 }

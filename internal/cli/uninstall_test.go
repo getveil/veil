@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/getveil/veil/internal/config"
+	"github.com/getveil/veil/internal/ui"
 )
 
 func TestActiveProxyPIDsIgnoresDeadPIDs(t *testing.T) {
@@ -65,9 +66,9 @@ func TestActiveProxyPIDsNoStateDir(t *testing.T) {
 	}
 }
 
-func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
+func TestDiscoverBackupsFindsEveryBackupPair(t *testing.T) {
 	root := t.TempDir()
-	// Valid pair: both original and backup exist.
+	// .env pair with both original and backup present.
 	envPath := filepath.Join(root, ".env")
 	envBackup := envPath + ".veil-backup"
 	if err := os.WriteFile(envPath, []byte("KEY=placeholder"), 0600); err != nil {
@@ -76,14 +77,17 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 	if err := os.WriteFile(envBackup, []byte("KEY=original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Curated-name alternative: .env.local with only a backup (original deleted).
+	// .env.local with only a backup (original was deleted).
 	localBackup := filepath.Join(root, ".env.local.veil-backup")
 	if err := os.WriteFile(localBackup, []byte("FOO=bar"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Noise: a backup file with an unsupported name (should be ignored).
-	randomBackup := filepath.Join(root, "random.conf.veil-backup")
-	if err := os.WriteFile(randomBackup, []byte("zzz"), 0600); err != nil {
+	// Any other .veil-backup the walker encounters is restored too — post-
+	// launch-cut discoverBackups walks the project for the sidecar pattern
+	// rather than consulting a curated name list. A backup at
+	// random.conf.veil-backup must come along for the restore.
+	otherBackup := filepath.Join(root, "random.conf.veil-backup")
+	if err := os.WriteFile(otherBackup, []byte("zzz"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,12 +96,9 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 		t.Fatalf("discoverBackups: %v", err)
 	}
 
-	// Expect exactly two env pairs (the curated names), none for MCP.
 	byOriginal := make(map[string]bool)
 	for _, p := range pairs {
-		if p.kind == backupKindEnv {
-			byOriginal[p.original] = true
-		}
+		byOriginal[p.original] = true
 	}
 	if !byOriginal[envPath] {
 		t.Errorf("missing pair for %s; got: %v", envPath, byOriginal)
@@ -105,8 +106,8 @@ func TestDiscoverBackupsFindsEnvPairs(t *testing.T) {
 	if !byOriginal[filepath.Join(root, ".env.local")] {
 		t.Errorf("missing pair for .env.local; got: %v", byOriginal)
 	}
-	if byOriginal[filepath.Join(root, "random.conf")] {
-		t.Errorf("unexpected pair for non-curated file: random.conf")
+	if !byOriginal[filepath.Join(root, "random.conf")] {
+		t.Errorf("missing pair for random.conf; the walk surfaces every *.veil-backup")
 	}
 }
 
@@ -123,36 +124,6 @@ func TestDiscoverBackupsSkipsOriginalWithoutBackup(t *testing.T) {
 	}
 	if len(pairs) != 0 {
 		t.Errorf("expected 0 pairs (no backup present), got %d: %+v", len(pairs), pairs)
-	}
-}
-
-func TestDiscoverBackupsIncludesMCPWhenDiscoverable(t *testing.T) {
-	root := t.TempDir()
-	// Set up a fake MCP config + backup via the test env var.
-	mcpDir := t.TempDir()
-	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(mcpPath+".veil-backup", []byte(`{"mcpServers":{"x":{}}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
-
-	pairs, err := discoverBackups(root)
-	if err != nil {
-		t.Fatalf("discoverBackups: %v", err)
-	}
-
-	found := false
-	for _, p := range pairs {
-		if p.kind == backupKindMCP && p.original == mcpPath {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected MCP pair in results; got: %+v", pairs)
 	}
 }
 
@@ -344,8 +315,8 @@ func TestRenderUnifiedDiffF11ScatteredChanges(t *testing.T) {
 		"SLACK_BOT_TOKEN=xoxb-1234567890-abcdef\n" +
 		"# section divider\n" +
 		"ANTHROPIC_API_KEY=sk-ant-1234567890abcdef\n" +
-		"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n" +
-		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" +
+		"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD\n" +
+		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY\n" +
 		"DOUBLE_QUOTED=\"real-secret-double\"\n" +
 		"SINGLE_QUOTED='real-secret-single'\n" +
 		"WITH_COMMENT=real-value # this is a comment\n" +
@@ -359,8 +330,8 @@ func TestRenderUnifiedDiffF11ScatteredChanges(t *testing.T) {
 		{"-STRIPE_SECRET_KEY=sk_live_VEILxxxxxxxxxxxxxxxx", "+STRIPE_SECRET_KEY=sk_live_1234567890abcdef"},
 		{"-SLACK_BOT_TOKEN=xoxb-VEILxxxxxxxxxx", "+SLACK_BOT_TOKEN=xoxb-1234567890-abcdef"},
 		{"-ANTHROPIC_API_KEY=sk-ant-VEILxxxxxxxxxxxxxx", "+ANTHROPIC_API_KEY=sk-ant-1234567890abcdef"},
-		{"-AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx", "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"},
-		{"-AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx", "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+		{"-AWS_ACCESS_KEY_ID=AKIAVEILxxxxxxxxx", "+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REDACTD"},
+		{"-AWS_SECRET_ACCESS_KEY=VEILSt7DH4v22xxxxxxxxxxxxxxxxxxxxxxxxxx", "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYREDACTDKEYY"},
 		{"-DOUBLE_QUOTED=\"VEILsecretdouble\"", "+DOUBLE_QUOTED=\"real-secret-double\""},
 		{"-SINGLE_QUOTED='VEILsecretsingle'", "+SINGLE_QUOTED='real-secret-single'"},
 		{"-WITH_COMMENT=VEILvalue # this is a comment", "+WITH_COMMENT=real-value # this is a comment"},
@@ -491,80 +462,6 @@ func TestClassifyEnvPairDiffShowsRealChangeWhenUserEdited(t *testing.T) {
 	}
 }
 
-func TestClassifyMCPPairUnmodified(t *testing.T) {
-	dir := t.TempDir()
-	orig := filepath.Join(dir, "claude_desktop_config.json")
-	backup := orig + ".veil-backup"
-
-	// backupContent must be in Bytes()-formatted form (2-space indent) because
-	// expectedOriginalMCP re-serializes through cfg.Bytes(). The backup
-	// represents the file before Veil touched it; Veil's init also writes via
-	// Bytes(), so the user's pre-existing file must already be in that shape
-	// for the Unmodified case to match.
-	backupContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"real-value\"\n      }\n    }\n  }\n}\n")
-	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
-		t.Fatal(err)
-	}
-	currentContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"ghp_veil_abc\"\n      }\n    }\n  }\n}\n")
-	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	resolver := placeholderResolver{"ghp_veil_abc": "real-value"}
-
-	status, _, err := classifyMCPPair(orig, backup, resolver)
-	if err != nil {
-		t.Fatalf("classifyMCPPair: %v", err)
-	}
-	if status != classUnmodified {
-		t.Errorf("status = %v, want classUnmodified", status)
-	}
-}
-
-func TestClassifyMCPPairModified(t *testing.T) {
-	dir := t.TempDir()
-	orig := filepath.Join(dir, "claude_desktop_config.json")
-	backup := orig + ".veil-backup"
-
-	// backupContent in Bytes()-formatted form (only server "x").
-	backupContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"real\"\n      }\n    }\n  }\n}\n")
-	if err := os.WriteFile(backup, backupContent, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// Current has placeholder for TOKEN and a new server "y" added by the user.
-	currentContent := []byte("{\n  \"mcpServers\": {\n    \"x\": {\n      \"command\": \"\",\n      \"env\": {\n        \"TOKEN\": \"ghp_veil_abc\"\n      }\n    },\n    \"y\": {\n      \"command\": \"\",\n      \"env\": {\n        \"OTHER\": \"new\"\n      }\n    }\n  }\n}\n")
-	if err := os.WriteFile(orig, currentContent, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	resolver := placeholderResolver{"ghp_veil_abc": "real"}
-
-	status, _, err := classifyMCPPair(orig, backup, resolver)
-	if err != nil {
-		t.Fatalf("classifyMCPPair: %v", err)
-	}
-	if status != classModified {
-		t.Errorf("status = %v, want classModified", status)
-	}
-}
-
-func TestClassifyMCPPairOriginalMissing(t *testing.T) {
-	dir := t.TempDir()
-	orig := filepath.Join(dir, "claude_desktop_config.json")
-	backup := orig + ".veil-backup"
-	if err := os.WriteFile(backup, []byte(`{}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, _, err := classifyMCPPair(orig, backup, nil)
-	if err != nil {
-		t.Fatalf("classifyMCPPair: %v", err)
-	}
-	if status != classOriginalMissing {
-		t.Errorf("status = %v, want classOriginalMissing", status)
-	}
-}
-
 func TestResolverFromVault(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
 	root := t.TempDir()
@@ -604,6 +501,7 @@ func TestResolverFromVault(t *testing.T) {
 
 func TestUninstallDryRunNoChanges(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -650,6 +548,7 @@ func TestUninstallDryRunNoChanges(t *testing.T) {
 
 func TestUninstallBlocksOnActiveProxy(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -688,6 +587,7 @@ func TestUninstallBlocksOnActiveProxy(t *testing.T) {
 
 func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -733,6 +633,7 @@ func TestUninstallForceBypassesProxyGuard(t *testing.T) {
 
 func TestUninstallRoundTripFidelity(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -783,6 +684,7 @@ func TestUninstallRoundTripFidelity(t *testing.T) {
 
 func TestUninstallMultiFile(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -825,6 +727,7 @@ func TestUninstallMultiFile(t *testing.T) {
 
 func TestUninstallNoOpAfterPriorUninstall(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -863,6 +766,7 @@ func TestUninstallNoOpAfterPriorUninstall(t *testing.T) {
 
 func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -903,38 +807,24 @@ func TestUninstallUserEditOverwrittenWithYes(t *testing.T) {
 	}
 }
 
-// TestUninstallRestoresMCPConfigOutsideProjectRoot is the F-13 regression
-// guard. It initializes a project where the MCP config lives outside the
-// project root (via VEIL_MCP_CONFIG_PATH), then runs uninstall and confirms
-// the out-of-root file is restored to its original bytes AND its .veil-backup
-// is removed. The previous bug: discoverBackups only scanned the project root,
-// so the MCP file's backup survived uninstall and the placeholder remained.
-func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
+// TestUninstallYesWithModifiedFilesPrintsWarning covers Fix 1: when --yes is
+// used and the plan contains modified pairs, the user never saw the diff —
+// we must still proceed (the --yes contract is "skip the prompt") but print
+// a one-line warning so scripted runs that overwrite user edits don't fail
+// silently. The companion test TestUninstallUserEditOverwrittenWithYes pins
+// the proceed-anyway behavior; this one pins the warning text.
+func TestUninstallYesWithModifiedFilesPrintsWarning(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+	envPath := filepath.Join(root, ".env")
+	original := []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n")
+	if err := os.WriteFile(envPath, original, 0644); err != nil {
 		t.Fatal(err)
 	}
-
-	mcpDir := t.TempDir() // deliberately outside `root`
-	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	originalMCP := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
@@ -944,64 +834,48 @@ func TestUninstallRestoresMCPConfigOutsideProjectRoot(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	postInit, err := os.ReadFile(mcpPath)
-	if err != nil {
+	// User adds a new line post-init — this makes the pair classModified.
+	current, _ := os.ReadFile(envPath)
+	edited := append(current, []byte("LOG_LEVEL=debug\n")...)
+	if err := os.WriteFile(envPath, edited, 0644); err != nil {
 		t.Fatal(err)
-	}
-	if strings.Contains(string(postInit), "ghp_real1234567890abcdef1234567890abcdef") {
-		t.Fatal("init did not replace the real token; preconditions broken")
-	}
-	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
-		t.Fatalf("init did not create backup: %v", err)
 	}
 
 	cmd = NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
 	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("uninstall failed: %v", err)
 	}
 
-	restored, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("MCP config missing after uninstall: %v", err)
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "user edits that will be overwritten") {
+		t.Errorf("expected warning about user edits being overwritten; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
 	}
-	if string(restored) != originalMCP {
-		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
-	}
-	if _, err := os.Stat(mcpPath + ".veil-backup"); !os.IsNotExist(err) {
-		t.Errorf("MCP backup should be removed after uninstall, stat err: %v", err)
+	if !strings.Contains(combined, "--yes") {
+		t.Errorf("warning should point at --yes; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
 	}
 }
 
-// TestUninstallClassifiesMCPByRegisteredKindNotBasename is the regression
-// guard for the classifyPath bug. When VEIL_MCP_CONFIG_PATH points at a file
-// whose basename is NOT "claude_desktop_config.json", the prior code (which
-// classified by basename) routed the pair to classifyEnvPair — parsing JSON
-// as .env syntax. Reverse-substitution then failed to recognise the JSON
-// values as KV lines, so the file was reported as [modified] instead of
-// [restore], and the dry-run diff was nonsense. The fix records the kind in
-// the registry; this test asserts the post-fix behaviour: the round-trip
-// classifies as Unmodified and uninstall fully restores the original bytes.
-func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
+// TestUninstallYesNoWarningWhenNothingModified ensures the warning is scoped
+// to the actual problem case — if every pair is classUnmodified (the common
+// path), the noisy "files will be overwritten" line must not appear.
+func TestUninstallYesNoWarningWhenNothingModified(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
+	envPath := filepath.Join(root, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-
-	mcpDir := t.TempDir()
-	// Non-canonical filename — anything other than claude_desktop_config.json.
-	mcpPath := filepath.Join(mcpDir, "mcp.json")
-	originalMCP := "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"npx\",\n      \"env\": {\n        \"GITHUB_TOKEN\": \"ghp_real1234567890abcdef1234567890abcdef\"\n      }\n    }\n  }\n}\n"
-	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
 
 	cmd := NewRoot("test")
 	cmd.SetOut(new(bytes.Buffer))
@@ -1010,138 +884,74 @@ func TestUninstallClassifiesMCPByRegisteredKindNotBasename(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
-		t.Fatalf("init did not create backup at non-canonical path: %v", err)
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
 	}
 
-	// Dry-run: the JSON file has only the secret modification (which Veil itself
-	// made via placeholder substitution). With the correct classifier this is
-	// classUnmodified ("[restore]"), and no diff is emitted. With the broken
-	// basename-based classifier it would be classModified ("[modified]") with a
-	// nonsense .env-shaped diff.
+	combined := stdout.String() + stderr.String()
+	if strings.Contains(combined, "user edits that will be overwritten") {
+		t.Errorf("warning should NOT fire when no files are modified; got stdout=%q stderr=%q",
+			stdout.String(), stderr.String())
+	}
+}
+
+// TestUninstallPrintsPerFileRestoreLine covers Fix 2: before each rename, the
+// uninstall loop emits a "restoring: <rel>" line so a mid-loop crash leaves a
+// trail of which files were already restored vs. still pending. We seed two
+// .env files, each carrying a named-provider secret so init creates a backup
+// for both, then confirm both relative paths appear in the uninstall output.
+func TestUninstallPrintsPerFileRestoreLine(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("GITHUB_TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env.local"),
+		[]byte("STRIPE_SECRET_KEY=sk_live_1234567890abcdef1234567890\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	// Sanity: both files must have been backed up by init, otherwise the
+	// per-file output assertion below is testing the wrong thing.
+	for _, name := range []string{".env", ".env.local"} {
+		if _, err := os.Stat(filepath.Join(root, name+backupSuffix)); err != nil {
+			t.Fatalf("init did not create backup for %s: %v", name, err)
+		}
+	}
+
 	cmd = NewRoot("test")
 	stdout := new(bytes.Buffer)
 	cmd.SetOut(stdout)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("uninstall --dry-run failed: %v", err)
-	}
-	plan := stdout.String()
-	mcpLine := findPlanLineFor(plan, mcpPath)
-	if mcpLine == "" {
-		t.Fatalf("dry-run plan did not include the MCP file %q; plan was:\n%s", mcpPath, plan)
-	}
-	if strings.Contains(mcpLine, "[modified]") {
-		t.Errorf("MCP file at non-canonical path was misclassified as modified (classifyEnvPair was used instead of classifyMCPPair); line: %q\nfull plan:\n%s", mcpLine, plan)
-	}
-	if !strings.Contains(mcpLine, "[restore ]") {
-		t.Errorf("expected MCP file to be classified as [restore], got: %q\nfull plan:\n%s", mcpLine, plan)
-	}
-
-	// Real uninstall: file restores to pre-Veil bytes byte-for-byte.
-	cmd = NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
 	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("uninstall failed: %v", err)
 	}
-	restored, err := os.ReadFile(mcpPath)
-	if err != nil {
-		t.Fatalf("MCP config missing after uninstall: %v", err)
-	}
-	if string(restored) != originalMCP {
-		t.Errorf("MCP config not restored to pre-Veil bytes\ngot:  %q\nwant: %q", restored, originalMCP)
-	}
-}
 
-// findPlanLineFor returns the dry-run plan line that ends with the given
-// path, or "" if none is found.
-func findPlanLineFor(plan, path string) string {
-	for _, line := range strings.Split(plan, "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), path) {
-			return line
+	out := stdout.String()
+	for _, rel := range []string{".env", ".env.local"} {
+		if !strings.Contains(out, "restoring: "+rel) {
+			t.Errorf("expected per-file restoring line for %q; got:\n%s", rel, out)
 		}
-	}
-	return ""
-}
-
-// TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot is the F-12 regression
-// guard. The brief allows either a hard error OR a successful re-vault — what
-// must not happen is the silent-skip outcome (the old behaviour). This test
-// asserts the chosen behaviour: re-vault from the orphan, ending up with the
-// same vaulted set as the first init.
-func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
-	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("HOSTNAME=myserver\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mcpDir := t.TempDir() // outside root
-	mcpPath := filepath.Join(mcpDir, "claude_desktop_config.json")
-	originalMCP := `{
-  "mcpServers": {
-    "github": {
-      "command": "npx",
-      "env": {
-        "GITHUB_TOKEN": "ghp_real1234567890abcdef1234567890abcdef"
-      }
-    }
-  }
-}`
-	if err := os.WriteFile(mcpPath, []byte(originalMCP), 0644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("VEIL_MCP_CONFIG_PATH", mcpPath)
-
-	// First init: vaults the MCP secret, leaves a backup behind.
-	cmd := NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	// Simulate a wiped registry: blow away .veil/ but leave the placeholder-
-	// filled MCP file and the .veil-backup in place. This is exactly the F-12
-	// scenario: an interrupted/older Veil left an orphan behind.
-	if err := os.RemoveAll(config.ProjectStateDir(root)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(mcpPath + ".veil-backup"); err != nil {
-		t.Fatalf("preconditions: orphan backup missing: %v", err)
-	}
-
-	// Second init: must NOT silently skip. The orphan-reclaim path re-vaults
-	// using the backup as the source of truth.
-	cmd = NewRoot("test")
-	cmd.SetOut(new(bytes.Buffer))
-	stderr := new(bytes.Buffer)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("second init failed: %v", err)
-	}
-
-	v, err := openVault(root)
-	if err != nil {
-		t.Fatalf("openVault: %v", err)
-	}
-	cred, ok := v.Get("mcp:github:GITHUB_TOKEN")
-	if !ok {
-		t.Fatal("re-init silently dropped the MCP secret (F-12 regression)")
-	}
-	if cred.Real != "ghp_real1234567890abcdef1234567890abcdef" {
-		t.Errorf("re-init captured wrong real value (must come from orphan backup); got %q", cred.Real)
-	}
-	if !strings.Contains(stderr.String(), "orphaned backup") {
-		t.Errorf("expected user-visible 'orphaned backup' notice on stderr, got: %s", stderr.String())
 	}
 }
 
@@ -1157,6 +967,7 @@ func TestInitFailsLoudlyOnOrphanBackupOutsideProjectRoot(t *testing.T) {
 // rename fires.
 func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	// Step 1: produce a legitimate post-init state with a real .env.veil-backup.
 	root := t.TempDir()
@@ -1243,11 +1054,35 @@ func TestUninstallRefusesSymlinkedBackup(t *testing.T) {
 	}
 }
 
+func TestDiscoverBackups_FindsExtendedEnvNames(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	t.Setenv("HOME", t.TempDir())
+
+	root := t.TempDir()
+	for _, name := range []string{".env.test", ".env.staging", ".env.ci", ".env.preview"} {
+		orig := filepath.Join(root, name)
+		if err := os.WriteFile(orig, []byte("X=1"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(orig+backupSuffix, []byte("X=real"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pairs, err := discoverBackups(root)
+	if err != nil {
+		t.Fatalf("discoverBackups: %v", err)
+	}
+	if len(pairs) != 4 {
+		t.Errorf("expected 4 backup pairs, got %d: %+v", len(pairs), pairs)
+	}
+}
+
 // TestUninstallRefusesSymlinkedOriginal covers the mirror leak: when .env
 // itself is a symlink, classifyEnvPair's os.ReadFile(original) follows it and
 // the target's bytes appear as the '-' side of the printed diff.
 func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
 
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -1297,5 +1132,383 @@ func TestUninstallRefusesSymlinkedOriginal(t *testing.T) {
 	combined := execErr.Error() + errBuf.String()
 	if !strings.Contains(combined, "symbolic link") {
 		t.Errorf("expected error to mention 'symbolic link', got: %v / %s", execErr, errBuf.String())
+	}
+}
+
+// TestUninstallRemovesVeilOnlyGitignore covers F8: when init created a
+// .gitignore from scratch (it contains only the two Veil-added lines), the
+// uninstall pass should clean it up — leaving it behind makes the project
+// non-pristine. We seed a fresh repo, init, then uninstall, and assert the
+// file is gone.
+func TestUninstallRemovesVeilOnlyGitignore(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	// Sanity: init must have created the .gitignore.
+	gitignorePath := filepath.Join(root, ".gitignore")
+	if _, err := os.Stat(gitignorePath); err != nil {
+		t.Fatalf("init should have created .gitignore: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	if _, err := os.Stat(gitignorePath); !os.IsNotExist(err) {
+		got, _ := os.ReadFile(gitignorePath)
+		t.Errorf("Veil-only .gitignore should be removed by uninstall; still present with content:\n%s", got)
+	}
+}
+
+// TestUninstallPreservesUserGitignore covers the other half of F8: if the
+// .gitignore had any non-Veil entries (added by the user, before or after
+// init), uninstall must leave it in place. The two Veil-added lines may
+// remain in the file — the user is on the hook for cleaning those, but we
+// must not delete a file with their own ignores in it.
+func TestUninstallPreservesUserGitignore(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// User had their own .gitignore before init.
+	userOriginal := "node_modules/\n*.log\n"
+	gitignorePath := filepath.Join(root, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(userOriginal), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	got, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf(".gitignore must remain when user had non-Veil entries: %v", err)
+	}
+	if !strings.Contains(string(got), "node_modules/") {
+		t.Errorf("user's .gitignore entries must be preserved, got:\n%s", got)
+	}
+}
+
+// TestUninstallRemovesCAFiles is the regression for the launch-blocker bug:
+// `veil init` writes a self-signed "Veil Local Root" CA cert + key under the
+// user's app-support dir (macOS: ~/Library/Application Support/veil/ca,
+// Linux: ~/.local/share/veil/ca), but `veil uninstall` left them on disk
+// indefinitely. An orphan root CA post-uninstall is a security-hygiene red
+// flag for a MITM tool, so uninstall must remove them symmetrically with
+// init's LoadOrCreateCA, rmdir the containing ca/ dir and the parent
+// app-support dir when empty, and stay idempotent on a second run.
+func TestUninstallRemovesCAFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Pin HOME inside a tempdir so init's CA write lands in a sandbox we
+	// can assert against (and so we don't pollute the developer's real
+	// ~/Library/Application Support/veil or ~/.local/share/veil). Also
+	// pin XDG_DATA_HOME so the Linux branch of caDir() stays inside HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// init writes CA cert + key as a side effect of setupProxyCA.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	caCert, err := config.CAFile()
+	if err != nil {
+		t.Fatalf("CAFile: %v", err)
+	}
+	caKey, err := config.CAKeyFile()
+	if err != nil {
+		t.Fatalf("CAKeyFile: %v", err)
+	}
+	caDir, err := config.CADir()
+	if err != nil {
+		t.Fatalf("CADir: %v", err)
+	}
+	// Sanity: init must have actually written the CA. If this fires, the
+	// test below would be a no-op rather than a regression check.
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("precondition: init should have created %s, stat: %v", p, err)
+		}
+	}
+
+	// First uninstall: CA files + ca/ dir must be gone, and the trust-store
+	// reminder must fire (because at least one CA file was actually removed).
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall failed: %v", err)
+	}
+
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed; stat err: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(caDir); !os.IsNotExist(err) {
+		t.Errorf("expected ca/ dir %s to be removed; stat err: %v", caDir, err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Veil CA to your system trust store") {
+		t.Errorf("expected trust-store removal reminder in output; got:\n%s", out)
+	}
+	if !strings.Contains(out, `security delete-certificate -c "Veil Local Root"`) {
+		t.Errorf("expected macOS keychain hint in reminder; got:\n%s", out)
+	}
+
+	// Second uninstall must be a clean no-op: nothing on disk to act on,
+	// no errors, no spurious trust-store reminder (which is gated on
+	// "we actually removed something").
+	cmd = NewRoot("test")
+	stdout = new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("second uninstall failed (must be idempotent): %v", err)
+	}
+	out = stdout.String()
+	if !strings.Contains(out, "already uninstalled") {
+		t.Errorf("expected 'already uninstalled' on second run; got:\n%s", out)
+	}
+	if strings.Contains(out, "Veil CA to your system trust store") {
+		t.Errorf("trust-store reminder must not fire when nothing was removed; got:\n%s", out)
+	}
+}
+
+// TestUninstallDryRunDoesNotRemoveCAFiles guards the no-side-effects contract
+// of --dry-run for the new CA cleanup path: the plan should mention the CA
+// dir as a [wipe] entry, but no CA file may be touched on disk.
+func TestUninstallDryRunDoesNotRemoveCAFiles(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	caCert, _ := config.CAFile()
+	caKey, _ := config.CAKeyFile()
+	caDir, _ := config.CADir()
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+
+	// CA files must still be present.
+	for _, p := range []string{caCert, caKey} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("--dry-run removed %s (stat err: %v); contract is no side effects", p, err)
+		}
+	}
+	// Plan output must mention the CA dir so the user knows it'll be wiped.
+	// The path is rendered through ui.RedactPath, so compare against the
+	// tilde-redacted form rather than the raw $HOME-rooted absolute path.
+	wantCaDir := ui.RedactPath(caDir)
+	if !strings.Contains(stdout.String(), wantCaDir) {
+		t.Errorf("expected dry-run plan to include CA dir %s; got:\n%s", wantCaDir, stdout.String())
+	}
+	// And of course the reminder must NOT fire on a dry-run.
+	if strings.Contains(stdout.String(), "Veil CA to your system trust store") {
+		t.Errorf("trust-store reminder must not appear on --dry-run; got:\n%s", stdout.String())
+	}
+}
+
+// TestUninstallPlanTildeRedactsHomePaths asserts the dry-run "Uninstall plan"
+// output renders state and CA paths through ui.RedactPath so the user's
+// home-directory layout (and username) does not leak into terminal scrollback.
+// Pins HOME to a tempdir, then asserts the plan contains "~/" for both the
+// project state dir and the CA dir and never the literal "<home>/..." form.
+func TestUninstallPlanTildeRedactsHomePaths(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	// Use a tempdir directly so HOME, the project root, AND the CA dir all
+	// live under HOME — RedactPath's home prefix replacement then collapses
+	// every $HOME-rooted absolute path to a "~/..." form.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	root := filepath.Join(home, "proj")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	cmd = NewRoot("test")
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"uninstall", "--path", root, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall --dry-run failed: %v", err)
+	}
+
+	out := stdout.String()
+
+	// The plan must contain "~/" — at minimum for the state dir and CA dir,
+	// both of which live under HOME.
+	if !strings.Contains(out, "~/") {
+		t.Errorf("expected plan output to contain tilde-redacted paths; got:\n%s", out)
+	}
+
+	// Every [wipe] line must use the tilde form, never the raw home prefix.
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "[wipe]") {
+			continue
+		}
+		if strings.Contains(line, home+string(os.PathSeparator)) {
+			t.Errorf("plan [wipe] line leaks raw HOME path; line: %q", line)
+		}
+	}
+
+	// Sanity: the state dir and CA dir should both appear in tilde form.
+	stateDir := config.ProjectStateDir(root)
+	caDir, err := config.CADir()
+	if err != nil {
+		t.Fatalf("CADir: %v", err)
+	}
+	for _, want := range []string{ui.RedactPath(stateDir), ui.RedactPath(caDir)} {
+		if !strings.HasPrefix(want, "~/") {
+			t.Fatalf("precondition: expected RedactPath to produce ~/ form, got %q", want)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("expected plan to contain redacted path %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestUninstallCancelledMessage covers polish item #6: when the user answers
+// "n" to the uninstall confirmation, the CLI must print "Cancelled." (not
+// "Aborted.") so the wording matches `veil remove` and `veil init --force`.
+// Cancellation must not be a Cobra error — the user declined cleanly.
+func TestUninstallCancelledMessage(t *testing.T) {
+	t.Setenv("VEIL_TEST_KEYSTORE", "mem")
+	pinTestHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("TOKEN=ghp_real1234567890abcdef1234567890abcdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First init the project so uninstall has something to plan against.
+	cmd := NewRoot("test")
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"init", "--path", root, "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Run uninstall WITHOUT --yes; reply "n" to the confirmation prompt.
+	cmd = NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetIn(strings.NewReader("n\n"))
+	cmd.SetArgs([]string{"uninstall", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("uninstall cancel should not error: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Cancelled.") {
+		t.Errorf("expected 'Cancelled.' on declined uninstall, got:\n%s", got)
+	}
+	if strings.Contains(got, "Aborted.") {
+		t.Errorf("must not emit legacy 'Aborted.' wording, got:\n%s", got)
+	}
+
+	// State must be untouched after cancel.
+	if _, err := os.Stat(config.ProjectStateDir(root)); err != nil {
+		t.Errorf(".veil/ should still exist after cancel: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".env.veil-backup")); err != nil {
+		t.Errorf(".env.veil-backup should still exist after cancel: %v", err)
 	}
 }

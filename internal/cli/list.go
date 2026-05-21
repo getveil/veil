@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -10,50 +9,27 @@ import (
 	"github.com/getveil/veil/internal/config"
 	"github.com/getveil/veil/internal/ui"
 	"github.com/getveil/veil/internal/vault"
-	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
-// stdoutIsTerminal is a test seam: tests replace it to simulate a
-// pipe/redirect without closing os.Stdout.
-var stdoutIsTerminal = func() bool {
-	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
-}
-
 func listCmd() *cobra.Command {
-	var reveal, showPlaceholder, assumeYes bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all credentials in the vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd, reveal, showPlaceholder, assumeYes)
+			return runList(cmd)
 		},
 	}
-	cmd.Flags().BoolVar(&reveal, "reveal", false, "show real secret values (debug only; printed with audit log)")
-	cmd.Flags().BoolVar(&showPlaceholder, "placeholder", false, "show placeholder values")
-	cmd.Flags().BoolVar(&assumeYes, "yes", false, "bypass TTY safety check for --reveal (scripted use)")
-	cmd.MarkFlagsMutuallyExclusive("reveal", "placeholder")
 	return cmd
 }
 
-func runList(cmd *cobra.Command, reveal, showPlaceholder, assumeYes bool) error {
-	if reveal {
-		if !stdoutIsTerminal() && !assumeYes {
-			return cliError(
-				"refusing to print real secrets to a non-TTY stdout",
-				"Pipe or redirect detected. Re-run with --yes to override.")
-		}
-		ui.FormatWarning(cmd.ErrOrStderr(),
-			"--reveal prints plaintext secrets",
-			"This action is recorded in the audit log.")
-	}
-
+func runList(cmd *cobra.Command) error {
 	return withVault(cmd, func(root string, v *vault.Vault) error {
-		return runListInVault(cmd, root, v, reveal, showPlaceholder)
+		return runListInVault(cmd, root, v)
 	})
 }
 
-func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, showPlaceholder bool) error {
+func runListInVault(cmd *cobra.Command, root string, v *vault.Vault) error {
 	creds := v.List()
 	if len(creds) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No credentials in vault.")
@@ -75,50 +51,18 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 				lastInjected[c.Name] = rows[0].Timestamp
 			}
 		}
-		// Record a single "reveal" row per invocation so `veil log` shows
-		// the action. One row is sufficient — no per-credential detail is
-		// persisted here by design (that would double-store secret metadata).
-		if reveal {
-			store.Record(audit.Injection{
-				Timestamp:      time.Now(),
-				RequestID:      "reveal-" + time.Now().UTC().Format("20060102T150405.000"),
-				AgentPID:       os.Getpid(),
-				AgentCmd:       "veil list --reveal",
-				CredentialName: fmt.Sprintf("(%d credentials)", len(creds)),
-				Location:       "reveal",
-			})
-		}
 	}
 
-	// Build display rows. Non-AWS credentials produce one row each. AWS
-	// credentials in --reveal/--placeholder modes expand to one row per
-	// logical secret (AKID, secret, optional session token), each labeled
-	// with the canonical AWS env-var name and paired with the matching
-	// value. Sub-rows after the first leave name/hosts/source/last blank
-	// to visually group them under the credential.
+	// Build display rows. Each credential produces one row.
 	//
-	// nameStyled mirrors name but may carry ANSI styling (e.g., the "(basic)"
-	// tag is dimmed). Width math uses the plain name to keep alignment correct.
+	// nameStyled mirrors name but may carry ANSI styling. Width math uses
+	// the plain name to keep alignment correct.
 	type row struct {
-		name, nameStyled, hosts, varName, value, placeholder, source, last string
+		name, nameStyled, hosts, source, last string
 	}
-	expandAWS := reveal || showPlaceholder
 	var rows []row
 	for _, c := range creds {
 		base := row{name: c.Name, nameStyled: c.Name, source: c.Source, last: "never"}
-		var tag string
-		switch {
-		case isAWSCred(c):
-			tag = "(aws)"
-		case c.Scheme == "github_app" || c.GitHubAppID != 0:
-			tag = "(github app)"
-		case c.Username != "":
-			tag = "(basic)"
-		}
-		if tag != "" {
-			base.name = c.Name + " " + tag
-			base.nameStyled = c.Name + " " + ui.Muted.Sprint(tag)
-		}
 		if t, ok := lastInjected[c.Name]; ok {
 			base.last = ui.RelativeTime(t)
 		}
@@ -127,68 +71,15 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		} else {
 			base.hosts = "(none)"
 		}
-
-		if expandAWS && isAWSCred(c) {
-			// Row 1: AKID (anchors the credential's name/hosts/source/last).
-			r1 := base
-			r1.varName = "AWS_ACCESS_KEY_ID"
-			if reveal {
-				r1.value = c.AWSAccessKeyID
-			}
-			if showPlaceholder {
-				r1.placeholder = c.AWSAccessKeyIDPlaceholder
-			}
-			rows = append(rows, r1)
-			// Row 2: secret access key (Real/Placeholder hold the secret).
-			r2 := row{varName: "AWS_SECRET_ACCESS_KEY"}
-			if reveal {
-				r2.value = c.Real
-			}
-			if showPlaceholder {
-				r2.placeholder = c.Placeholder
-			}
-			rows = append(rows, r2)
-			// Row 3: optional session token.
-			if c.AWSSessionToken != "" || c.AWSSessionTokenPlaceholder != "" {
-				r3 := row{varName: "AWS_SESSION_TOKEN"}
-				if reveal {
-					r3.value = c.AWSSessionToken
-				}
-				if showPlaceholder {
-					r3.placeholder = c.AWSSessionTokenPlaceholder
-				}
-				rows = append(rows, r3)
-			}
-			continue
-		}
-
-		if reveal {
-			base.value = c.Real
-		}
-		if showPlaceholder {
-			base.placeholder = c.Placeholder
-		}
 		rows = append(rows, base)
 	}
 
 	// Compute column widths from data and headers.
 	nameW, hostsW, sourceW := len("NAME"), len("HOSTS"), len("SOURCE")
-	varW := len("VAR")
-	valueW := len("VALUE")
-	phW := len("PLACEHOLDER")
 	for _, r := range rows {
 		nameW = maxInt(nameW, len(r.name))
 		hostsW = maxInt(hostsW, len(r.hosts))
 		sourceW = maxInt(sourceW, len(r.source))
-		if expandAWS {
-			varW = maxInt(varW, len(r.varName))
-		}
-		if reveal {
-			valueW = maxInt(valueW, len(r.value))
-		}
-		if showPlaceholder {
-			phW = maxInt(phW, len(r.placeholder))
-		}
 	}
 
 	// Print header and rows. Pad plain text first, then apply ANSI styling
@@ -202,70 +93,18 @@ func runListInVault(cmd *cobra.Command, root string, v *vault.Vault, reveal, sho
 		}
 		return r.nameStyled + strings.Repeat(" ", pad)
 	}
-	if reveal {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("VAR", varW)), gap,
-			ui.Muted.Sprint(padRight("VALUE", valueW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			// Sub-rows (AWS expansion) intentionally render no hosts string;
-			// only the anchor row carries the hosts column.
-			var hosts string
-			if r.hosts != "" {
-				hosts = styleHosts(r.hosts, hostsW)
-			} else {
-				hosts = padRight("", hostsW)
-			}
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.varName, varW), gap,
-				padRight(r.value, valueW), gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
-	} else if showPlaceholder {
-		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("VAR", varW)), gap,
-			ui.Muted.Sprint(padRight("PLACEHOLDER", phW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			// Sub-rows (AWS expansion) intentionally render no hosts string;
-			// only the anchor row carries the hosts column.
-			var hosts string
-			if r.hosts != "" {
-				hosts = styleHosts(r.hosts, hostsW)
-			} else {
-				hosts = padRight("", hostsW)
-			}
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.varName, varW), gap,
-				padRight(r.placeholder, phW), gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
-	} else {
+	_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
+		ui.Muted.Sprint(padRight("NAME", nameW)), gap,
+		ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
+		ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
+		ui.Muted.Sprint("LAST INJECTED"))
+	for _, r := range rows {
+		hosts := styleHosts(r.hosts, hostsW)
 		_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
-			ui.Muted.Sprint(padRight("NAME", nameW)), gap,
-			ui.Muted.Sprint(padRight("HOSTS", hostsW)), gap,
-			ui.Muted.Sprint(padRight("SOURCE", sourceW)), gap,
-			ui.Muted.Sprint("LAST INJECTED"))
-		for _, r := range rows {
-			hosts := styleHosts(r.hosts, hostsW)
-			_, _ = fmt.Fprintf(out, "%s%s%s%s%s%s%s\n",
-				emitName(r), gap,
-				hosts, gap,
-				padRight(r.source, sourceW), gap,
-				r.last)
-		}
+			emitName(r), gap,
+			hosts, gap,
+			padRight(r.source, sourceW), gap,
+			r.last)
 	}
 	ui.Footer(out, fmt.Sprintf("%d credentials", len(creds)))
 	return nil
@@ -313,11 +152,4 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// isAWSCred reports whether c should be treated as an AWS credential for
-// display purposes. Centralizing the predicate keeps tag selection and
-// row expansion in lockstep.
-func isAWSCred(c *vault.Credential) bool {
-	return c.Scheme == "aws" || c.AWSAccessKeyID != ""
 }

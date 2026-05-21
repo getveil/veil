@@ -513,286 +513,116 @@ func TestAddPersistsOnReopen(t *testing.T) {
 	}
 }
 
-func TestCredentialBasicFields(t *testing.T) {
-	c := &Credential{
-		ID:                  "abc",
-		Name:                "github-pat",
-		Real:                "ghp_realvalue",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-
-	c.Zero()
-
-	if c.Username != "" {
-		t.Errorf("Zero() did not clear Username: %q", c.Username)
-	}
-	if c.UsernamePlaceholder != "" {
-		t.Errorf("Zero() did not clear UsernamePlaceholder: %q", c.UsernamePlaceholder)
-	}
-	if c.Real != "" || c.Placeholder != "" {
-		t.Error("Zero() should still clear Real and Placeholder")
-	}
-}
-
-func TestCredentialJSONRoundTripBasic(t *testing.T) {
-	original := &Credential{
-		ID:                  "id1",
-		Name:                "github-pat",
-		Real:                "ghp_realvalue",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-		CreatedAt:           time.Unix(1712000000, 0).UTC(),
-	}
-	data, err := json.Marshal(original)
+// TestDecodeCredentials_FiltersStaleSchemeRecords pins the contract behind
+// the raw-JSON pre-filter chosen for the on-disk compat path (Phase 9,
+// item 5): pre-v1 records carrying `"scheme":"aws"` / `"github_app"` /
+// `"basic"` are dropped BEFORE unmarshaling, so the Scheme-less Credential
+// struct never loads them as Bearer placeholders the proxy would inject.
+func TestDecodeCredentials_FiltersStaleSchemeRecords(t *testing.T) {
+	plaintext := []byte(`[
+		{"id":"a","name":"bearer-1","real":"r1","placeholder":"ph1","source":"env","created_at":"2024-01-01T00:00:00Z"},
+		{"id":"b","name":"aws-prod","scheme":"aws","real":"r2","placeholder":"ph2","source":"env","created_at":"2024-01-01T00:00:00Z","aws_access_key_id":"AKIAEXAMPLE"},
+		{"id":"c","name":"gh-app","scheme":"github_app","real":"r3","placeholder":"ph3","source":"env","created_at":"2024-01-01T00:00:00Z"},
+		{"id":"d","name":"basic-1","scheme":"basic","real":"r4","placeholder":"ph4","source":"env","created_at":"2024-01-01T00:00:00Z","username":"alice"}
+	]`)
+	got, err := decodeCredentials(plaintext)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("decodeCredentials: %v", err)
 	}
-	var got Credential
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 survivor after filtering aws/github_app/basic, got %d (%v)", len(got), got)
 	}
-	if got.Username != "johndoe" || got.UsernamePlaceholder != "VEIL_PH_USER" {
-		t.Errorf("round-trip lost basic fields: %+v", got)
+	if got[0].Name != "bearer-1" {
+		t.Errorf("survivor = %q, want bearer-1", got[0].Name)
 	}
 }
 
-func TestAddRejectsUsernamePlaceholderCollision(t *testing.T) {
+// TestOpen_TolerantOfStaleAWSGitHubAppAndBasicRecords verifies the
+// risk-register promise from the launch cuts: a vault written by v0.1.x
+// with aws / github_app / basic scheme records (including their now-removed
+// extra fields like aws_access_key_id, username) must still open cleanly,
+// with the stale entries silently filtered out.
+func TestOpen_TolerantOfStaleAWSGitHubAppAndBasicRecords(t *testing.T) {
 	root := tempRoot(t)
 	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
-	if err != nil {
+	if _, err := CreateVault(root, "proj", ks); err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
 
-	first := &Credential{
-		ID: "a", Name: "first",
-		Real: "r1", Placeholder: "VEIL_PH_SECRET_AAAA",
-		Username: "alice", UsernamePlaceholder: "VEIL_PH_USER_SHARED",
+	// Marshal a credential set that mixes supported schemes with stale aws /
+	// github_app / basic records carrying extra fields the current struct no
+	// longer has. json.Unmarshal must silently drop the unknown fields, and
+	// Open must filter out the stale-scheme records.
+	rawRecords := []map[string]any{
+		{
+			"id": NewID(), "name": "OPENAI_API_KEY", "real": "sk-real",
+			"placeholder": "sk-ph", "source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "AWS", "scheme": "aws",
+			"aws_access_key_id":             "AKIAIOSFODNN7EXAMPLE",
+			"aws_access_key_id_placeholder": "AKIAEXAMPLE_PH",
+			"aws_session_token":             "tok",
+			"aws_session_token_placeholder": "tok-ph",
+			"real":                          "secret", "placeholder": "ph-aws",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "GH_APP", "scheme": "github_app",
+			"github_app_id": "123", "github_installation_id": "456",
+			"github_app_private_key_pem": "-----BEGIN-----",
+			"real":                       "pem", "placeholder": "ph-gh",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
+		{
+			"id": NewID(), "name": "ARTIFACTORY", "scheme": "basic",
+			"username":             "alice",
+			"username_placeholder": "VEIL_USER_PH",
+			"username_var":         "ARTIFACTORY_USER",
+			"real":                 "secret", "placeholder": "ph-basic",
+			"source": "env", "created_at": time.Now().UTC(),
+		},
 	}
-	if err := v.Add(first); err != nil {
-		t.Fatalf("Add first: %v", err)
-	}
-
-	// Second credential whose Placeholder collides with first's UsernamePlaceholder.
-	second := &Credential{
-		ID: "b", Name: "second",
-		Real: "r2", Placeholder: "VEIL_PH_USER_SHARED",
-	}
-	if err := v.Add(second); err == nil {
-		t.Fatal("Add should have rejected placeholder colliding with existing UsernamePlaceholder")
-	}
-
-	// Third credential whose UsernamePlaceholder collides with first's Placeholder.
-	third := &Credential{
-		ID: "c", Name: "third",
-		Real: "r3", Placeholder: "VEIL_PH_SECRET_BBBB",
-		Username: "carol", UsernamePlaceholder: "VEIL_PH_SECRET_AAAA",
-	}
-	if err := v.Add(third); err == nil {
-		t.Fatal("Add should have rejected UsernamePlaceholder colliding with existing Placeholder")
-	}
-}
-
-func TestPlaceholderMapIncludesUsernamePlaceholder(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
+	data, err := json.Marshal(rawRecords)
 	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
-	}
-	cred := &Credential{
-		ID: "a", Name: "github-pat",
-		Real:                "ghp_real",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "johndoe",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add: %v", err)
+		t.Fatalf("marshal raw records: %v", err)
 	}
 
-	m := v.PlaceholderMap()
-	if got := m["VEIL_PH_SECRET"]; got == nil || got.Name != "github-pat" {
-		t.Errorf("PlaceholderMap missing secret placeholder entry")
-	}
-	if got := m["VEIL_PH_USER"]; got == nil || got.Name != "github-pat" {
-		t.Errorf("PlaceholderMap missing username placeholder entry")
-	}
-}
-
-func TestPlaceholderSetIncludesUsernamePlaceholder(t *testing.T) {
-	root := tempRoot(t)
-	ks := NewMemKeystore()
-	v, err := CreateVault(root, "proj", ks)
+	// Seal with the project's key and overwrite vault.bin.
+	key, err := ks.Get("proj")
 	if err != nil {
-		t.Fatalf("CreateVault: %v", err)
+		t.Fatalf("keystore Get: %v", err)
 	}
-	cred := &Credential{
-		ID: "a", Name: "gh",
-		Real:                "r",
-		Placeholder:         "VEIL_PH_SECRET",
-		Username:            "u",
-		UsernamePlaceholder: "VEIL_PH_USER",
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	s := v.PlaceholderSet()
-	if _, ok := s["VEIL_PH_SECRET"]; !ok {
-		t.Error("set missing secret placeholder")
-	}
-	if _, ok := s["VEIL_PH_USER"]; !ok {
-		t.Error("set missing username placeholder")
-	}
-}
-
-func TestPlaceholderMap_IncludesAWSFields(t *testing.T) {
-	dir := t.TempDir()
-	ks := NewMemKeystore()
-	v, err := CreateVault(dir, "pid", ks)
+	blob, err := Seal(key, data)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("seal: %v", err)
 	}
-	cred := &Credential{
-		ID:                         NewID(),
-		Name:                       "aws-prod",
-		Real:                       "real-secret",
-		Placeholder:                "VeilAWSSecret",
-		Scheme:                     "aws",
-		AWSAccessKeyID:             "AKIAREAL",
-		AWSAccessKeyIDPlaceholder:  "AKIAPH",
-		AWSSessionToken:            "realtok",
-		AWSSessionTokenPlaceholder: "VeilSess",
-		AllowedHosts:               []string{"*.amazonaws.com"},
-		CreatedAt:                  time.Now(),
-	}
-	if err := v.Add(cred); err != nil {
-		t.Fatal(err)
-	}
-	pm := v.PlaceholderMap()
-	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
-		if pm[ph] == nil {
-			t.Errorf("PlaceholderMap missing %q", ph)
-		}
+	if err := os.WriteFile(config.VaultFile(root), blob, 0o600); err != nil {
+		t.Fatalf("write vault.bin: %v", err)
 	}
 
-	set := v.PlaceholderSet()
-	for _, ph := range []string{"VeilAWSSecret", "AKIAPH", "VeilSess"} {
-		if _, ok := set[ph]; !ok {
-			t.Errorf("PlaceholderSet missing %q", ph)
-		}
-	}
-}
-
-func TestCredential_AWSFieldsRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	ks := NewMemKeystore()
-	v, err := CreateVault(dir, "pid", ks)
+	v, err := Open(root, ks)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
-
-	orig := &Credential{
-		ID:                         NewID(),
-		Name:                       "aws-prod",
-		Real:                       "real-secret-key",
-		Placeholder:                "VeilAWSSecretVEIL",
-		Scheme:                     "aws",
-		AWSAccessKeyID:             "AKIAIOSFODNN7EXAMPLE",
-		AWSAccessKeyIDPlaceholder:  "AKIAVEIL3X9Z2Y1W8VQR",
-		AWSSessionToken:            "FwoGZXIv...realtoken",
-		AWSSessionTokenPlaceholder: "VeilAWSSessTok",
-		AllowedHosts:               []string{"*.amazonaws.com"},
-		CreatedAt:                  time.Now(),
+	got := v.List()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 surviving credential, got %d: %+v", len(got), got)
 	}
-	if err := v.Add(orig); err != nil {
-		t.Fatal(err)
-	}
-
-	v2, err := Open(dir, ks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := v2.Get("aws-prod")
-	if !ok {
-		t.Fatal("credential not found after reload")
-	}
-	if got.Scheme != "aws" || got.AWSAccessKeyID != orig.AWSAccessKeyID ||
-		got.AWSAccessKeyIDPlaceholder != orig.AWSAccessKeyIDPlaceholder ||
-		got.AWSSessionToken != orig.AWSSessionToken ||
-		got.AWSSessionTokenPlaceholder != orig.AWSSessionTokenPlaceholder {
-		t.Fatalf("aws fields not preserved: %+v", got)
-	}
-}
-
-func TestCredential_GitHubAppFieldsRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	ks := NewMemKeystore()
-	v, err := CreateVault(dir, "pid", ks)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pem := "-----BEGIN RSA PRIVATE KEY-----\nMIIEogIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----\n"
-	placeholder := "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----\n"
-	orig := &Credential{
-		ID:                   NewID(),
-		Name:                 "gh-app",
-		Real:                 pem,
-		Placeholder:          placeholder,
-		Scheme:               "github_app",
-		GitHubAppID:          123456,
-		GitHubInstallationID: 789012,
-		AllowedHosts:         []string{"api.github.com"},
-		CreatedAt:            time.Now(),
-	}
-	if err := v.Add(orig); err != nil {
-		t.Fatal(err)
-	}
-	v2, err := Open(dir, ks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, _ := v2.Get("gh-app")
-	if got.Real != pem || got.Placeholder != placeholder ||
-		got.GitHubAppID != 123456 || got.GitHubInstallationID != 789012 {
-		t.Fatalf("github app fields not preserved: %+v", got)
-	}
-}
-
-func TestCredential_Zero_ClearsAWSFields(t *testing.T) {
-	c := &Credential{
-		Scheme:                     "aws",
-		Real:                       "secret",
-		Placeholder:                "ph",
-		AWSAccessKeyID:             "AKIA",
-		AWSAccessKeyIDPlaceholder:  "AKIAPH",
-		AWSSessionToken:            "tok",
-		AWSSessionTokenPlaceholder: "tokph",
-		GitHubAppID:                1234,
-	}
-	c.Zero()
-	if c.AWSAccessKeyID != "" || c.AWSAccessKeyIDPlaceholder != "" ||
-		c.AWSSessionToken != "" || c.AWSSessionTokenPlaceholder != "" ||
-		c.Scheme != "" {
-		t.Fatalf("Zero did not clear aws/scheme: %+v", c)
-	}
-	if c.GitHubAppID != 1234 {
-		t.Errorf("Zero cleared non-secret GitHubAppID")
+	if got[0].Name != "OPENAI_API_KEY" {
+		t.Errorf("surviving credential = %q, want OPENAI_API_KEY", got[0].Name)
 	}
 }
 
 func TestCredentialJSONBackwardCompat(t *testing.T) {
-	// Old on-disk format had no Username / UsernamePlaceholder fields.
-	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z"}`
+	// Old on-disk format predates fields that have since been removed.
+	// Unmarshal must succeed with json silently dropping unknown fields.
+	oldJSON := `{"id":"x","name":"n","real":"r","placeholder":"p","source":"manual","created_at":"2024-01-01T00:00:00Z","username":"u","username_placeholder":"up"}`
 	var got Credential
 	if err := json.Unmarshal([]byte(oldJSON), &got); err != nil {
 		t.Fatalf("unmarshal old format: %v", err)
 	}
-	if got.Username != "" || got.UsernamePlaceholder != "" {
-		t.Errorf("expected empty basic fields on old record, got %+v", got)
+	if got.Name != "n" || got.Real != "r" || got.Placeholder != "p" {
+		t.Errorf("required fields missing after round-trip: %+v", got)
 	}
 }

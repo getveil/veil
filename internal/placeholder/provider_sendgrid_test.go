@@ -14,9 +14,12 @@ func TestProviderSendGrid(t *testing.T) {
 		}
 	})
 
-	t.Run("match_name", func(t *testing.T) {
-		if !prov.Match("SENDGRID_API_KEY", "anything") {
-			t.Fatal("should match SENDGRID in name")
+	t.Run("no_match_name_only", func(t *testing.T) {
+		// Name-only matching was removed to prevent FPs like
+		// SENDGRID_FROM_EMAIL=team@example.somewhere.com being vaulted.
+		// SendGrid API keys always start with "SG." — prefix is sufficient.
+		if prov.Match("SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01") {
+			t.Fatal("should not match on name alone without SG. prefix")
 		}
 	})
 
@@ -66,4 +69,31 @@ func TestProviderSendGrid(t *testing.T) {
 			t.Fatalf("unexpected hosts: %v", prov.Hosts)
 		}
 	})
+}
+
+func TestSendgridNameMatchGatedAtRegistry(t *testing.T) {
+	reg := DefaultRegistry()
+	cases := []struct{ name, value string }{
+		{"SENDGRID_FROM_EMAIL", "foo@bar.com"},
+		{"SENDGRID_REGION", "us"},
+		// Long credential-shaped values without SG. prefix are also rejected
+		// now that the name-hint path is removed.
+		{"SENDGRID_FROM_EMAIL", "team@example.somewhere.com"},
+		{"SENDGRID_API_KEY", "abcdef0123456789abcdef0123456789abcdef01"},
+	}
+	for _, c := range cases {
+		if p := reg.Match(c.name, c.value); p != nil {
+			t.Errorf("Registry.Match should not match SendGrid for %s=%q; got %s", c.name, c.value, p.Name)
+		}
+	}
+}
+
+func TestProviderSendgrid_IsVaultEligible(t *testing.T) {
+	p, ok := DefaultRegistry().Get("sendgrid")
+	if !ok {
+		t.Fatal("sendgrid provider not registered")
+	}
+	if !p.VaultEligible {
+		t.Fatal("sendgrid provider must declare VaultEligible: true")
+	}
 }

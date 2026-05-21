@@ -8,10 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/getveil/veil/internal/config"
-	"github.com/getveil/veil/internal/mcpconfig"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/ui"
@@ -68,7 +66,7 @@ func initCmd() *cobra.Command {
 			return runInit(cmd, force, dryRun, yes)
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "reinitialize even if .veil/ exists")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing Veil state (vault entries, keystore master key, and backups for files being re-vaulted)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be vaulted without making changes")
 	cmd.Flags().BoolVar(&yes, "yes", false, "accept all defaults non-interactively")
 	return cmd
@@ -86,9 +84,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if err != nil {
 		return cliError(err.Error(), "")
 	}
-	if announce {
-		ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
-	}
 
 	stateDir := config.ProjectStateDir(root)
 	proceed, err := detectExistingProject(in, w, stateDir, force, interactive)
@@ -103,45 +98,51 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 
 	envPaths, err := scanner.Scan(root)
 	if err != nil {
-		return wrapErr("scanning .env files", err)
-	}
-	mcpConfigPath, err := mcpconfig.Discover()
-	if err != nil {
-		return wrapErr("discovering MCP config", err)
-	}
-	// Precompute shell-env candidates so the early-exit gate considers all
-	// three sources. Empty-valued candidates are dropped so they don't
-	// wrongly bypass that gate; processShellEnv drops them anyway.
-	shellCandidates := scanner.ScanEnviron(os.Environ())
-	shellCandidates = nonEmptyShellCandidates(shellCandidates)
-	if len(envPaths) == 0 && mcpConfigPath == "" && len(shellCandidates) == 0 {
-		_, _ = fmt.Fprintf(w, "no .env files, MCP configs, or shell-exported secrets found in %s\n", root)
-		return nil
+		return wrapErr("scanning project", err)
 	}
 
-	envPaths = filterEnvPaths(in, w, root, envPaths, interactive)
+	if len(envPaths) == 0 {
+		return runInitNoEnvFiles(w, root, dryRun)
+	}
+
+	// Defer the non-interactive announce until after the scanner has confirmed
+	// there is actually something to vault. Printing it earlier produced a
+	// contradictory pair of lines on empty repos ("vaulting all detected
+	// secrets" immediately followed by "no .env files found").
+	if announce {
+		ui.Dim(w, "Non-interactive mode: vaulting all detected secrets")
+	}
+
+	envPaths = filterInputs(in, w, root, envPaths, interactive)
 
 	if len(envPaths) > 0 {
-		ui.Step(w, fmt.Sprintf("Found %d .env %s", len(envPaths), plural(len(envPaths), "file", "files")))
-	}
-	if mcpConfigPath != "" {
-		ui.Step(w, "Found 1 MCP config")
+		ui.Step(w, fmt.Sprintf("Found %d .env %s:", len(envPaths), plural(len(envPaths), "file", "files")))
+		for _, p := range envPaths {
+			ui.Dim(w, "  "+displayRel(root, p))
+		}
 	}
 	_, _ = fmt.Fprintln(w)
 
 	// Both gates run BEFORE buildKeystore / CreateVault so a refused project
 	// never reaches the destructive keystore-delete / vault-recreate path
 	// that --force would otherwise trigger.
-	if err := refuseSymlinkedInputs(root, envPaths, mcpConfigPath); err != nil {
+	if err := refuseSymlinkedInputs(root, envPaths); err != nil {
 		return err
 	}
-	if err := refusePlaceholderInputs(root, envPaths, mcpConfigPath, force); err != nil {
+	if err := refusePlaceholderInputs(root, envPaths, force); err != nil {
 		return err
 	}
 
 	ks, err := buildKeystore()
 	if err != nil {
 		return wrapErr("keystore", err)
+	}
+	// On Linux without Secret Service the keystore silently falls back to
+	// an age-encrypted file gated by VEIL_PASSPHRASE. Surface that to the
+	// user up front rather than letting them hit an opaque
+	// ErrKeystoreUnavailable on the first vault write.
+	if err := announceFileBackedKeystore(w, ks); err != nil {
+		return err
 	}
 
 	var v *vault.Vault
@@ -178,34 +179,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 		secretsScoped += s
 	}
 
-	mcpConfigsProcessed := 0
-	if mcpConfigPath != "" {
-		n, s, err := processMCPConfig(cmd, in, v, root, mcpConfigPath, force, dryRun, interactive)
-		if err != nil {
-			return err
-		}
-		secretsVaulted += n
-		secretsScoped += s
-		if n > 0 {
-			mcpConfigsProcessed = 1
-		}
-	}
-
-	// Shell-exported secrets that never made it into a .env file would
-	// otherwise pass through to the agent. processShellEnv re-filters
-	// candidates against the vault (skipping names captured in an earlier
-	// phase) and drops empty values.
-	if len(shellCandidates) > 0 {
-		ui.Phase(w, "Scanning shell environment...")
-		n, s, err := processShellEnv(w, in, v, shellCandidates, dryRun, interactive)
-		if err != nil {
-			return err
-		}
-		secretsVaulted += n
-		secretsScoped += s
-		_, _ = fmt.Fprintln(w)
-	}
-
 	unscoped := secretsVaulted - secretsScoped
 	if dryRun {
 		ui.Step(w, fmt.Sprintf("would store %d %s in keychain", secretsVaulted, plural(secretsVaulted, "secret", "secrets")))
@@ -229,7 +202,7 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	promptSkipHostsPhase(in, w, root, interactive, dryRun)
 
 	ui.Phase(w, "Setting up proxy...")
-	if err := setupProxyCA(w); err != nil {
+	if err := setupProxyCA(w, dryRun); err != nil {
 		return err
 	}
 
@@ -240,9 +213,6 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	if dryRun {
 		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Dry-run preview for %s — no changes made", root))
 		_, _ = fmt.Fprintf(w, "  .env files that would be processed:  %d\n", len(envPaths))
-		if mcpConfigsProcessed > 0 {
-			_, _ = fmt.Fprintf(w, "  MCP configs that would be processed: %d\n", mcpConfigsProcessed)
-		}
 		_, _ = fmt.Fprintf(w, "  Secrets that would be vaulted:       %d\n", secretsVaulted)
 		_, _ = fmt.Fprintln(w)
 		ui.Dim(w, "Re-run without --dry-run to apply these changes.")
@@ -250,13 +220,115 @@ func runInit(cmd *cobra.Command, force, dryRun, yes bool) error {
 	} else {
 		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
 		_, _ = fmt.Fprintf(w, "  .env files processed:  %d\n", len(envPaths))
-		if mcpConfigsProcessed > 0 {
-			_, _ = fmt.Fprintf(w, "  MCP configs processed: %d\n", mcpConfigsProcessed)
-		}
 		_, _ = fmt.Fprintf(w, "  Secrets vaulted:       %d\n", secretsVaulted)
 		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Bold.Sprint("Next:"))
+		_, _ = fmt.Fprintf(w, "  veil run claude     %s\n", ui.Muted.Sprint("# or your agent of choice"))
+		_, _ = fmt.Fprintf(w, "  veil status         %s\n", ui.Muted.Sprint("# see what's protected"))
+		_, _ = fmt.Fprintln(w)
+		// If the user passed --path pointing OUTSIDE their current project,
+		// the .veil/ they just installed will be invisible to `veil run`
+		// from the cwd. Surface that asymmetry plus the uninstall escape
+		// hatch so they can roll back without manually deleting state.
+		warnIfRootOutsideCWD(w, root)
 	}
 	return nil
+}
+
+// runInitNoEnvFiles handles the "scanner found nothing to vault" branch of
+// init. Users who manage secrets via shell profile, direnv, 1Password CLI, or
+// any tool that injects env vars outside .env files still need a working
+// project: a .veil/ state dir + master key so `veil add` works, plus a CA
+// cert so `veil run` can MITM HTTPS. We do the same setup the happy path
+// does (sans the per-secret loop) and end with a "Next:" block that points
+// at `veil add` with a concrete example.
+//
+// --dry-run preserves its no-side-effects contract: no vault, no CA, no
+// gitignore writes — only the message and the "Would create" notice from
+// setupProxyCA.
+func runInitNoEnvFiles(w io.Writer, root string, dryRun bool) error {
+	_, _ = fmt.Fprintf(w, "no .env files found in %s\n", root)
+	_, _ = fmt.Fprintln(w)
+
+	if !dryRun {
+		ks, err := buildKeystore()
+		if err != nil {
+			return wrapErr("keystore", err)
+		}
+		// Same passphrase preflight as the happy path; without this a
+		// user on Linux without Secret Service would hit an opaque
+		// ErrKeystoreUnavailable when CreateVault tries ks.Set().
+		if err := announceFileBackedKeystore(w, ks); err != nil {
+			return err
+		}
+		if _, err := vault.CreateVault(root, vault.NewID(), ks); err != nil {
+			return wrapErr("creating vault", err)
+		}
+	}
+
+	ui.Phase(w, "Setting up proxy...")
+	if err := setupProxyCA(w, dryRun); err != nil {
+		return err
+	}
+
+	if !dryRun {
+		appendGitignore(w, root)
+	}
+
+	if dryRun {
+		_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Dry-run preview for %s — no changes made", root))
+		_, _ = fmt.Fprintln(w)
+		ui.Dim(w, "Re-run without --dry-run to apply these changes.")
+		_, _ = fmt.Fprintln(w)
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Success.Sprintf("Veil initialized for %s", root))
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s\n", ui.Bold.Sprint("Next:"))
+	_, _ = fmt.Fprintf(w, "  Use `veil add <NAME> --value-stdin --host <host>` to vault credentials not in .env files.\n")
+	_, _ = fmt.Fprintf(w, "  Then run your tool with `veil run <command>` to inject them into outbound HTTPS.\n")
+	_, _ = fmt.Fprintln(w)
+	warnIfRootOutsideCWD(w, root)
+	return nil
+}
+
+// warnIfRootOutsideCWD prints a yellow advisory when `veil init --path <dir>`
+// landed at a directory outside the current project root. No-op when --path
+// was not passed (the resolved root IS the cwd's project root by definition)
+// or when the resolved root is a descendant of the cwd's project root.
+func warnIfRootOutsideCWD(w io.Writer, resolvedRoot string) {
+	if flagPath == "" {
+		return
+	}
+	cwdRoot, err := config.FindProjectRoot(".")
+	if err != nil {
+		// No detectable cwd project root means the user is initializing
+		// fresh from somewhere with no marker — they explicitly picked
+		// where to install, and a "you went outside the project" notice
+		// here would be misleading. Stay silent.
+		return
+	}
+	absResolved, err := filepath.Abs(resolvedRoot)
+	if err != nil {
+		return
+	}
+	absCWD, err := filepath.Abs(cwdRoot)
+	if err != nil {
+		return
+	}
+	if absResolved == absCWD {
+		return
+	}
+	rel, err := filepath.Rel(absCWD, absResolved)
+	if err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+		// resolvedRoot is inside the cwd project — nothing to warn about.
+		return
+	}
+	ui.FormatWarning(w,
+		fmt.Sprintf("Initialized at %s, which is outside the current project root.", ui.RedactPath(absResolved)),
+		fmt.Sprintf("To reverse this, run: veil uninstall --path %s", ui.RedactPath(absResolved)),
+	)
 }
 
 // redactValue returns a redacted display of a secret value. For values shorter
@@ -278,201 +350,16 @@ func plural(n int, singular, pluralForm string) string {
 	return pluralForm
 }
 
-// processMCPConfig extracts secrets from an MCP config file, vaults them, and
-// rewrites the config with placeholders. Returns the number of secrets vaulted
-// and the number auto-scoped to hosts.
-func processMCPConfig(cmd *cobra.Command, in io.Reader, v *vault.Vault, root, configPath string, force, dryRun, interactive bool) (int, int, error) {
-	// An orphaned backup (one not in the current vault's registry) means
-	// this file was vaulted by a prior Veil install whose state is gone, so
-	// the backup is the source of truth — reclaim it before re-vaulting.
-	if backupExists(configPath) && !force {
-		orphan, oerr := isOrphanedBackup(root, configPath)
-		if oerr != nil {
-			return 0, 0, wrapErr(fmt.Sprintf("checking backup status of %s", configPath), oerr)
-		}
-		if orphan {
-			if err := reclaimOrphanedBackup(configPath); err != nil {
-				return 0, 0, wrapErr(fmt.Sprintf("reclaiming orphan backup %s", configPath), err)
-			}
-			ui.Warnf(cmd.ErrOrStderr(), "%s had an orphaned backup from a prior Veil install — restoring it as the source of truth before re-vaulting", configPath)
-		} else {
-			ui.Warnf(cmd.ErrOrStderr(), "%s already has a backup (use --force to re-migrate)", configPath)
-			return 0, 0, nil
-		}
-	}
-
-	mcpCfg, err := mcpconfig.Parse(configPath)
-	if err != nil {
-		return 0, 0, cliError(fmt.Sprintf("parsing MCP config: %v", err), "")
-	}
-
-	w := cmd.OutOrStdout()
-
-	// Both env values and positional args are scanned: real MCP configs
-	// commonly pass credentials via args (e.g. `["--token", "ghp_..."]` or a
-	// DSN). Args carry no key name, so detection passes "" — using the
-	// preceding flag as a synthetic name would falsely vault values like
-	// `--token-expiry 3600` since the key-name heuristic has no length floor.
-	// argIndex < 0 marks an env entry; >= 0 is the position in server.Args.
-	type mcpSecret struct {
-		server   string
-		key      string // env key, or "args[i]" label for display/credname
-		argIndex int
-		value    string
-	}
-	var allSecrets []mcpSecret
-	for serverName, server := range mcpCfg.Servers() {
-		for key, value := range server.Env {
-			if !placeholder.IsSecretLike(key, value) {
-				if flagVerbose {
-					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): mcp:%s:%s", serverName, key))
-				}
-				continue
-			}
-			allSecrets = append(allSecrets, mcpSecret{server: serverName, key: key, argIndex: -1, value: value})
-		}
-		for i, value := range server.Args {
-			if !placeholder.IsSecretLike("", value) {
-				if flagVerbose {
-					_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  skip (not secret-like): mcp:%s:args[%d]", serverName, i))
-				}
-				continue
-			}
-			allSecrets = append(allSecrets, mcpSecret{
-				server:   serverName,
-				key:      fmt.Sprintf("args[%d]", i),
-				argIndex: i,
-				value:    value,
-			})
-		}
-	}
-
-	if len(allSecrets) == 0 {
-		_, _ = fmt.Fprintf(w, "\n%s\n", ui.Muted.Sprint("No secrets found in MCP config."))
-		return 0, 0, nil
-	}
-
-	// Selection identity uses NUL separators to avoid colliding with colons
-	// in server names, and includes a kind tag so an arg labeled "args[0]"
-	// cannot collide with an env var of the same string.
-	idOf := func(s mcpSecret) string {
-		kind := "env"
-		if s.argIndex >= 0 {
-			kind = "arg"
-		}
-		return s.server + "\x00" + kind + "\x00" + s.key
-	}
-	selectedIDs := make(map[string]bool)
-	if interactive {
-		_, _ = fmt.Fprintf(w, "\nDetected %d MCP %s:\n", len(allSecrets), plural(len(allSecrets), "secret", "secrets"))
-		names := make([]string, len(allSecrets))
-		for i, s := range allSecrets {
-			label := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-			_, _ = fmt.Fprintf(w, "  %-32s %s\n", label, ui.Muted.Sprint(redactValue(s.value)))
-			names[i] = label
-		}
-		_, _ = fmt.Fprintln(w)
-		switch promptYNS(in, w, "Vault all MCP secrets?") {
-		case choiceYes:
-			for _, s := range allSecrets {
-				selectedIDs[idOf(s)] = true
-			}
-		case choiceNo:
-			return 0, 0, nil
-		case choiceSelect:
-			picked := make(map[string]bool)
-			for _, n := range promptMultiSelect(in, w, names) {
-				picked[n] = true
-			}
-			for _, s := range allSecrets {
-				if picked[fmt.Sprintf("mcp:%s:%s", s.server, s.key)] {
-					selectedIDs[idOf(s)] = true
-				}
-			}
-		}
-	} else {
-		for _, s := range allSecrets {
-			selectedIDs[idOf(s)] = true
-		}
-	}
-
-	var count, scoped int
-	configChanged := false
-	seen := make(placeholder.Set)
-
-	for _, s := range allSecrets {
-		if !selectedIDs[idOf(s)] {
-			continue
-		}
-		ph, err := placeholder.Generate(s.key, s.value, seen)
-		if err != nil {
-			return 0, 0, cliError(fmt.Sprintf("generating placeholder for mcp:%s:%s: %v", s.server, s.key, err), "")
-		}
-
-		credName := fmt.Sprintf("mcp:%s:%s", s.server, s.key)
-		credHosts := placeholder.HostsForCredential(s.key, s.value)
-		cred := &vault.Credential{
-			ID:           vault.NewID(),
-			Name:         credName,
-			Real:         s.value,
-			Placeholder:  ph,
-			Source:       "init",
-			AllowedHosts: credHosts,
-			CreatedAt:    time.Now(),
-		}
-		if err := v.Add(cred); err != nil {
-			if errors.Is(err, vault.ErrDuplicateCredential) {
-				ui.Warnf(cmd.ErrOrStderr(), "duplicate key %q, skipping", credName)
-				continue
-			}
-			return 0, 0, cliError(fmt.Sprintf("vaulting %s: %v", credName, err), "")
-		}
-		seen[ph] = struct{}{}
-
-		count++
-		if len(credHosts) > 0 {
-			scoped++
-		}
-
-		if dryRun {
-			_, _ = fmt.Fprintf(w, "%s\n", ui.Muted.Sprintf("  would vault: %s -> %s", credName, ph))
-		} else {
-			if s.argIndex >= 0 {
-				mcpCfg.SetArg(s.server, s.argIndex, ph)
-			} else {
-				mcpCfg.SetEnvValue(s.server, s.key, ph)
-			}
-			configChanged = true
-		}
-	}
-
-	if !dryRun && configChanged {
-		if err := recordVaultedBackup(root, configPath, vault.KindMCP); err != nil {
-			return 0, 0, cliErrorf("writing MCP config backup: %v", err)
-		}
-
-		newData, err := mcpCfg.Bytes()
-		if err != nil {
-			return 0, 0, cliError(fmt.Sprintf("serializing MCP config: %v", err), "")
-		}
-		if err := atomicWriteFile(configPath, newData); err != nil {
-			return 0, 0, cliError(fmt.Sprintf("writing MCP config: %v", err), "")
-		}
-	}
-
-	return count, scoped, nil
-}
-
 // atomicWriteFile writes data to path via a temporary file and rename.
 //
 // Intentionally NOT migrated to vault.WriteFileNoFollow — this helper
-// rewrites user .env files and MCP configs where Sync+Rename gives
-// torn-write crash safety that WriteFileNoFollow does not. The H9 holes
-// don't apply: CreateTemp uses a random suffix so the tmp path can't be
-// symlink-pre-planted, POSIX rename(2) replaces a symlink at path with
-// the renamed file itself rather than following it, and the new file
-// inherits the tmp's 0600 mode so any pre-existing widened perms on
-// path are discarded with the old inode.
+// rewrites user .env files where Sync+Rename gives torn-write crash
+// safety that WriteFileNoFollow does not. The H9 holes don't apply:
+// CreateTemp uses a random suffix so the tmp path can't be symlink-pre-
+// planted, POSIX rename(2) replaces a symlink at path with the renamed
+// file itself rather than following it, and the new file inherits the
+// tmp's 0600 mode so any pre-existing widened perms on path are
+// discarded with the old inode.
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".veil-env-*.tmp")
@@ -513,9 +400,11 @@ func appendGitignore(w io.Writer, root string) {
 		}
 		// Create a fresh .gitignore so the .veil-backup sidecars don't leak
 		// via `git add .`. WriteFileNoFollow refuses a pre-planted dangling
-		// symlink at this path.
+		// symlink at this path. The contents (/.veil/, *.veil-backup) are
+		// not sensitive, so use the conventional 0644 — a world-unreadable
+		// .gitignore is surprising and diverges from every other repo.
 		content := "/.veil/\n*.veil-backup\n"
-		if werr := vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600); werr == nil {
+		if werr := vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o644); werr == nil {
 			ui.Step(w, "created .gitignore with /.veil/ and *.veil-backup")
 		}
 		return
@@ -538,9 +427,14 @@ func appendGitignore(w io.Writer, root string) {
 	}
 
 	// Refuse a symlinked .gitignore so a hostile cloned repo can't redirect
-	// our append into ~/.bashrc or similar. Mode 0600 matches the existing
-	// behavior on first creation; pre-existing widened perms are tightened
-	// for free (H9). Errors stay swallowed — appending .gitignore entries
-	// is best-effort.
-	_ = vault.WriteFileNoFollow(gitignorePath, []byte(content), 0o600)
+	// our append into ~/.bashrc or similar. Preserve the existing file's
+	// mode so we don't surprise users by narrowing a 0644 .gitignore to
+	// 0600 on every append. If stat fails (race after the read above),
+	// fall back to 0644 — the conventional mode for non-sensitive content.
+	// Errors stay swallowed — appending .gitignore entries is best-effort.
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(gitignorePath); err == nil {
+		mode = info.Mode().Perm()
+	}
+	_ = vault.WriteFileNoFollow(gitignorePath, []byte(content), mode)
 }

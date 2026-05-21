@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,74 +12,56 @@ import (
 	"github.com/getveil/veil/internal/config"
 )
 
-// TestLogCmd_SignerFailedFilter verifies that `veil log --signer-failed`
-// returns only rows whose Location == "signer_failed" and renders the
-// SignerError column alongside.
-func TestLogCmd_SignerFailedFilter(t *testing.T) {
+// TestLogCmd_ZeroState_NeverRun verifies that `veil log` on a freshly
+// init'd project that has never been `veil run` prints the "no veil run
+// executed yet" hint instead of the misleading "proxy was active" message.
+// The audit DB has no injection rows in either case; only the no-rows-ever
+// signal distinguishes a project that was running but quiet from one that
+// has never started the proxy.
+func TestLogCmd_ZeroState_NeverRun(t *testing.T) {
 	root := initProject(t)
-
-	// Seed the audit DB with one signer_failed and one ordinary row.
-	store, err := audit.Open(config.AuditDBFile(root))
-	if err != nil {
-		t.Fatalf("audit open: %v", err)
-	}
-	store.Record(audit.Injection{
-		Timestamp:      time.Now(),
-		RequestID:      "req-ok",
-		Host:           "s3.amazonaws.com",
-		Method:         "GET",
-		Location:       "aws_sigv4_resigned",
-		CredentialName: "aws-prod",
-	})
-	store.Record(audit.Injection{
-		Timestamp:   time.Now(),
-		RequestID:   "req-fail",
-		Host:        "s3.amazonaws.com",
-		Method:      "GET",
-		Location:    "signer_failed",
-		SignerError: "unknown_access_key_id",
-	})
-	store.DrainForTest()
-	_ = store.Close()
 
 	cmd := NewRoot("test")
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"log", "--path", root, "--signer-failed"})
+	cmd.SetArgs([]string{"log", "--path", root})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("log --signer-failed: %v", err)
+		t.Fatalf("log: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "signer_failed") {
-		t.Errorf("missing 'signer_failed' location in output:\n%s", s)
+	if !strings.Contains(s, "No `veil run` has been executed yet") {
+		t.Errorf("expected 'never-run' hint, got:\n%s", s)
 	}
-	if !strings.Contains(s, "unknown_access_key_id") {
-		t.Errorf("missing SignerError class in output:\n%s", s)
+	if !strings.Contains(s, "veil run") {
+		t.Errorf("expected suggested command, got:\n%s", s)
 	}
-	if strings.Contains(s, "aws_sigv4_resigned") {
-		t.Errorf("--signer-failed should exclude aws_sigv4_resigned, got:\n%s", s)
+	// The misleading "proxy was active" message must NOT appear.
+	if strings.Contains(s, "proxy was active") {
+		t.Errorf("misleading 'proxy was active' message must not appear when no run has occurred:\n%s", s)
 	}
 }
 
-// TestLogCmd_JSON_IncludesSignerError verifies that `veil log --json` emits
-// the signer_error field on rows where Location == "signer_failed", so
-// downstream tooling can consume the failure class programmatically.
-func TestLogCmd_JSON_IncludesSignerError(t *testing.T) {
+// TestLogCmd_ZeroState_AfterRun verifies that `veil log` on a project that
+// HAS produced injection rows (just not within the current --since window)
+// keeps the existing zero-state message about an active proxy with no
+// injections during the period.
+func TestLogCmd_ZeroState_AfterRun(t *testing.T) {
 	root := initProject(t)
 
+	// Seed a row from outside the default 24h window so the filter returns
+	// zero but the DB still has prior activity.
 	store, err := audit.Open(config.AuditDBFile(root))
 	if err != nil {
 		t.Fatalf("audit open: %v", err)
 	}
 	store.Record(audit.Injection{
-		Timestamp:   time.Now(),
-		RequestID:   "req-fail",
-		Host:        "iam.amazonaws.com",
-		Method:      "GET",
-		URLPath:     "/",
-		Location:    "signer_failed",
-		SignerError: "unknown_access_key_id",
+		Timestamp:      time.Now().Add(-72 * time.Hour),
+		RequestID:      "req-old",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "header",
+		CredentialName: "old-cred",
 	})
 	store.DrainForTest()
 	_ = store.Close()
@@ -87,28 +70,16 @@ func TestLogCmd_JSON_IncludesSignerError(t *testing.T) {
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs([]string{"log", "--path", root, "--signer-failed", "--json"})
+	cmd.SetArgs([]string{"log", "--path", root})
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("log --signer-failed --json: %v", err)
+		t.Fatalf("log: %v", err)
 	}
-
-	// Output is JSON Lines. Parse the first non-empty line.
-	var entry map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if line == "" {
-			continue
-		}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("invalid JSON line %q: %v", line, err)
-		}
-		break
+	s := out.String()
+	if !strings.Contains(s, "No credential injections in the last 24h") {
+		t.Errorf("expected window-bounded zero-state, got:\n%s", s)
 	}
-	got, ok := entry["signer_error"]
-	if !ok {
-		t.Fatalf("signer_error field missing from JSON output:\n%s", out.String())
-	}
-	if got != "unknown_access_key_id" {
-		t.Errorf("signer_error = %v, want %q", got, "unknown_access_key_id")
+	if strings.Contains(s, "No `veil run` has been executed yet") {
+		t.Errorf("must not show 'never-run' hint when DB has prior rows:\n%s", s)
 	}
 }
 
@@ -125,14 +96,13 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	// Fields with deliberately nasty content:
 	//   Host           — CSI clear-screen + cursor-home (classic terminal hijack)
 	//   CredentialName — BEL (0x07) (audible)
-	//   SignerError    — OSC 8 hyperlink escape (mislead an operator into clicking)
 	//   Location       — embedded ESC
+	//   Method         — embedded ESC
 	const (
-		nastyHost        = "evil\x1b[2J\x1b[H.com"
-		nastyCredential  = "cred\x07alert"
-		nastySignerError = "\x1b]8;;http://attacker/\x1b\\fake\x1b]8;;\x1b\\"
-		nastyLocation    = "loc\x1bmix"
-		nastyMethod      = "GE\x1bT"
+		nastyHost       = "evil\x1b[2J\x1b[H.com"
+		nastyCredential = "cred\x07alert"
+		nastyLocation   = "loc\x1bmix"
+		nastyMethod     = "GE\x1bT"
 	)
 
 	store, err := audit.Open(config.AuditDBFile(root))
@@ -147,7 +117,6 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 		URLPath:        "/",
 		Location:       nastyLocation,
 		CredentialName: nastyCredential,
-		SignerError:    nastySignerError,
 	})
 	store.DrainForTest()
 	_ = store.Close()
@@ -174,7 +143,6 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	for _, bad := range []string{
 		nastyHost,
 		nastyCredential,
-		nastySignerError,
 		nastyLocation,
 		nastyMethod,
 	} {
@@ -184,28 +152,24 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	}
 	// And spot-check that the specific nasty byte sequences are absent.
 	for _, bad := range []string{
-		"\x1b[2J",  // clear screen
-		"\x1b[H",   // cursor home
-		"\x1b]8;;", // OSC 8 hyperlink start
-		"\x07",     // BEL
+		"\x1b[2J", // clear screen
+		"\x1b[H",  // cursor home
+		"\x07",    // BEL
 	} {
 		if strings.Contains(humanS, bad) {
 			t.Errorf("human output contains raw control sequence %q", bad)
 		}
 	}
-	// Belt-and-braces: ensure the visible portion of each row (after we
-	// drop the trusted ui.Muted styling for the header) contains no
-	// stray C0/DEL/C1 bytes from the row payload. The header line uses
-	// ANSI styling so we can't blanket-ban 0x1B over the whole output;
-	// instead, check each data row by lines that start with the row
-	// marker ("   " or "[!]"). That marker prefix never appears in the
-	// header.
-	for _, line := range strings.Split(humanS, "\n") {
-		if !strings.HasPrefix(line, "   ") && !strings.HasPrefix(line, "[!]") {
+	// Belt-and-braces: ensure data rows contain no stray C0/DEL/C1 bytes
+	// from the row payload. Skip the header line (uses ANSI styling, so
+	// it legitimately contains 0x1B) and the footer line ("N events ...").
+	lines := strings.Split(humanS, "\n")
+	for i, line := range lines {
+		if i == 0 || line == "" || strings.Contains(line, "events (last") {
 			continue
 		}
-		for i := 0; i < len(line); i++ {
-			c := line[i]
+		for j := 0; j < len(line); j++ {
+			c := line[j]
 			if c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) {
 				// Allow LF only — but we split on \n already, so no LF
 				// can appear inside `line`. Anything else is a bug.
@@ -240,11 +204,10 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 	// After JSON decoding, the field values must equal the original
 	// attacker bytes exactly.
 	cases := map[string]string{
-		"host":         nastyHost,
-		"method":       nastyMethod,
-		"credential":   nastyCredential,
-		"location":     nastyLocation,
-		"signer_error": nastySignerError,
+		"host":       nastyHost,
+		"method":     nastyMethod,
+		"credential": nastyCredential,
+		"location":   nastyLocation,
 	}
 	for k, want := range cases {
 		got, ok := entry[k]
@@ -260,5 +223,467 @@ func TestLogCmd_SanitizesTerminalEscapes(t *testing.T) {
 		if gotStr != want {
 			t.Errorf("JSON field %q round-trip mismatch:\n got %q\nwant %q", k, gotStr, want)
 		}
+	}
+}
+
+// TestLogCmd_PublicFlagsVisible verifies that --since, --host,
+// --credential, and --blocked flags remain visible in --help output.
+func TestLogCmd_PublicFlagsVisible(t *testing.T) {
+	cmd := logCmd()
+	for _, name := range []string{"since", "host", "credential", "blocked"} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			t.Fatalf("flag --%s missing", name)
+		}
+		if f.Hidden {
+			t.Errorf("flag --%s must remain visible in --help", name)
+		}
+	}
+}
+
+// seedLogFixtures inserts one regular injection, one blocked event, and
+// one sentinel-leaked event into the audit DB for the given project root.
+// Returns the credential names so callers can assert on row contents
+// without coupling to byte-level details.
+func seedLogFixtures(t *testing.T, root string) (regularCred, blockedCred, leakedCred string) {
+	t.Helper()
+	regularCred = "regular-cred"
+	blockedCred = "blocked-cred"
+	leakedCred = "leaked-cred"
+
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	now := time.Now()
+
+	// Regular injection — should always appear in `veil log`.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-3 * time.Second),
+		RequestID:      "req-regular",
+		Host:           "api.example.com",
+		Method:         "POST",
+		URLPath:        "/v1/chat",
+		Location:       "header",
+		CredentialName: regularCred,
+	})
+
+	// Host-blocked event.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-2 * time.Second),
+		RequestID:      "req-blocked",
+		Host:           "evil.example.com",
+		Method:         "POST",
+		URLPath:        "/steal",
+		Location:       "blocked",
+		CredentialName: blockedCred,
+	})
+
+	// Sentinel-leaked event — the fail-closed guard refused to forward.
+	store.Record(audit.Injection{
+		Timestamp:      now.Add(-time.Second),
+		RequestID:      "req-leaked",
+		Host:           "api.example.com",
+		Method:         "POST",
+		URLPath:        "/v1/chat",
+		Location:       "leaked",
+		CredentialName: leakedCred,
+	})
+
+	store.DrainForTest()
+	_ = store.Close()
+	return
+}
+
+// TestLog_DefaultExcludesLeakedRows verifies the default `veil log`
+// output hides both blocked and leaked rows, mirroring the session
+// footer's "N injections" count. Without this exclusion the footer
+// would say "0 injections" while the log table renders leaked rows
+// with empty bytes/credential fields — a direct contradiction.
+func TestLog_DefaultExcludesLeakedRows(t *testing.T) {
+	root := initProject(t)
+	regularCred, blockedCred, leakedCred := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	if !strings.Contains(s, regularCred) {
+		t.Errorf("default output must include regular injection %q:\n%s", regularCred, s)
+	}
+	if strings.Contains(s, blockedCred) {
+		t.Errorf("default output must hide blocked rows; saw %q:\n%s", blockedCred, s)
+	}
+	if strings.Contains(s, leakedCred) {
+		t.Errorf("default output must hide leaked rows; saw %q:\n%s", leakedCred, s)
+	}
+	// The 'blocked'/'leaked' location labels must not appear in any data
+	// row. The new I1 disclosure footer ("2 hidden (--blocked ...)") DOES
+	// mention them by design — that's how the user discovers the rows exist.
+	// Split the assertion to data rows only by walking lines and skipping
+	// the header, footer (last non-empty line), and blanks.
+	lines := strings.Split(s, "\n")
+	var lastNonEmpty int
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			lastNonEmpty = i
+		}
+	}
+	for i, line := range lines {
+		if i == 0 || i == lastNonEmpty || strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.Contains(line, "blocked") {
+			t.Errorf("data row %d contains 'blocked' location label: %q", i, line)
+		}
+		if strings.Contains(line, "leaked") {
+			t.Errorf("data row %d contains 'leaked' location label: %q", i, line)
+		}
+	}
+}
+
+// TestLog_BlockedFlagShowsBlockedAndLeaked verifies that --blocked
+// surfaces BOTH host-blocked and sentinel-leaked rows alongside the
+// regular injection, so operators can investigate refusal events from
+// the same command.
+func TestLog_BlockedFlagShowsBlockedAndLeaked(t *testing.T) {
+	root := initProject(t)
+	regularCred, blockedCred, leakedCred := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--blocked"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --blocked: %v", err)
+	}
+	s := out.String()
+
+	for _, want := range []string{regularCred, blockedCred, leakedCred} {
+		if !strings.Contains(s, want) {
+			t.Errorf("--blocked output missing credential %q:\n%s", want, s)
+		}
+	}
+	if !strings.Contains(s, "blocked") {
+		t.Errorf("--blocked output must show 'blocked' location:\n%s", s)
+	}
+	if !strings.Contains(s, "leaked") {
+		t.Errorf("--blocked output must show 'leaked' location:\n%s", s)
+	}
+
+	// Footer reports the row count for the displayed window.
+	if !strings.Contains(s, "3 events") {
+		t.Errorf("--blocked footer must report 3 events; got:\n%s", s)
+	}
+}
+
+// TestLog_HiddenCountFooter covers I1: when blocked or leaked events are
+// hidden by default, the user must be told they exist — otherwise an
+// operator investigating a suspected leak sees a quiet table and never
+// discovers the sentinel-leaked rows. The footer reports both shown and
+// hidden counts and points at the --blocked flag.
+func TestLog_HiddenCountFooter(t *testing.T) {
+	root := initProject(t)
+
+	// Seed 3 regular injections + 17 hidden events (mix of blocked + leaked
+	// to exercise both exclusion arms in one fixture).
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+1) * time.Second),
+			RequestID:      "req-regular-" + strconv.Itoa(i),
+			Host:           "api.example.com",
+			Method:         "GET",
+			Location:       "header",
+			CredentialName: "regular",
+		})
+	}
+	for i := 0; i < 10; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+10) * time.Second),
+			RequestID:      "req-blocked-" + strconv.Itoa(i),
+			Host:           "evil.example.com",
+			Method:         "GET",
+			Location:       "blocked",
+			CredentialName: "blocked",
+		})
+	}
+	for i := 0; i < 7; i++ {
+		store.Record(audit.Injection{
+			Timestamp:      now.Add(-time.Duration(i+30) * time.Second),
+			RequestID:      "req-leaked-" + strconv.Itoa(i),
+			Host:           "api.example.com",
+			Method:         "GET",
+			Location:       "leaked",
+			CredentialName: "leaked",
+		})
+	}
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	// The shown count and hidden count must both surface in the footer so
+	// a user looking at "3 events" knows there are 17 more behind --blocked.
+	if !strings.Contains(s, "3 events shown") {
+		t.Errorf("expected '3 events shown' in footer:\n%s", s)
+	}
+	if !strings.Contains(s, "17 hidden") {
+		t.Errorf("expected '17 hidden' in footer:\n%s", s)
+	}
+	if !strings.Contains(s, "--blocked") {
+		t.Errorf("footer should mention --blocked flag:\n%s", s)
+	}
+}
+
+// TestLog_NoEventsButHiddenExist covers the empty-shown variant of I1:
+// when nothing matches the default filter but blocked/leaked rows DO exist
+// in the window, the "No credential injections in the last ..." message
+// must point the user at --blocked instead of leaving them to wonder.
+func TestLog_NoEventsButHiddenExist(t *testing.T) {
+	root := initProject(t)
+
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:      time.Now().Add(-time.Second),
+		RequestID:      "req-leaked",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "leaked",
+		CredentialName: "leaked",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+
+	if !strings.Contains(s, "No credential injections in the last 24h") {
+		t.Errorf("expected window-bounded zero-state, got:\n%s", s)
+	}
+	if !strings.Contains(s, "1 event") || !strings.Contains(s, "hidden") {
+		t.Errorf("expected '1 event hidden' disclosure, got:\n%s", s)
+	}
+	if !strings.Contains(s, "--blocked") {
+		t.Errorf("expected --blocked pointer in zero-state, got:\n%s", s)
+	}
+}
+
+// TestLog_ZeroEventsZeroHiddenFooterShowsWindow covers the consistency
+// gap exposed by polish item #3: the non-empty render footer reads
+// "%d events (last %s)" but the zero-events-AND-zero-hidden path used to
+// say "during this period" with no window reference, leaving the user
+// guessing what scope they were looking at. Verify the explicit window
+// surfaces in the zero-state line, including for a non-default --since.
+func TestLog_ZeroEventsZeroHiddenFooterShowsWindow(t *testing.T) {
+	root := initProject(t)
+
+	// Seed an old regular injection well outside both the default 24h
+	// and the custom 1h windows used below, so `ever` is true (no
+	// "never-run" branch) but neither query yields shown OR hidden rows.
+	store, err := audit.Open(config.AuditDBFile(root))
+	if err != nil {
+		t.Fatalf("audit open: %v", err)
+	}
+	store.Record(audit.Injection{
+		Timestamp:      time.Now().Add(-72 * time.Hour),
+		RequestID:      "req-old-regular",
+		Host:           "api.example.com",
+		Method:         "GET",
+		Location:       "header",
+		CredentialName: "old",
+	})
+	store.DrainForTest()
+	_ = store.Close()
+
+	// Default --since=24h: zero shown, zero hidden, must mention "24h".
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "last 24h") {
+		t.Errorf("default zero-state must surface the 24h window:\n%s", s)
+	}
+	// The hidden-disclosure footer must NOT appear when nothing is hidden.
+	if strings.Contains(s, "hidden") {
+		t.Errorf("zero-hidden case must not emit a 'hidden' disclosure:\n%s", s)
+	}
+
+	// Custom --since=1h: window string must propagate so the user sees
+	// the scope they actually requested.
+	cmd = NewRoot("test")
+	out = new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--since", "1h"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --since=1h: %v", err)
+	}
+	s = out.String()
+	if !strings.Contains(s, "last 1h") {
+		t.Errorf("custom --since=1h must surface in zero-state:\n%s", s)
+	}
+}
+
+// TestLog_JSONEmptyResultNotifiesOnStderr covers polish item #12: a user
+// piping `veil log --json | jq` against an empty window used to see only
+// silent stdout and couldn't tell whether the command worked or hung.
+// Stdout must stay a valid (empty) NDJSON stream so the pipe still parses,
+// but stderr must carry a notice explaining the empty stream.
+func TestLog_JSONEmptyResultNotifiesOnStderr(t *testing.T) {
+	root := initProject(t)
+
+	cmd := NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	// Stdout must be empty (or whitespace-only) so the NDJSON pipe stays
+	// valid for downstream consumers like jq.
+	if got := strings.TrimSpace(stdout.String()); got != "" {
+		t.Errorf("--json with no events must leave stdout empty NDJSON; got:\n%q", stdout.String())
+	}
+
+	// Stderr must carry a human-readable explanation so the user knows
+	// the empty stdout was intentional, not a hang or a bug.
+	errS := stderr.String()
+	if !strings.Contains(errS, "no events match these filters") {
+		t.Errorf("stderr must announce empty-result reason; got:\n%s", errS)
+	}
+	if !strings.Contains(errS, "stdout is empty NDJSON") {
+		t.Errorf("stderr notice should clarify the empty-stdout contract; got:\n%s", errS)
+	}
+}
+
+// TestLog_JSONNonEmptyResultStaysQuietOnStderr verifies the inverse of
+// the empty-result advisory: when --json has rows to emit, the stderr
+// notice must NOT fire — otherwise every routine pipe through jq would
+// be polluted with spurious "empty stdout" advisories.
+func TestLog_JSONNonEmptyResultStaysQuietOnStderr(t *testing.T) {
+	root := initProject(t)
+	seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	if strings.Contains(stderr.String(), "no events match these filters") {
+		t.Errorf("stderr advisory must not fire when rows exist; got:\n%s", stderr.String())
+	}
+	// Sanity: stdout must contain at least one NDJSON line for this path.
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatalf("expected NDJSON rows on stdout; got empty")
+	}
+}
+
+// TestLogCmd_ShortDescriptionMentionsHidden verifies that `veil log --help`
+// announces that blocked/leaked events are hidden by default, so users do
+// not have to discover the --blocked flag by accident.
+func TestLogCmd_ShortDescriptionMentionsHidden(t *testing.T) {
+	cmd := logCmd()
+	short := strings.ToLower(cmd.Short)
+	for _, kw := range []string{"blocked", "leaked", "hidden"} {
+		if !strings.Contains(short, kw) {
+			t.Errorf("logCmd.Short should mention %q so the default-hide is discoverable; got: %q", kw, cmd.Short)
+		}
+	}
+}
+
+// TestLog_JSONSchemaUnchangedForRegularRows verifies that --json output
+// for a regular injection still has exactly the documented field set,
+// so existing machine consumers don't break when the --blocked flag is
+// added. The blocked-row schema is the same — we only exercise the
+// regular row here because that's the path consumers rely on.
+func TestLog_JSONSchemaUnchangedForRegularRows(t *testing.T) {
+	root := initProject(t)
+	regularCred, _, _ := seedLogFixtures(t, root)
+
+	cmd := NewRoot("test")
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"log", "--path", root, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("log --json: %v", err)
+	}
+
+	// Parse the regular row (default --json mode excludes blocked/leaked).
+	var entry map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON line %q: %v", line, err)
+		}
+		if entry["credential"] == regularCred {
+			break
+		}
+	}
+	if entry["credential"] != regularCred {
+		t.Fatalf("did not find regular row in JSON output; got %v", entry)
+	}
+
+	wantKeys := map[string]bool{
+		"timestamp":  true,
+		"host":       true,
+		"method":     true,
+		"path":       true,
+		"credential": true,
+		"location":   true,
+	}
+	for k := range entry {
+		if !wantKeys[k] {
+			t.Errorf("JSON entry contains unexpected key %q (schema drift):\n%v", k, entry)
+		}
+		delete(wantKeys, k)
+	}
+	for k := range wantKeys {
+		t.Errorf("JSON entry missing expected key %q:\n%v", k, entry)
 	}
 }

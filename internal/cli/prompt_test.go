@@ -33,6 +33,23 @@ func TestParseYNS_Defaults(t *testing.T) {
 	}
 }
 
+// TestPromptYNS_DisplaysShortHelpText verifies the prompt now advertises the
+// terse "(Y/n/s)" form rather than the older "(Y/n/select)" — the legacy form
+// implied "select" was the literal input, leaving users unsure if "s" alone
+// would work. Both inputs continue to map to choiceSelect (covered above).
+func TestPromptYNS_DisplaysShortHelpText(t *testing.T) {
+	r := strings.NewReader("y\n")
+	w := new(bytes.Buffer)
+	_ = promptYNS(r, w, "Vault all?")
+	got := w.String()
+	if !strings.Contains(got, "(Y/n/s)") {
+		t.Errorf("prompt should advertise %q, got: %s", "(Y/n/s)", got)
+	}
+	if strings.Contains(got, "(Y/n/select)") {
+		t.Errorf("prompt should NOT still advertise %q, got: %s", "(Y/n/select)", got)
+	}
+}
+
 func TestParseCSV_Hosts(t *testing.T) {
 	tests := []struct {
 		input string

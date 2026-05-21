@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getveil/veil/internal/audit"
 	"github.com/getveil/veil/internal/placeholder"
 	"github.com/getveil/veil/internal/scanner"
 )
@@ -92,10 +93,9 @@ func buildTestClient(t *testing.T, binDir string) string {
 // USE_STAGING_OAUTH, etc.) that a developer or CI runner may have exported
 // in their shell. These would otherwise trip the runtime fail-closed scan in
 // `veil run` (see internal/runner/envscan.go). This mirrors the unit-test
-// hygiene in internal/cli/init_shellenv_test.go (clearShellEnvTestNoise) and
-// internal/runner/runner_test.go (allowAllAmbientSecretLikes): the tests
-// simulate a clean shell, which is what they always meant to model. POSIX
-// names on the scanner denylist (PATH, PWD, etc.) are left alone.
+// hygiene in internal/runner/runner_test.go (allowAllAmbientSecretLikes):
+// the tests simulate a clean shell, which is what they always meant to
+// model. POSIX names on the scanner denylist (PATH, PWD, etc.) are left alone.
 func makeEnv(t *testing.T) []string {
 	t.Helper()
 	src := os.Environ()
@@ -151,7 +151,7 @@ func TestE2E_InitAndRun(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 
-	envContent := "# Test environment\nOPENAI_API_KEY=sk-proj-test1234567890abcdef1234567890abcdef\nDATABASE_URL=postgres://user:supersecretpassword@localhost:5432/mydb\nHOSTNAME=myserver.local\nDEBUG=true\n"
+	envContent := "# Test environment\nOPENAI_API_KEY=sk-proj-test1234567890abcdef1234567890abcdef\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\nHOSTNAME=myserver.local\nDEBUG=true\n"
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
@@ -176,8 +176,8 @@ func TestE2E_InitAndRun(t *testing.T) {
 	if strings.Contains(envStr, "sk-proj-test1234567890abcdef") {
 		t.Error("OPENAI_API_KEY was not replaced with a placeholder")
 	}
-	if strings.Contains(envStr, "supersecretpassword") {
-		t.Error("DATABASE_URL password was not replaced")
+	if strings.Contains(envStr, "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB") {
+		t.Error("GITHUB_TOKEN was not replaced with a placeholder")
 	}
 
 	// Non-secret values should be unchanged.
@@ -248,8 +248,8 @@ func TestE2E_InitAndRun(t *testing.T) {
 	if !strings.Contains(listStr, "OPENAI_API_KEY") {
 		t.Error("list output missing OPENAI_API_KEY")
 	}
-	if !strings.Contains(listStr, "DATABASE_URL") {
-		t.Error("list output missing DATABASE_URL")
+	if !strings.Contains(listStr, "GITHUB_TOKEN") {
+		t.Error("list output missing GITHUB_TOKEN")
 	}
 	if strings.Contains(listStr, "HOSTNAME") {
 		t.Error("HOSTNAME should not appear in vault list")
@@ -290,6 +290,11 @@ func TestE2E_EnvRoundTrip(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 
+	// DB_PASSWORD and URL_WITH_PASS have no named provider in v0.1.x, and
+	// postgres:// URLs were cut from the Managed bucket entirely (Phase 5
+	// — TCP protocols bypass Veil's HTTP proxy), so both fall through to
+	// "Unrecognized" and are left as-is. Only OPENAI_API_KEY (named
+	// provider) is vaulted.
 	envContent := `# Database config
 export DB_HOST=localhost
 DB_PORT=5432
@@ -301,7 +306,7 @@ SIMPLE_VALUE=hello
 
 # Empty and special
 EMPTY_VAL=
-URL_WITH_PASS=postgres://admin:secretpass123456789@db.example.com:5432/app
+URL_WITH_PASS=postgres://admin:secretpass123456789@db.prod.internal:5432/app
 `
 	if err := os.WriteFile(filepath.Join(projDir, ".env"), []byte(envContent), 0644); err != nil {
 		t.Fatalf("write .env: %v", err)
@@ -345,15 +350,20 @@ URL_WITH_PASS=postgres://admin:secretpass123456789@db.example.com:5432/app
 		t.Error("EMPTY_VAL should be unchanged")
 	}
 
-	// Secret values should be replaced.
-	if strings.Contains(envStr, "mysecretpassword1234567890") {
-		t.Error("DB_PASSWORD was not replaced")
+	// DB_PASSWORD has no named provider — it is left as-is (Unrecognized).
+	if !strings.Contains(envStr, "DB_PASSWORD=mysecretpassword1234567890") {
+		t.Error("DB_PASSWORD should be left unchanged (no named provider in v0.1.x)")
 	}
+
+	// URL_WITH_PASS is a postgres:// URL — after Phase 5 these are left
+	// as-is too, since TCP-protocol URLs bypass Veil's HTTP proxy.
+	if !strings.Contains(envStr, "URL_WITH_PASS=postgres://admin:secretpass123456789@db.prod.internal:5432/app") {
+		t.Error("URL_WITH_PASS (postgres URL) should be left unchanged after Phase 5")
+	}
+
+	// Named-provider secrets are still replaced.
 	if strings.Contains(envStr, "sk-proj-1234567890abcdef") {
 		t.Error("OPENAI_API_KEY was not replaced")
-	}
-	if strings.Contains(envStr, "secretpass123456789") {
-		t.Error("URL_WITH_PASS password was not replaced")
 	}
 
 	// Verify key names are still present (only values changed).
@@ -486,27 +496,31 @@ func TestE2E_ProxyInjection(t *testing.T) {
 	// 8. Verify audit log recorded both events:
 	//   - blocked: the injector denied the swap on host-scope mismatch.
 	//   - leaked:  the fail-closed guard caught the sentinel on the wire.
-	logCmd := exec.Command(veilBin, "log", "--path", projDir, "--json", "--blocked")
-	logCmd.Env = env
-	logOut, err := logCmd.CombinedOutput()
+	//
+	// The `veil log` CLI excludes blocked rows by default and Phase 6
+	// removed the `--blocked` flag (audit is a Go-API surface for tooling
+	// like this test, not a CLI knob). Open the audit DB directly and
+	// query with IncludeBlocked: true to see both event types.
+	auditDB := filepath.Join(projDir, ".veil", "audit.sqlite")
+	store, err := audit.Open(auditDB)
 	if err != nil {
-		t.Fatalf("veil log failed: %v\n%s", err, logOut)
+		t.Fatalf("audit.Open: %v", err)
 	}
-	logStr := string(logOut)
-	t.Logf("audit log:\n%s", logStr)
-	if strings.TrimSpace(logStr) == "" {
+	defer func() { _ = store.Close() }()
+	rows, err := store.Query(audit.Filter{IncludeBlocked: true, Limit: 100})
+	if err != nil {
+		t.Fatalf("audit.Query: %v", err)
+	}
+	t.Logf("audit log rows: %d", len(rows))
+	if len(rows) == 0 {
 		t.Fatal("audit log is empty; expected blocked + leaked events")
 	}
 
 	var sawBlocked, sawLeaked bool
-	for _, line := range strings.Split(strings.TrimSpace(logStr), "\n") {
-		var entry map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatalf("parsing audit log JSON: %v\nline: %s", err, line)
-		}
-		switch entry["location"] {
+	for _, r := range rows {
+		switch r.Location {
 		case "blocked":
-			if entry["credential"] == "OPENAI_API_KEY" {
+			if r.CredentialName == "OPENAI_API_KEY" {
 				sawBlocked = true
 			}
 		case "leaked":

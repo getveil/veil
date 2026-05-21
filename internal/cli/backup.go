@@ -3,8 +3,9 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/getveil/veil/internal/placeholder"
+	"github.com/getveil/veil/internal/scanner"
 	"github.com/getveil/veil/internal/vault"
 )
 
@@ -37,46 +38,47 @@ func writeBackup(src string) error {
 	return nil
 }
 
-// registerVaultedFile records src in the project's vault.meta registry
-// (under the given kind). It does not touch the .veil-backup sidecar.
-func registerVaultedFile(root, src string, kind vault.FileKind) error {
-	return vault.AddVaultedFile(root, src, kind)
-}
-
-// recordVaultedBackup writes src's backup AND registers src's absolute path
-// in vault.meta so uninstall can locate it even when src is outside root.
-// The kind is stored so uninstall picks the right classifier without
-// re-deriving from the basename.
-func recordVaultedBackup(root, src string, kind vault.FileKind) error {
-	if err := writeBackup(src); err != nil {
-		return err
-	}
-	return registerVaultedFile(root, src, kind)
-}
-
-// isOrphanedBackup reports whether src has a .veil-backup that is NOT
-// registered in the current project's vault.meta. An orphan signals that the
-// file was vaulted by a previous Veil install (whose registry was wiped or
-// never written) — its backup, not the current placeholder-filled file, is
-// the true pre-Veil state.
-func isOrphanedBackup(root, src string) (bool, error) {
+// isOrphanByContent reports whether src has a .veil-backup AND its current
+// content carries Veil-shaped placeholder values that the active vault does
+// not own. That pattern means a prior Veil install vaulted the file but its
+// vault state is gone (different vault root, wiped .veil/, etc.) — the
+// backup, not the stale placeholders, is the true pre-Veil state.
+//
+// Heuristic discriminator (replaces the vault.meta vaulted-files registry
+// dropped in the launch cuts): for each secret-like line in src, ask whether
+// its value contains the Veil sentinel ("VEIL") AND whether the current
+// vault carries it as a placeholder. A sentinel value that no current
+// credential owns is the signal that the placeholders came from a different
+// install. When every sentinel-bearing value is owned by v, the file is the
+// output of THIS vault's prior successful init — not an orphan.
+//
+// Returns false for files with no backup, no secret-like lines, or no
+// sentinel-bearing values (i.e. a regular cleartext .env that happens to
+// have a backup sidecar).
+func isOrphanByContent(v *vault.Vault, src string) (bool, error) {
 	if !backupExists(src) {
 		return false, nil
 	}
-	abs, err := filepath.Abs(src)
+	envFile, err := scanner.ParseFile(src)
 	if err != nil {
 		return false, err
 	}
-	registered, err := vault.ReadVaultedFiles(root)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range registered {
-		if entry.Path == abs {
-			return false, nil
+	knownPHs := v.PlaceholderSet()
+	for _, line := range envFile.Lines {
+		if line.Kind != scanner.KVLine {
+			continue
+		}
+		if !placeholder.IsSecretLike(line.Key, line.Value) {
+			continue
+		}
+		if !placeholder.ContainsSentinel(line.Value) {
+			continue
+		}
+		if _, owned := knownPHs[line.Value]; !owned {
+			return true, nil
 		}
 	}
-	return true, nil
+	return false, nil
 }
 
 // reclaimOrphanedBackup restores src from its orphan backup so the next

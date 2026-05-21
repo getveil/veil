@@ -1,7 +1,6 @@
 package placeholder
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 )
@@ -31,26 +30,6 @@ func TestGenerate_EmptyValue(t *testing.T) {
 	_, err := Generate("KEY", "", nil)
 	if err == nil {
 		t.Fatal("expected error for empty value")
-	}
-}
-
-func TestGenerate_URLPath(t *testing.T) {
-	restore := setDeterministicRng(42)
-	defer restore()
-
-	result, err := Generate("DATABASE_URL", "postgres://user:secret@host:5432/db", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "postgres://user:secret@host:5432/db" {
-		t.Fatal("expected password to be replaced")
-	}
-	// Should still contain the scheme and host.
-	if !bytes.Contains([]byte(result), []byte("postgres://")) {
-		t.Fatalf("expected postgres scheme, got: %s", result)
-	}
-	if !bytes.Contains([]byte(result), []byte("@host:5432/db")) {
-		t.Fatalf("expected host preserved, got: %s", result)
 	}
 }
 

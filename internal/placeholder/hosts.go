@@ -6,6 +6,17 @@ import (
 	"strings"
 )
 
+// allowedSchemes lists URL schemes that ExtractURLHost will accept. Only
+// http/https are included: TCP-protocol schemes like postgres:// and redis://
+// bypass Veil's HTTP proxy entirely, so scoping a credential to a host derived
+// from them would never narrow a match. The allowlist also closes SEC-8: a
+// crafted env var like "javascript://evil.com" must not widen the proxy's
+// allow-host set via HostsForCredential.
+var allowedSchemes = map[string]bool{
+	"http":  true,
+	"https": true,
+}
+
 // HostMatches checks whether the given request host is authorized by the
 // allowed hosts list. The host may include a port (e.g. "api.github.com:443")
 // which is stripped before comparison. Allowed hosts entries are either exact
@@ -43,9 +54,7 @@ func stripPort(host string) string {
 
 // ExtractURLHost attempts to parse value as a URL and return the hostname
 // (without port). Returns "" if value is not a parseable URL with a host,
-// or if the URL scheme is outside the allowlist (see url.go). The
-// allowlist gate prevents crafted env-var values like "javascript://evil.com"
-// from widening the proxy's allow-host set via HostsForCredential.
+// or if the URL scheme is outside allowedSchemes (http/https only).
 func ExtractURLHost(value string) string {
 	u, err := url.Parse(value)
 	if err != nil {
@@ -62,24 +71,31 @@ func ExtractURLHost(value string) string {
 
 // HostsForCredential resolves the allowed hosts for a credential using the
 // resolution chain:
-//  1. Provider registry — if a provider matches, return its Hosts
+//  1. Provider registry — if a provider matches AND the value passes
+//     the shared value-shape gate, return the provider's Hosts
 //  2. URL parsing — if the value is URL-shaped, extract the host
 //  3. Return nil (credential is inert until manually scoped)
+//
+// The value-shape gate sits at step 1 so sub-gate values can't receive
+// provider hosts via the declarativeMatcher's name-hint path —
+// preserving symmetry with (*Registry).Match. URL extraction stays
+// ungated: URLs are a separate signal class (parsed structure, not
+// random-alphabet density) and short URLs are still valid hosts to
+// auto-scope to.
 func HostsForCredential(name, value string) []string {
-	// 1. Check provider registry (Priority-sorted; hand-written before Format).
-	for _, p := range DefaultRegistry().All() {
-		if p.Match(name, value) && len(p.Hosts) > 0 {
-			hosts := make([]string, len(p.Hosts))
-			copy(hosts, p.Hosts)
-			return hosts
+	if passesValueShapeGate(value) {
+		for _, p := range DefaultRegistry().All() {
+			if p.Match(name, value) && len(p.Hosts) > 0 {
+				hosts := make([]string, len(p.Hosts))
+				copy(hosts, p.Hosts)
+				return hosts
+			}
 		}
 	}
 
-	// 2. Try URL host extraction.
 	if h := ExtractURLHost(value); h != "" {
 		return []string{h}
 	}
 
-	// 3. No hosts detected.
 	return nil
 }

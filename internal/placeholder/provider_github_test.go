@@ -1,8 +1,6 @@
 package placeholder
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"strings"
 	"testing"
 )
@@ -30,21 +28,25 @@ func TestProviderGitHub(t *testing.T) {
 	t.Run("match_name", func(t *testing.T) {
 		// Name-only fallback requires a credential-shaped value length so CI
 		// metadata like GITHUB_REF_NAME=main isn't misclassified as a secret.
-		if !prov.Match("GITHUB_TOKEN", strings.Repeat("a", 40)) {
+		if !prov.Match("GITHUB_TOKEN", "abcdef0123456789abcdef0123456789abcdef01") {
 			t.Fatal("should match GITHUB in name for credential-shaped value")
 		}
 	})
-	t.Run("no_match_short_value_with_github_in_name", func(t *testing.T) {
-		// GitHub Actions injects GITHUB_REF_NAME=main and similar metadata.
-		// These must not be classified as secrets.
+	t.Run("no_match_short_value_via_registry", func(t *testing.T) {
+		// CI-metadata names like GITHUB_REF_NAME=main are injected by
+		// GitHub Actions on every job. They must not be classified as
+		// credentials. The check now lives at Registry.Match
+		// (passesValueShapeGate) rather than inside this provider's own
+		// Match, so assert at that layer.
+		reg := DefaultRegistry()
 		for _, kv := range []struct{ name, value string }{
 			{"GITHUB_REF_NAME", "main"},
 			{"GITHUB_EVENT_NAME", "push"},
 			{"GITHUB_JOB", "test"},
 			{"GITHUB_REF_TYPE", "branch"},
 		} {
-			if prov.Match(kv.name, kv.value) {
-				t.Errorf("should not match CI metadata %s=%q", kv.name, kv.value)
+			if p := reg.Match(kv.name, kv.value); p != nil {
+				t.Errorf("Registry.Match should not match CI metadata %s=%q; got %s", kv.name, kv.value, p.Name)
 			}
 		}
 	})
@@ -97,31 +99,16 @@ func TestProviderGitHub_FinegrainedPAT(t *testing.T) {
 	})
 }
 
-func TestGenerateGitHubAppPrivateKey_IsValidRSAPEM(t *testing.T) {
-	p, err := GenerateGitHubAppPrivateKey()
-	if err != nil {
-		t.Fatal(err)
+func TestProviderGitHub_IsVaultEligible(t *testing.T) {
+	r := DefaultRegistry()
+	p, ok := r.Get("github")
+	if !ok {
+		t.Fatal("github provider not registered")
 	}
-	if !strings.HasPrefix(p, "-----BEGIN RSA PRIVATE KEY-----") {
-		t.Errorf("missing PKCS#1 PEM header: %s", p[:80])
+	if !p.VaultEligible {
+		t.Fatal("github provider must declare VaultEligible: true")
 	}
-	block, _ := pem.Decode([]byte(p))
-	if block == nil {
-		t.Fatal("pem.Decode returned nil")
-	}
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if key.N.BitLen() != 2048 {
-		t.Errorf("key bit length = %d, want 2048", key.N.BitLen())
-	}
-}
-
-func TestGenerateGitHubAppPrivateKey_FreshEachCall(t *testing.T) {
-	a, _ := GenerateGitHubAppPrivateKey()
-	b, _ := GenerateGitHubAppPrivateKey()
-	if a == b {
-		t.Error("two calls returned the same PEM (keygen deterministic?)")
+	if len(p.Hosts) == 0 {
+		t.Fatal("github provider must declare a non-empty Hosts set")
 	}
 }

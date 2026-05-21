@@ -2,7 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,23 +15,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// projectHasEverRun reports whether `veil run` has ever been invoked for
+// this project. The runner-started marker file is the primary signal; if
+// it's missing we fall back to "are there any audit rows at all" so a
+// project that ran the proxy before the marker landed still classifies
+// correctly.
+func projectHasEverRun(root string, store *audit.Store) (bool, error) {
+	if _, err := os.Stat(config.RunnerMarkerFile(root)); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return store.HasAnyRows()
+}
+
 func logCmd() *cobra.Command {
 	var (
-		since        string
-		host         string
-		credential   string
-		limit        int
-		jsonOutput   bool
-		blocked      bool
-		suspect      bool
-		signerFailed bool
+		since       string
+		host        string
+		credential  string
+		limit       int
+		jsonOutput  bool
+		showBlocked bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "log",
-		Short: "Show audit log of secret injections",
+		Short: "Show audit log of secret injections (blocked and sentinel-leaked events are hidden by default; pass --blocked to include them)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLog(cmd, since, host, credential, limit, jsonOutput, blocked, suspect, signerFailed)
+			return runLog(cmd, since, host, credential, limit, jsonOutput, showBlocked)
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "24h", "show entries since duration (e.g. 24h, 7d) or RFC3339 timestamp")
@@ -37,13 +51,11 @@ func logCmd() *cobra.Command {
 	cmd.Flags().StringVar(&credential, "credential", "", "filter by credential name")
 	cmd.Flags().IntVar(&limit, "limit", 100, "max rows to return")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON Lines")
-	cmd.Flags().BoolVar(&blocked, "blocked", false, "include blocked credential events")
-	cmd.Flags().BoolVar(&suspect, "suspect", false, "show only transform-mismatch suspect rows")
-	cmd.Flags().BoolVar(&signerFailed, "signer-failed", false, "show only rows where a signer (AWS SigV4 / GitHub App JWT) failed closed")
+	cmd.Flags().BoolVar(&showBlocked, "blocked", false, "Include host-blocked and sentinel-leaked events in the output.")
 	return cmd
 }
 
-func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, blocked, suspect, signerFailed bool) error {
+func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonOutput, showBlocked bool) error {
 	root, err := requireInitializedProject(cmd)
 	if err != nil {
 		return err
@@ -66,25 +78,24 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		Host:           host,
 		CredentialName: credential,
 		Limit:          limit,
-		IncludeBlocked: blocked,
-		IncludeSuspect: true,
-		SuspectOnly:    suspect,
+		IncludeBlocked: showBlocked,
 	})
 	if err != nil {
 		return cliError(fmt.Sprintf("querying audit log: %v", err), "")
 	}
 
-	// --signer-failed is a client-side post-filter: it mirrors the shape of
-	// the existing flag-driven include/exclude options without having to
-	// teach the audit Filter a fourth orthogonal mode.
-	if signerFailed {
-		filtered := rows[:0]
-		for _, r := range rows {
-			if r.Location == "signer_failed" {
-				filtered = append(filtered, r)
-			}
+	// Count blocked+leaked rows so the renderer can disclose how many events
+	// are hidden by the default filter. Without this, an operator
+	// investigating a leak would see a quiet table and never discover that
+	// sentinel-leaked rows exist. When showBlocked is true the rows are
+	// already in `rows`, so no hidden count applies.
+	var hidden int
+	if !showBlocked {
+		_, blocked, leaked, _, _, summaryErr := store.Summary(sinceTime)
+		if summaryErr != nil {
+			return cliError(fmt.Sprintf("querying audit log: %v", summaryErr), "")
 		}
-		rows = filtered
+		hidden = blocked + leaked
 	}
 
 	w := cmd.OutOrStdout()
@@ -93,23 +104,50 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		enc := json.NewEncoder(w)
 		for _, r := range rows {
 			_ = enc.Encode(logEntry{
-				Timestamp:   r.Timestamp.Format(time.RFC3339),
-				Host:        r.Host,
-				Method:      r.Method,
-				Path:        r.URLPath,
-				Credential:  r.CredentialName,
-				Location:    r.Location,
-				Suspect:     r.SuspectFlag,
-				AuthSignal:  r.AuthSignal,
-				SignerError: r.SignerError,
+				Timestamp:  r.Timestamp.Format(time.RFC3339),
+				Host:       r.Host,
+				Method:     r.Method,
+				Path:       r.URLPath,
+				Credential: r.CredentialName,
+				Location:   r.Location,
 			})
+		}
+		if len(rows) == 0 {
+			// A user piping `veil log --json | jq` against a quiet window
+			// would otherwise see only silent output and wonder whether the
+			// command worked or hung. Surface the explanation on stderr so
+			// the NDJSON stream on stdout stays valid (empty) for the
+			// downstream consumer.
+			ui.Dim(cmd.ErrOrStderr(), fmt.Sprintf("no events match these filters in the last %s (stdout is empty NDJSON)", since))
 		}
 		return nil
 	}
 
 	if len(rows) == 0 {
-		_, _ = fmt.Fprintln(w, "No credential injections during this period.")
+		// Distinguish "never run" from "active but quiet" using a marker
+		// file the runner touches at session start. The marker is the
+		// primary signal; an audit-DB row check is the upgrade fallback
+		// for projects that ran `veil run` before the marker existed.
+		ever, err := projectHasEverRun(root, store)
+		if err != nil {
+			return cliError(fmt.Sprintf("querying audit log: %v", err), "")
+		}
+		if !ever {
+			_, _ = fmt.Fprintln(w, "No `veil run` has been executed yet — try `veil run <agent>`.")
+			return nil
+		}
+		// Mirror the non-empty footer's `(last %s)` window suffix so the
+		// user always knows the scope they're looking at, regardless of
+		// whether anything matched.
+		_, _ = fmt.Fprintf(w, "No credential injections in the last %s.\n", since)
 		_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprint("The proxy was active but no managed credentials were used in outbound requests"))
+		if hidden > 0 {
+			// I1: an operator investigating a suspected leak would
+			// otherwise see only the quiet "no injections" message even
+			// when blocked/leaked rows exist in the window — surface the
+			// hidden count and point at the flag that reveals them.
+			_, _ = fmt.Fprintf(w, "  %s\n", ui.Muted.Sprintf("%d %s hidden — re-run with --blocked to inspect.", hidden, plural(hidden, "event", "events")))
+		}
 		return nil
 	}
 
@@ -118,17 +156,13 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 	// control sequences into the operator's terminal. Timestamps come from
 	// a time.Time and are safe.
 	type logRow struct {
-		timestamp, host, method, credential, location, signerErr string
-		suspect                                                  bool
+		timestamp, host, method, credential, location string
 	}
 	logRows := make([]logRow, len(rows))
-	// Show the SignerError column whenever any visible row carries one.
-	var showSignerErr bool
 	tsW := len("TIMESTAMP")
 	hostW := len("HOST")
 	methodW := len("METHOD")
 	credW := len("CREDENTIAL")
-	locW := len("LOCATION")
 	for i, r := range rows {
 		row := logRow{
 			timestamp:  ui.RelativeTime(r.Timestamp),
@@ -136,18 +170,12 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 			method:     sanitizeForTerminal(r.Method),
 			credential: sanitizeForTerminal(r.CredentialName),
 			location:   sanitizeForTerminal(r.Location),
-			signerErr:  sanitizeForTerminal(r.SignerError),
-			suspect:    r.SuspectFlag,
 		}
 		logRows[i] = row
 		tsW = maxInt(tsW, len(row.timestamp))
 		hostW = maxInt(hostW, len(row.host))
 		methodW = maxInt(methodW, len(row.method))
 		credW = maxInt(credW, len(row.credential))
-		locW = maxInt(locW, len(row.location))
-		if r.SignerError != "" {
-			showSignerErr = true
-		}
 	}
 
 	// Pad plain text first, then apply ANSI styling so escape codes don't
@@ -158,62 +186,55 @@ func runLog(cmd *cobra.Command, since, host, credential string, limit int, jsonO
 		padRight("HOST", hostW),
 		padRight("METHOD", methodW),
 		padRight("CREDENTIAL", credW),
-	}
-	if showSignerErr {
-		headers = append(headers, padRight("LOCATION", locW), "SIGNER ERROR")
-	} else {
-		headers = append(headers, "LOCATION")
+		"LOCATION",
 	}
 	styled := make([]string, len(headers))
 	for i, h := range headers {
 		styled[i] = ui.Muted.Sprint(h)
 	}
-	_, _ = fmt.Fprintln(w, "     "+strings.Join(styled, gap))
+	_, _ = fmt.Fprintln(w, strings.Join(styled, gap))
 
 	for _, r := range logRows {
-		marker := "   "
-		if r.suspect {
-			marker = "[!]"
-		}
 		cells := []string{
 			padRight(r.timestamp, tsW),
 			padRight(r.host, hostW),
 			padRight(r.method, methodW),
 			padRight(r.credential, credW),
+			r.location,
 		}
-		if showSignerErr {
-			cells = append(cells, padRight(r.location, locW), r.signerErr)
-		} else {
-			cells = append(cells, r.location)
-		}
-		_, _ = fmt.Fprintln(w, marker+"  "+strings.Join(cells, gap))
+		_, _ = fmt.Fprintln(w, strings.Join(cells, gap))
 	}
-	ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
+	if hidden > 0 {
+		// I1: disclose hidden-row count alongside the shown count so the
+		// operator can tell a quiet window from an active-but-filtered one.
+		// Pointer to --blocked stays in the footer so users don't have to
+		// remember the flag name.
+		ui.Footer(w, fmt.Sprintf("%d events shown · %d hidden (--blocked to include host-blocked and sentinel-leaked events)", len(rows), hidden))
+	} else {
+		ui.Footer(w, fmt.Sprintf("%d events (last %s)", len(rows), since))
+	}
 	return nil
 }
 
 // logEntry is the JSON representation of an audit log row.
 type logEntry struct {
-	Timestamp   string `json:"timestamp"`
-	Host        string `json:"host"`
-	Method      string `json:"method"`
-	Path        string `json:"path"`
-	Credential  string `json:"credential"`
-	Location    string `json:"location"`
-	Suspect     bool   `json:"suspect"`
-	AuthSignal  string `json:"auth_signal,omitempty"`
-	SignerError string `json:"signer_error,omitempty"`
+	Timestamp  string `json:"timestamp"`
+	Host       string `json:"host"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	Credential string `json:"credential"`
+	Location   string `json:"location"`
 }
 
 // sanitizeForTerminal replaces C0 (0x00-0x1F), DEL (0x7F), and C1
 // (0x80-0x9F) bytes with '?' so a compromised agent or malicious upstream
 // host cannot smuggle ANSI control sequences into the operator's terminal
-// via audit-log fields like Host, Method, CredentialName, Location, or
-// SignerError. The replacement is byte-for-byte so column widths stay
-// stable. Valid UTF-8 round-trips: lead bytes start at 0xC2 and
-// continuation bytes at 0x80-0xBF, but no continuation byte at 0x80-0x9F
-// appears without a preserved lead byte. JSON output deliberately skips
-// this — machine consumers need the raw bytes for forensic analysis.
+// via audit-log fields like Host, Method, CredentialName, or Location.
+// The replacement is byte-for-byte so column widths stay stable. Valid
+// UTF-8 round-trips: lead bytes start at 0xC2 and continuation bytes at
+// 0x80-0xBF, but no continuation byte at 0x80-0x9F appears without a
+// preserved lead byte. JSON output deliberately skips this — machine
+// consumers need the raw bytes for forensic analysis.
 func sanitizeForTerminal(s string) string {
 	idx := -1
 	for i := 0; i < len(s); i++ {

@@ -3,10 +3,8 @@ package proxy
 import (
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cloudflare/ahocorasick"
@@ -15,13 +13,22 @@ import (
 	"github.com/getveil/veil/internal/vault"
 )
 
-// defaultBodyCap is the maximum body size the injector will scan (10 MiB).
-const defaultBodyCap = 10 * 1024 * 1024
+// Note: the AWS SigV4, GitHub App JWT, and HTTP Basic decode-and-swap
+// paths were removed in the v1 launch cut. The proxy now only performs
+// literal placeholder substitution; outbound traffic whose authentication
+// requires re-signing or username/password pairing is out of scope.
+
+// defaultBodyCap is the maximum body size the injector will scan (64 MiB).
+// Kept in sync with maxInjectableBodyBytes in proxy.go: the proxy reads at
+// most maxInjectableBodyBytes into memory, so scanning beyond that does
+// nothing.
+const defaultBodyCap = 64 << 20
 
 // Injector performs Aho-Corasick multi-pattern matching to replace placeholder
-// strings with real secret values in HTTP requests.
+// strings with real secret values in HTTP requests. All fields are set at
+// construction and never mutated, so concurrent ProcessRequest / Replace
+// calls don't need synchronization.
 type Injector struct {
-	mu       sync.RWMutex
 	matcher  *ahocorasick.Matcher
 	patterns []string                     // ordered slice of placeholder strings
 	creds    map[string]*vault.Credential // placeholder -> credential
@@ -50,21 +57,6 @@ func NewInjector(placeholderMap map[string]*vault.Credential, auditStore *audit.
 	}
 }
 
-// Reload rebuilds the AC matcher and credential map for vault reload during
-// runtime.
-func (inj *Injector) Reload(placeholderMap map[string]*vault.Credential) {
-	patterns, creds := extractPatterns(placeholderMap)
-	var matcher *ahocorasick.Matcher
-	if len(patterns) > 0 {
-		matcher = ahocorasick.NewStringMatcher(patterns)
-	}
-	inj.mu.Lock()
-	inj.matcher = matcher
-	inj.patterns = patterns
-	inj.creds = creds
-	inj.mu.Unlock()
-}
-
 // ProcessRequest scans a request's URL, headers, and body for placeholder
 // strings and replaces them with real secret values. It returns the modified
 // components and a slice of audit injection records.
@@ -75,11 +67,9 @@ func (inj *Injector) ProcessRequest(
 	header http.Header,
 	body []byte,
 ) (newURL string, newHeader http.Header, newBody []byte, injections []audit.Injection) {
-	inj.mu.RLock()
 	matcher := inj.matcher
 	patterns := inj.patterns
 	creds := inj.creds
-	inj.mu.RUnlock()
 
 	now := time.Now()
 
@@ -121,64 +111,6 @@ func (inj *Injector) ProcessRequest(
 	// --- Header scanning ---
 	newHeader = header.Clone()
 
-	// --- Basic auth pre-pass ---
-	// Decode Authorization / Proxy-Authorization Basic headers and rewrite them
-	// with real user:secret pairs before the literal Aho-Corasick scan sees the
-	// (already-rewritten) bytes. Swaps produced here participate in the same
-	// audit-injection stream as literal matches.
-	basicSwaps := decodeAndSwapBasic(newHeader, creds, host)
-	for _, s := range basicSwaps {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
-
-	// --- AWS SigV4 signer ---
-	// Run the SigV4 re-signer between the Basic pre-pass and the literal
-	// header scan. This ensures the SDK-supplied placeholder AKID is
-	// rewritten and the Authorization signature is recomputed before the
-	// Aho-Corasick header pass would otherwise blindly substitute the
-	// placeholder bytes (producing a malformed Authorization header).
-	shim := &http.Request{
-		Method: method,
-		Header: newHeader,
-	}
-	if u, err := url.Parse(newURL); err == nil {
-		shim.URL = u
-	} else {
-		shim.URL = &url.URL{}
-	}
-	awsInjs, _ := signAWSSigV4(shim, body, creds, host)
-	for _, s := range awsInjs {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
-
-	// --- GitHub App JWT signer ---
-	// Runs on the same shim so that an Authorization: Bearer <JWT> already
-	// rewritten by the AWS block (rare — the two schemes target different
-	// hosts) is carried forward. The literal header scan below sees the
-	// final, re-signed JWT.
-	ghInjs, _ := signGitHubAppJWT(shim, creds, host)
-	for _, s := range ghInjs {
-		s.RequestID = requestID
-		s.Method = method
-		s.URLPath = urlPath
-		s.AgentPID = inj.agentPID
-		s.AgentCmd = inj.agentCmd
-		injections = append(injections, s)
-	}
-
-	// signAWSSigV4 / signGitHubAppJWT may have mutated shim.Header; persist.
-	newHeader = shim.Header
-
 	if matcher != nil {
 		for name, values := range newHeader {
 			for i, v := range values {
@@ -205,27 +137,6 @@ func (inj *Injector) ProcessRequest(
 		}
 	}
 
-	// --- Mismatch detector (post-pass) ---
-	if !anyNonBlocked(injections) {
-		credList := dedupCredentials(creds)
-		parsedURL, _ := url.Parse(rawURL)
-		if sig, names, fired := detectMismatch(host, parsedURL, newHeader, 0, credList); fired {
-			logMismatch(os.Stderr, host, urlPath, method, sig, names)
-			injections = append(injections, audit.Injection{
-				Timestamp:   now,
-				RequestID:   requestID,
-				Host:        host,
-				Method:      method,
-				URLPath:     urlPath,
-				AgentPID:    inj.agentPID,
-				AgentCmd:    inj.agentCmd,
-				Location:    "mismatch_suspected",
-				SuspectFlag: true,
-				AuthSignal:  sig,
-			})
-		}
-	}
-
 	// Record injections to the audit store if configured.
 	if inj.audit != nil {
 		for _, injection := range injections {
@@ -245,11 +156,9 @@ func hostAuthorized(cred *vault.Credential, host string) bool {
 // result. It uses the AC matcher for detection, then strings.ReplaceAll for
 // each matched pattern.
 func (inj *Injector) Replace(input string) string {
-	inj.mu.RLock()
 	matcher := inj.matcher
 	patterns := inj.patterns
 	creds := inj.creds
-	inj.mu.RUnlock()
 
 	if matcher == nil {
 		return input
@@ -375,33 +284,6 @@ func applyMatched(
 		}
 	}
 	return output, events
-}
-
-// anyNonBlocked reports whether at least one injection is a real swap (not a
-// blocked entry emitted when host scoping denied the swap, and not a suspect row).
-func anyNonBlocked(injections []audit.Injection) bool {
-	for _, i := range injections {
-		if i.Location != "blocked" && !i.SuspectFlag {
-			return true
-		}
-	}
-	return false
-}
-
-// dedupCredentials collapses the placeholder map into a unique slice. Basic
-// credentials appear twice in the map (under secret and username placeholders);
-// this collapses them to one entry per credential pointer.
-func dedupCredentials(pmap map[string]*vault.Credential) []*vault.Credential {
-	seen := make(map[*vault.Credential]struct{}, len(pmap))
-	out := make([]*vault.Credential, 0, len(pmap))
-	for _, c := range pmap {
-		if _, ok := seen[c]; ok {
-			continue
-		}
-		seen[c] = struct{}{}
-		out = append(out, c)
-	}
-	return out
 }
 
 // parseRequestURL extracts host, path, and raw query from a URL. On parse

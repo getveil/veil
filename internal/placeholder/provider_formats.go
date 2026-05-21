@@ -1,166 +1,149 @@
-// provider_formats.go registers all declarative Format-based providers.
-// Resolution order against hand-written providers is governed by Priority
-// (see priority.go and providers.go); previously this file was named
-// provider_zzz_formats.go to force it to init() last via filename
-// alphabetization, which is no longer load-bearing.
+// provider_formats.go registers the declarative providers — the common
+// "prefix + random body" shape. Hand-written providers (Supabase, GitHub,
+// SendGrid) live in their own provider_*.go files and supply explicit
+// Match/Generate funcs.
 
 package placeholder
 
+import "strings"
+
 func init() {
-	registerFormat(Format{
-		Name:     "openai",
-		Prefixes: []string{"sk-proj-"},
-		KeyHints: []string{"OPENAI"},
-		Length:   0, // preserve input length
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.openai.com"},
+	register(ProviderPattern{
+		Name:          "openai",
+		Prefixes:      []string{"sk-proj-"},
+		KeyHints:      []string{"OPENAI"},
+		Length:        0, // preserve input length
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.openai.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "anthropic",
-		Prefixes: []string{"sk-ant-api", "sk-ant-"}, // sorted by len desc inside registerFormat
-		KeyHints: []string{"ANTHROPIC"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.anthropic.com"},
+	register(ProviderPattern{
+		Name:          "anthropic",
+		Prefixes:      []string{"sk-ant-api", "sk-ant-"}, // sorted by len desc inside register
+		KeyHints:      []string{"ANTHROPIC"},
+		Length:        0,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.anthropic.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "stripe",
-		Prefixes: []string{"sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_"},
-		KeyHints: []string{"STRIPE"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.stripe.com", "files.stripe.com"},
+	// Stripe is hand-written rather than declarative because the declarative
+	// OR-of-(prefix, name-hint) classifier vaults STRIPE_PUBLISHABLE_KEY=pk_live_*
+	// — intentionally public keys — on the name-hint alone. The Match below
+	// requires the value to start with a secret-key prefix; the STRIPE name
+	// hint only narrows which prefix is accepted, it never short-circuits the
+	// prefix check.
+	stripePrefixes := []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_"}
+	register(ProviderPattern{
+		Name:          "stripe",
+		Prefixes:      stripePrefixes,
+		Length:        0,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.stripe.com", "files.stripe.com"},
+		VaultEligible: true,
+		Match: func(name, value string) bool {
+			hasPrefix := false
+			for _, p := range stripePrefixes {
+				if strings.HasPrefix(value, p) {
+					hasPrefix = true
+					break
+				}
+			}
+			if hasPrefix {
+				return true
+			}
+			// Name-hint path: only count as a Stripe credential when the value
+			// also carries a secret-key prefix. Publishable keys (pk_*) under
+			// STRIPE_PUBLISHABLE_KEY must NOT vault.
+			if strings.Contains(strings.ToUpper(name), "STRIPE") {
+				for _, p := range stripePrefixes {
+					if strings.HasPrefix(value, p) {
+						return true
+					}
+				}
+			}
+			return false
+		},
 	})
 
-	registerFormat(Format{
-		Name:     "slack",
-		Prefixes: []string{"xoxb-", "xoxp-", "xoxs-", "xoxa-", "xoxr-"},
-		KeyHints: []string{"SLACK"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"slack.com", "api.slack.com", "files.slack.com"},
+	register(ProviderPattern{
+		Name:          "slack",
+		Prefixes:      []string{"xoxb-", "xoxp-", "xoxs-", "xoxa-", "xoxr-"},
+		KeyHints:      []string{"SLACK"},
+		Length:        0,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"slack.com", "api.slack.com", "files.slack.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "google",
-		Prefixes: []string{"AIza"},
-		KeyHints: []string{"GOOGLE_API", "FIREBASE_API"},
-		Length:   39,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"generativelanguage.googleapis.com", "firebaseapp.com", "*.googleapis.com"},
+	register(ProviderPattern{
+		Name:          "google",
+		Prefixes:      []string{"AIza"},
+		KeyHints:      []string{"GOOGLE_API", "FIREBASE_API"},
+		Length:        39,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"generativelanguage.googleapis.com", "firebaseapp.com", "*.googleapis.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "replicate",
-		Prefixes: []string{"r8_"},
-		KeyHints: []string{"REPLICATE"},
-		Length:   40,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.replicate.com"},
+	register(ProviderPattern{
+		Name:          "replicate",
+		Prefixes:      []string{"r8_"},
+		KeyHints:      []string{"REPLICATE"},
+		Length:        40,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.replicate.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "huggingface",
-		Prefixes: []string{"hf_"},
-		KeyHints: []string{"HUGGING", "HF_"},
-		Length:   37,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"huggingface.co", "api-inference.huggingface.co"},
+	register(ProviderPattern{
+		Name:          "huggingface",
+		Prefixes:      []string{"hf_"},
+		KeyHints:      []string{"HUGGING", "HF_"},
+		Length:        37,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"huggingface.co", "api-inference.huggingface.co"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "vercel",
-		Prefixes: []string{"vercel_"},
-		KeyHints: []string{"VERCEL"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.vercel.com"},
+	register(ProviderPattern{
+		Name:          "vercel",
+		Prefixes:      []string{"vercel_"},
+		KeyHints:      []string{"VERCEL"},
+		Length:        0,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.vercel.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "gitlab",
-		Prefixes: []string{"glpat-"},
-		KeyHints: []string{"GITLAB"},
-		Length:   26,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"gitlab.com"},
+	register(ProviderPattern{
+		Name:          "gitlab",
+		Prefixes:      []string{"glpat-"},
+		KeyHints:      []string{"GITLAB"},
+		Length:        26,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"gitlab.com"},
+		VaultEligible: true,
 	})
 
-	registerFormat(Format{
-		Name:     "npm",
-		Prefixes: []string{"npm_"},
-		KeyHints: []string{"NPM_TOKEN"},
-		Length:   36,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"registry.npmjs.org"},
-	})
-
-	registerFormat(Format{
-		Name:     "resend",
-		Prefixes: []string{"re_"},
-		KeyHints: []string{"RESEND"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"api.resend.com"},
-	})
-
-	registerFormat(Format{
-		Name:     "postmark",
-		Prefixes: nil,
-		KeyHints: []string{"POSTMARK"},
-		Length:   36,
-		Charset:  "hex",
-		Hosts:    []string{"api.postmarkapp.com"},
-	})
-
-	registerFormat(Format{
-		Name:     "datadog",
-		Prefixes: nil,
-		KeyHints: []string{"DATADOG", "DD_API"},
-		Length:   32,
-		Charset:  "hex",
-		Hosts:    []string{"api.datadoghq.com", "*.datadoghq.com"},
-	})
-
-	registerFormat(Format{
-		Name:     "pypi",
-		Prefixes: []string{"pypi-"},
-		KeyHints: []string{"PYPI", "TWINE_PASSWORD"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"pypi.org", "upload.pypi.org", "test.pypi.org", "upload.test.pypi.org"},
-	})
-
-	// Container registries. Token formats vary widely, so most are matched by
-	// key-hint only; users who scope credentials via `veil add --host` get
-	// correct injection via the AllowedHosts check regardless of format.
-
-	registerFormat(Format{
-		Name:     "docker_hub",
-		Prefixes: []string{"dckr_pat_"},
-		KeyHints: []string{"DOCKER_HUB", "DOCKERHUB", "DOCKER_TOKEN", "DOCKER_PAT"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"docker.io", "registry-1.docker.io", "index.docker.io", "auth.docker.io"},
-	})
-
-	registerFormat(Format{
-		Name:     "quay",
-		Prefixes: nil,
-		KeyHints: []string{"QUAY"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"quay.io"},
-	})
-
-	registerFormat(Format{
-		Name:     "gcr",
-		Prefixes: nil,
-		KeyHints: []string{"GCR_", "GOOGLE_REGISTRY", "ARTIFACT_REGISTRY"},
-		Length:   0,
-		Charset:  "alphanumeric",
-		Hosts:    []string{"gcr.io", "*.gcr.io", "*-docker.pkg.dev"},
+	// Resend is hand-written rather than declarative because adding a
+	// RESEND KeyHint to the declarative matcher would let any shape-
+	// passing value under a RESEND_* name match — e.g.
+	// RESEND_FROM_EMAIL=team@example.somewhere.com (28 chars, clears the
+	// Registry.Match shape gate) would be vaulted as a Resend credential.
+	// Restrict matching to the re_ prefix only; no name-hint path. The
+	// Registry-level shape gate handles the length floor; this matcher
+	// does not repeat it.
+	register(ProviderPattern{
+		Name:          "resend",
+		Prefixes:      []string{"re_"},
+		Length:        0,
+		Charset:       "alphanumeric",
+		Hosts:         []string{"api.resend.com"},
+		VaultEligible: true,
+		Match: func(_, value string) bool {
+			return strings.HasPrefix(value, "re_")
+		},
 	})
 }

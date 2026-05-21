@@ -27,6 +27,33 @@ type CA struct {
 	KeyPEM  []byte
 }
 
+// CheckCA reports the on-disk state of the CA without side effects.
+// Returns (certPath, exists, err): exists is true when both the cert and key
+// files are present; an inconsistent half-installed state surfaces as an
+// error (matching LoadOrCreateCA's behavior). Used by `veil init --dry-run`
+// so the dry-run preview can describe what would be created without
+// touching the filesystem.
+func CheckCA() (certPath string, exists bool, err error) {
+	certPath, perr := config.CAFile()
+	if perr != nil {
+		return "", false, fmt.Errorf("%w: ca cert path: %w", ErrCALoad, perr)
+	}
+	keyPath, perr := config.CAKeyFile()
+	if perr != nil {
+		return "", false, fmt.Errorf("%w: ca key path: %w", ErrCALoad, perr)
+	}
+	certExists := fileExists(certPath)
+	keyExists := fileExists(keyPath)
+	switch {
+	case certExists && keyExists:
+		return certPath, true, nil
+	case !certExists && !keyExists:
+		return certPath, false, nil
+	default:
+		return certPath, false, fmt.Errorf("%w: inconsistent CA state: one of cert/key exists without the other", ErrCALoad)
+	}
+}
+
 // LoadOrCreateCA loads an existing CA from disk or generates a new one.
 // It returns an error if only one of the cert/key files exists (inconsistent state).
 func LoadOrCreateCA() (*CA, error) {

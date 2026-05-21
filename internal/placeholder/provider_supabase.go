@@ -14,38 +14,80 @@ const jwtHeader = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 
 func init() {
 	register(ProviderPattern{
-		Name:     "supabase",
-		Priority: PriorityHandwritten,
-		Match: func(name, value string) bool {
-			if strings.Contains(strings.ToUpper(name), "SUPABASE") {
-				return true
+		Name:          "supabase",
+		VaultEligible: true,
+		Hosts:         []string{"*.supabase.co", "*.supabase.com"},
+		Match:         isJWTWithAlg,
+		Generate: func(_, value string) string {
+			// sbp_ personal-access-tokens: emit an sbp_-shaped placeholder
+			// rather than a JWT so the placeholder's structural class matches
+			// the input. Real Resend-style PATs are sbp_ + 36 alphanumeric.
+			if strings.HasPrefix(value, "sbp_") {
+				rest := len(value) - len("sbp_")
+				if rest < len(Sentinel) {
+					rest = 36
+				}
+				return sentinelize("sbp_"+randAlphanumeric(rest), len("sbp_"))
 			}
-			return isJWTWithAlg(value)
-		},
-		Generate: func(_, _ string) string {
 			return generateSupabaseJWT("anon")
 		},
-		Hosts: []string{"*.supabase.co", "*.supabase.com"},
 	})
 }
 
-// isJWTWithAlg checks if a value looks like a JWT by splitting on dots and
-// attempting to decode the first segment as JSON with an "alg" field.
-func isJWTWithAlg(value string) bool {
+// isJWTWithAlg returns true only when the credential is clearly a Supabase
+// credential — a value bearing the sbp_ personal-access-token prefix, a key
+// name carrying "SUPABASE", or a JWT whose payload iss field references
+// supabase.co. The earlier shape-only check ("looks like a JWT") matched
+// every signed token in the wild (Auth0, Cognito, Firebase, custom apps),
+// producing false positives that caused us to inject Supabase placeholders
+// for unrelated credentials.
+//
+// The credential-shape floor lives at Registry.Match (passesValueShapeGate);
+// short config metadata like SUPABASE_REGION=us-east-1 is rejected there
+// before this matcher is consulted, so neither the sbp_ prefix path nor
+// the name-hint path repeats the length check.
+func isJWTWithAlg(name, value string) bool {
+	if strings.HasPrefix(value, "sbp_") {
+		return true
+	}
+	if strings.Contains(strings.ToUpper(name), "SUPABASE") {
+		// Name-hint alone is too broad: SUPABASE_PROJECT_URL, SUPABASE_DB_URL,
+		// etc. are not credentials. Require the value to at least look like a
+		// JWT (3 dot-separated base64url segments) so URLs and plain config
+		// strings are rejected. The sbp_ prefix path above already catches PATs.
+		parts := strings.Split(value, ".")
+		return len(parts) == 3 && isBase64URL(parts[0]) && isBase64URL(parts[1]) && isBase64URL(parts[2])
+	}
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
 		return false
 	}
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false
 	}
-	var header map[string]interface{}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
+	var payload map[string]any
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 		return false
 	}
-	_, hasAlg := header["alg"]
-	return hasAlg
+	iss, _ := payload["iss"].(string)
+	return strings.Contains(iss, "supabase.co")
+}
+
+// isBase64URL reports whether s is non-empty and contains only characters from
+// the base64url alphabet (RFC 4648 §5): [A-Za-z0-9_-]. Padding ('=') is
+// accepted. This is used to distinguish JWT segments from URL/path fragments
+// that happen to be dot-separated.
+func isBase64URL(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // generateSupabaseJWT creates a structurally valid JWT with Supabase-style
@@ -56,8 +98,13 @@ func generateSupabaseJWT(role string) string {
 	iat := now.Add(-24 * time.Hour).Unix()
 	exp := now.Add(365 * 24 * time.Hour).Unix()
 
+	// Use the canonical Supabase JWT iss format so the placeholder is
+	// re-detectable by isJWTWithAlg via the iss-containing-"supabase.co"
+	// path. Without "supabase.co" in iss, a vaulted JWT stored under a
+	// non-SUPABASE_* key name falls through to no-match on a subsequent
+	// `veil init` pass.
 	payload := fmt.Sprintf(
-		`{"iss":"supabase","ref":"%s","role":"%s","iat":%d,"exp":%d}`,
+		`{"iss":"https://placeholder.supabase.co/auth/v1","ref":"%s","role":"%s","iat":%d,"exp":%d}`,
 		ref, role, iat, exp,
 	)
 	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
